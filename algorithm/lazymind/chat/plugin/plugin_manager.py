@@ -39,7 +39,6 @@ LOG = logging.getLogger(__name__)
 _PREFLIGHT_DECISIONS = {'ready', 'need_information', 'not_applicable'}
 _PREFLIGHT_TIMEOUT_SECONDS = 30.0
 
-
 @dataclass
 class PluginAgentContribution:
     tools: List[Any]
@@ -2372,8 +2371,18 @@ def _build_step_status_section(
             lines.append('Succeeded steps: none yet')
 
         if rewind_steps:
+            spec = plugin_loader.get_plugin(plugin_id)
+            rerunnable_labels = []
+            for step in rewind_steps:
+                rerun_when = ''
+                if spec:
+                    rerun_when = str(
+                        spec.get_step_config(step).get('rerun_when') or ''
+                    ).strip()
+                suffix = f' [rerun when: {rerun_when}]' if rerun_when else ''
+                rerunnable_labels.append(_label(step) + suffix)
             lines.append('Previously completed steps that can be run again: '
-                         + ', '.join(_label(s) for s in rewind_steps))
+                         + ', '.join(rerunnable_labels))
 
         if ready:
             ready_labels = []
@@ -2436,7 +2445,12 @@ def _build_mode_guidance(
         'If intent has changed, identify the EARLIEST step whose output is now\n'
         'invalidated and select that step again using `advance_step_and_hand_off` with\n'
         '`steps=[{"step_id": "<affected_step>"}]`. The backend clears affected artifacts and determines\n'
-        'the lifecycle operation automatically. Do NOT continue to the next forward step.\n\n'
+        'the lifecycle operation automatically. Do NOT continue to the next forward step.\n'
+        'Artifact-mutation guard (mandatory): when the user asks to change an artifact\n'
+        'already owned by this active workflow, including inserting, replacing, or deleting\n'
+        'an image in the current document, rerun the earliest owning workflow step. Do not\n'
+        'bypass the workflow with generic file/artifact/generation tools, direct toolkit\n'
+        'methods, or a generic subagent; media acquisition belongs inside the owning step.\n\n'
         '### Rule 2 — DAG frontier and atomic batching\n'
         'The authoritative Ready list is the only forward execution frontier. Never infer\n'
         'serial order from `current_step`, conversation history, or visual position.\n'

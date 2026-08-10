@@ -1226,6 +1226,17 @@ def test_batch_guidance_requires_one_atomic_call_for_ready_frontier(loaded_plugi
     assert 'valid parallel choices' in guidance
 
 
+def test_dynamic_guidance_keeps_active_artifact_mutations_inside_workflow(loaded_plugin):
+    from lazymind.chat.plugin import plugin_manager
+
+    guidance = plugin_manager._build_mode_guidance('dynamic')
+
+    assert 'Artifact-mutation guard (mandatory)' in guidance
+    assert 'inserting, replacing, or deleting' in guidance
+    assert 'generic subagent' in guidance
+    assert 'media acquisition belongs inside the owning step' in guidance
+
+
 def test_step_status_exposes_multi_ready_batch_hint(loaded_plugin):
     from lazymind.chat.plugin import plugin_manager
 
