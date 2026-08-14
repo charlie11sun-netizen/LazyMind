@@ -14,6 +14,14 @@ import {
   unwrapArtifactPayload,
 } from './writerArtifactViews';
 import { WriterIRControl, type WriterIRSaveMode, type WriterIRSaveResult } from './WriterIRControl';
+import {
+  WriterDownloadFormatButton,
+  WriterDownloadFormatDialog,
+  writerDocumentToLmdContent,
+  writerDocumentToMarkdown,
+  writerDownloadCacheKey,
+  writerDocumentFromMarkdown,
+} from './WriterDownloadFormat';
 import { MarkdownArtifactEditor } from './MarkdownArtifactEditor';
 import {
   ArtifactRewriteDialog,
@@ -26,7 +34,6 @@ import {
   normalizeWriterDocumentForSync,
   restoreLegacyWriterImageReference,
   updateWriterBlockContent,
-  type WriterBlock,
   type WriterDocument,
 } from './writerIR';
 import { WorkflowPanelTabActiveContext, SlotEditingContext } from './slotEditingContext';
@@ -2034,45 +2041,17 @@ async function syncWriterDocumentSlot(
   };
 }
 
-function writerBlockToMarkdown(block: WriterBlock, depth = 0): string {
-  if (block.type === 'document') {
-    return (block.children ?? []).map((child) => writerBlockToMarkdown(child, depth)).filter(Boolean).join('\n\n');
-  }
-
-  const content = block.content?.trim() ?? '';
-  const children = (block.children ?? [])
-    .map((child) => writerBlockToMarkdown(child, depth + 1))
-    .filter(Boolean)
-    .join('\n\n');
-  let current = content;
-
-  if (block.type === 'heading') {
-    const level = Math.min(6, Math.max(1, Number(block.numbering?.level ?? 2)));
-    current = content ? `${'#'.repeat(level)} ${content}` : '';
-  } else if (block.type === 'list_item') {
-    current = content ? `${'  '.repeat(depth)}${block.numbering?.ordered ? '1.' : '-'} ${content}` : '';
-  } else if (block.type === 'quote') {
-    current = content ? content.split('\n').map((line) => `> ${line}`).join('\n') : '';
-  } else if (block.type === 'code') {
-    current = content ? `\`\`\`\n${content}\n\`\`\`` : '';
-  } else if (block.type === 'divider') {
-    current = '---';
-  }
-
-  return [current, children].filter(Boolean).join('\n\n');
-}
-
-function writerDocumentToMarkdown(document: WriterDocument): string {
-  const title = document.title.trim() ? `# ${document.title.trim()}` : '';
-  const body = document.blocks.map((block) => writerBlockToMarkdown(block)).filter(Boolean).join('\n\n');
-  return `${[title, body].filter(Boolean).join('\n\n')}\n`;
-}
-
 function writerMarkdownFilename(name: string): string {
   const trimmed = name.trim() || 'document';
   if (trimmed.toLowerCase().endsWith('_ir.lmd')) return `${trimmed.slice(0, -7)}.md`;
   if (trimmed.toLowerCase().endsWith('_ir.json')) return `${trimmed.slice(0, -8)}.md`;
   return `${trimmed.replace(/\.(?:lmd|json)$/i, '')}.md`;
+}
+
+function writerLmdFilename(name: string): string {
+  const trimmed = name.trim() || 'document';
+  if (trimmed.toLowerCase().endsWith('.lmd')) return trimmed;
+  return `${trimmed.replace(/\.(?:md|markdown|json)$/i, '')}.lmd`;
 }
 
 function shouldRenderInlineStructuredContent(
@@ -2288,33 +2267,26 @@ function useRegisterArtifactDownload({
   enabled,
   actionKey,
   label,
-  url,
-  filename,
+  onClick,
 }: {
   enabled: boolean;
   actionKey?: string;
   label: string;
-  url?: string | null;
-  filename?: string;
+  onClick: () => void;
 }) {
   const tabActive = useContext(WorkflowPanelTabActiveContext);
   const { registerFooterAction } = useContext(SlotEditingContext);
 
   useEffect(() => {
-    if (!enabled || !tabActive || !actionKey || !url) return undefined;
+    if (!enabled || !tabActive || !actionKey) return undefined;
     return registerFooterAction(actionKey, {
       label,
       order: 10,
       tone: 'secondary',
       icon: 'download',
-      onClick: () => {
-        const anchor = document.createElement('a');
-        anchor.href = url;
-        if (filename) anchor.download = filename;
-        anchor.click();
-      },
+      onClick,
     });
-  }, [actionKey, enabled, filename, label, registerFooterAction, tabActive, url]);
+  }, [actionKey, enabled, label, onClick, registerFooterAction, tabActive]);
 }
 
 function SlotJsonFile({
@@ -2604,26 +2576,22 @@ function SlotJsonFile({
     onRefresh?.();
   }, [applySavedRevision, onRefresh]);
 
-  const [writerMarkdownDownload, setWriterMarkdownDownload] = useState<{
-    url: string;
-    filename: string;
-  } | null>(null);
-
-  useEffect(() => {
-    if (!writerDocument) {
-      setWriterMarkdownDownload(null);
+  const [downloadFormatOpen, setDownloadFormatOpen] = useState(false);
+  const writerDocumentCacheContent = useMemo(
+    () => (writerDocument ? JSON.stringify(writerDocument) : ''),
+    [writerDocument],
+  );
+  const openDownloadFormat = useCallback(() => {
+    if (writerDocument) {
+      setDownloadFormatOpen(true);
       return;
     }
-    const blob = new Blob([writerDocumentToMarkdown(writerDocument)], {
-      type: 'text/markdown;charset=utf-8',
-    });
-    const url = URL.createObjectURL(blob);
-    setWriterMarkdownDownload({
-      url,
-      filename: writerMarkdownFilename(name),
-    });
-    return () => URL.revokeObjectURL(url);
-  }, [name, writerDocument]);
+    if (!url) return;
+    const anchor = document.createElement('a');
+    anchor.href = url;
+    anchor.download = name;
+    anchor.click();
+  }, [name, url, writerDocument]);
 
   useRegisterWriterWriteBack({
     enabled: canWriteBack,
@@ -2640,13 +2608,10 @@ function SlotJsonFile({
   });
 
   useRegisterArtifactDownload({
-    enabled: allowDownload && Boolean(writerMarkdownDownload || url),
+    enabled: allowDownload && Boolean(writerDocument || url),
     actionKey: sessionId && slotId ? `${editingKey}:download` : undefined,
-    label: writerMarkdownDownload
-      ? tr('chat.writer.downloadMarkdown')
-      : tr('chat.slots.download'),
-    url: writerMarkdownDownload?.url ?? (allowDownload ? url : undefined),
-    filename: writerMarkdownDownload?.filename ?? name,
+    label: tr('chat.slots.download'),
+    onClick: openDownloadFormat,
   });
 
   if (!hasSource) {
@@ -2754,6 +2719,26 @@ function SlotJsonFile({
         onApplied={handleIRRewriteApplied}
         onPreviewReady={handleIRRewritePreview}
       />
+      {writerDocument && (
+        <WriterDownloadFormatDialog
+          open={downloadFormatOpen}
+          onOpenChange={setDownloadFormatOpen}
+          markdown={{
+            filename: writerMarkdownFilename(name),
+            mimeType: 'text/markdown;charset=utf-8',
+            cacheKey: writerDownloadCacheKey('writer-document:markdown', writerDocumentCacheContent),
+            conversionSource: writerDocumentCacheContent,
+            content: () => writerDocumentToMarkdown(writerDocument),
+          }}
+          lmd={{
+            filename: writerLmdFilename(name),
+            mimeType: 'application/json;charset=utf-8',
+            cacheKey: writerDownloadCacheKey('writer-document:lmd', writerDocumentCacheContent),
+            conversionSource: writerDocumentCacheContent,
+            content: () => writerDocumentToLmdContent(normalizeWriterDocumentForSync(writerDocument)),
+          }}
+        />
+      )}
     </div>
   );
 }
@@ -2828,10 +2813,11 @@ function SlotInlineStructured({
     && displayRevision > 0
     && rewriteSelection === null
     && rewritePreview === null;
-  const [writerMarkdownDownload, setWriterMarkdownDownload] = useState<{
-    url: string;
-    filename: string;
-  } | null>(null);
+  const [downloadFormatOpen, setDownloadFormatOpen] = useState(false);
+  const writerDocumentCacheContent = useMemo(
+    () => (writerDocument ? JSON.stringify(writerDocument) : ''),
+    [writerDocument],
+  );
 
   const applySavedRevision = useCallback((revision?: number) => {
     if (typeof revision !== 'number' || revision <= 0) return;
@@ -2850,22 +2836,6 @@ function SlotInlineStructured({
       setLocalRevisionCount((prev) => (prev === undefined || revisionCount >= prev ? revisionCount : prev));
     }
   }, [revisionCount]);
-
-  useEffect(() => {
-    if (!writerDocument) {
-      setWriterMarkdownDownload(null);
-      return;
-    }
-    const blob = new Blob([writerDocumentToMarkdown(writerDocument)], {
-      type: 'text/markdown;charset=utf-8',
-    });
-    const url = URL.createObjectURL(blob);
-    setWriterMarkdownDownload({
-      url,
-      filename: writerMarkdownFilename(slot.caption || resolvedSlotId),
-    });
-    return () => URL.revokeObjectURL(url);
-  }, [resolvedSlotId, slot.caption, writerDocument]);
 
   const handleSaveWriterDocument = useCallback(async (
     sourceDocument: WriterDocument,
@@ -2975,11 +2945,10 @@ function SlotInlineStructured({
   });
 
   useRegisterArtifactDownload({
-    enabled: allowDownload && Boolean(writerMarkdownDownload),
+    enabled: allowDownload && Boolean(writerDocument),
     actionKey: sessionId && slotId ? `${editingKey}:download` : undefined,
-    label: tr('chat.writer.downloadMarkdown'),
-    url: writerMarkdownDownload?.url,
-    filename: writerMarkdownDownload?.filename,
+    label: tr('chat.slots.download'),
+    onClick: () => setDownloadFormatOpen(true),
   });
 
   if (payload === null) {
@@ -3047,6 +3016,26 @@ function SlotInlineStructured({
         onApplied={handleIRRewriteApplied}
         onPreviewReady={handleIRRewritePreview}
       />
+      {writerDocument && (
+        <WriterDownloadFormatDialog
+          open={downloadFormatOpen}
+          onOpenChange={setDownloadFormatOpen}
+          markdown={{
+            filename: writerMarkdownFilename(slot.caption || resolvedSlotId),
+            mimeType: 'text/markdown;charset=utf-8',
+            cacheKey: writerDownloadCacheKey('inline-writer-document:markdown', writerDocumentCacheContent),
+            conversionSource: writerDocumentCacheContent,
+            content: () => writerDocumentToMarkdown(writerDocument),
+          }}
+          lmd={{
+            filename: writerLmdFilename(slot.caption || resolvedSlotId),
+            mimeType: 'application/json;charset=utf-8',
+            cacheKey: writerDownloadCacheKey('inline-writer-document:lmd', writerDocumentCacheContent),
+            conversionSource: writerDocumentCacheContent,
+            content: () => writerDocumentToLmdContent(normalizeWriterDocumentForSync(writerDocument)),
+          }}
+        />
+      )}
     </div>
   );
 }
@@ -3138,6 +3127,8 @@ function SlotMarkdownFile({
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [content, setContent] = useState('');
+  const [downloadMarkdownContent, setDownloadMarkdownContent] = useState('');
+  const [downloadFormatOpen, setDownloadFormatOpen] = useState(false);
   const [currentValue, setCurrentValue] = useState(raw);
   const [localRevision, setLocalRevision] = useState(slot.revision);
   const [localRevisionCount, setLocalRevisionCount] = useState<number | undefined>(revisionCount);
@@ -3175,6 +3166,7 @@ function SlotMarkdownFile({
           throw new Error('invalid artifact content');
         }
         setContent(text);
+        setDownloadMarkdownContent(text);
         setLoading(false);
       })
       .catch((fetchError: unknown) => {
@@ -3205,7 +3197,6 @@ function SlotMarkdownFile({
   const showVersionBadge =
     displayRevisionCount !== undefined && displayRevisionCount > 0 && Boolean(sessionId && slotId);
   const resolvedSlotId = slotId ?? slot.slot;
-  const showArtifactActions = !WRITER_ARTIFACT_SLOT_IDS.has(resolvedSlotId);
   const initialDelivery = slot.write_back_state === 'initial_delivery';
   const canWriteBack = resolvedSlotId === 'draft_document'
     && Boolean(sessionId)
@@ -3227,23 +3218,39 @@ function SlotMarkdownFile({
     && !readOnly
     && WRITER_ARTIFACT_SLOT_IDS.has(resolvedSlotId);
 
+  useEffect(() => {
+    if (!canEditMarkdown) setDownloadMarkdownContent(content);
+  }, [canEditMarkdown, content]);
+
   const downloadMarkdown = useCallback(() => {
-    const blob = new Blob([content], { type: 'text/markdown;charset=utf-8' });
-    const objectUrl = URL.createObjectURL(blob);
-    const anchor = document.createElement('a');
-    anchor.href = objectUrl;
-    anchor.download = name.toLowerCase().endsWith('.md') ? name : `${name.replace(/\.[^.]+$/, '') || 'writing_output'}.md`;
-    anchor.click();
-    URL.revokeObjectURL(objectUrl);
-  }, [content, name]);
+    setDownloadFormatOpen(true);
+  }, []);
+
+  const markdownFilename = useMemo(
+    () => name.toLowerCase().endsWith('.md') || name.toLowerCase().endsWith('.markdown')
+      ? name
+      : `${name.replace(/\.[^.]+$/, '') || 'writing_output'}.md`,
+    [name],
+  );
+  const lmdFilename = useMemo(() => writerLmdFilename(name), [name]);
+  const markdownCacheKey = useMemo(
+    () => writerDownloadCacheKey('markdown-file:markdown', downloadMarkdownContent),
+    [downloadMarkdownContent],
+  );
+  const lmdCacheKey = useMemo(
+    () => writerDownloadCacheKey('markdown-file:lmd', downloadMarkdownContent),
+    [downloadMarkdownContent],
+  );
+  const canUseOriginalLmd = Boolean(originalUrl && downloadMarkdownContent === content);
+  const handleEditorContentChange = useCallback((markdown: string) => {
+    setDownloadMarkdownContent(markdown);
+  }, []);
 
   const saveMarkdown = useCallback(async (markdown: string, baseRevision: number) => {
     if (!sessionId || !slotId || readOnly) {
       throw new Error(tr('chat.writerMarkdown.saveFailed'));
     }
-    const filename = name.toLowerCase().endsWith('.md') || name.toLowerCase().endsWith('.markdown')
-      ? name
-      : `${name.replace(/\.[^.]+$/, '') || 'writing_output'}.md`;
+    const filename = markdownFilename;
     const file = new File([markdown], filename, { type: 'text/markdown;charset=utf-8' });
     const storedPath = await uploadFileInChunks(file);
     const nextValue: Record<string, unknown> = {
@@ -3271,7 +3278,7 @@ function SlotMarkdownFile({
       setLocalRevisionCount((previous) => Math.max(previous ?? 0, revisionCount ?? 0, revision));
     }
     return revision;
-  }, [apiListIndex, name, patchSlotItemValue, raw, readOnly, resolvedSlotId, revisionCount, sessionId, slotId]);
+  }, [apiListIndex, markdownFilename, patchSlotItemValue, raw, readOnly, resolvedSlotId, revisionCount, sessionId, slotId]);
 
   const refreshMarkdown = useCallback(() => {
     setReloadToken((value) => value + 1);
@@ -3376,26 +3383,29 @@ function SlotMarkdownFile({
 
   return (
     <div className='workflow-slot workflow-slot--artifact'>
-      <div className='writer-artifact__output-toolbar' hidden={!allowDownload || (!showArtifactActions && !originalUrl)}>
+      <div className='writer-artifact__output-toolbar' hidden={!allowDownload}>
         {!canEditMarkdown && (
-          <button
-            type='button'
-            className='workflow-slot__file-action-btn writer-artifact__download-btn'
-            onClick={downloadMarkdown}
-          >
-            {tr('chat.writer.downloadMarkdown')}
-          </button>
+          <WriterDownloadFormatButton
+            markdown={{
+              filename: markdownFilename,
+              content: downloadMarkdownContent,
+              mimeType: 'text/markdown;charset=utf-8',
+              cacheKey: markdownCacheKey,
+            }}
+            lmd={canUseOriginalLmd ? {
+              filename: originalName,
+              href: originalUrl!,
+            } : {
+              filename: lmdFilename,
+              mimeType: 'application/json;charset=utf-8',
+              cacheKey: lmdCacheKey,
+              conversionSource: downloadMarkdownContent,
+              content: () => writerDocumentToLmdContent(
+                writerDocumentFromMarkdown(downloadMarkdownContent, name),
+              ),
+            }}
+          />
         )}
-        {originalUrl ? (
-          <a
-            href={originalUrl}
-            download={originalName}
-            className='workflow-slot__file-action-btn'
-            onClick={(e) => e.stopPropagation()}
-          >
-            {tr('chat.slots.downloadOriginalFile')}
-          </a>
-        ) : null}
       </div>
       <div className={`workflow-slot__artifact-body${canEditMarkdown ? ' workflow-slot__artifact-body--markdown' : ''}`}>
         {canEditMarkdown ? (
@@ -3405,7 +3415,8 @@ function SlotMarkdownFile({
             editingKey={markdownEditingKey}
             onSave={saveMarkdown}
             onRefresh={refreshMarkdown}
-            onDownload={downloadMarkdown}
+            onDownload={allowDownload ? downloadMarkdown : undefined}
+            onContentChange={handleEditorContentChange}
             onRewriteSelection={rewriteSelection || rewritePreview ? undefined : openMarkdownRewrite}
             rewriteUnavailableReason={rewriteSelection || rewritePreview || canRewriteMarkdown
               ? undefined
@@ -3478,6 +3489,30 @@ function SlotMarkdownFile({
         onApplied={handleMarkdownRewriteApplied}
         onPreviewReady={handleMarkdownRewritePreview}
       />
+      {canEditMarkdown && allowDownload && (
+        <WriterDownloadFormatDialog
+          open={downloadFormatOpen}
+          onOpenChange={setDownloadFormatOpen}
+          markdown={{
+            filename: markdownFilename,
+            content: downloadMarkdownContent,
+            mimeType: 'text/markdown;charset=utf-8',
+            cacheKey: markdownCacheKey,
+          }}
+          lmd={canUseOriginalLmd ? {
+            filename: originalName,
+            href: originalUrl!,
+          } : {
+            filename: lmdFilename,
+            mimeType: 'application/json;charset=utf-8',
+            cacheKey: lmdCacheKey,
+            conversionSource: downloadMarkdownContent,
+            content: () => writerDocumentToLmdContent(
+              writerDocumentFromMarkdown(downloadMarkdownContent, name),
+            ),
+          }}
+        />
+      )}
     </div>
   );
 }

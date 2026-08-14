@@ -1,6 +1,12 @@
 import MarkdownViewer from '@/modules/chat/components/MarkdownViewer';
 import i18n from '@/i18n';
 import { useTranslation } from 'react-i18next';
+import {
+  WriterDownloadFormatButton,
+  writerDocumentFromMarkdown,
+  writerDocumentToLmdContent,
+  writerDownloadCacheKey,
+} from './WriterDownloadFormat';
 
 function tr(key: string, options?: Record<string, unknown>): string {
   return i18n.t(key, options);
@@ -171,57 +177,6 @@ function MarkdownBlock({ content }: { content: string }) {
     <div className='writer-artifact__markdown'>
       <MarkdownViewer>{content}</MarkdownViewer>
     </div>
-  );
-}
-
-function downloadTextFile(content: string, filename: string, mimeType = 'text/plain;charset=utf-8') {
-  const blob = new Blob([content], { type: mimeType });
-  const objectUrl = URL.createObjectURL(blob);
-  const anchor = document.createElement('a');
-  anchor.href = objectUrl;
-  anchor.download = filename;
-  anchor.click();
-  URL.revokeObjectURL(objectUrl);
-}
-
-function ArtifactDownloadButton({
-  label,
-  filename,
-  content,
-  href,
-}: {
-  label: string;
-  filename: string;
-  content?: string;
-  href?: string;
-}) {
-  const handleDownload = () => {
-    if (content?.trim()) {
-      const isMarkdown = filename.toLowerCase().endsWith('.md');
-      downloadTextFile(
-        content,
-        filename,
-        isMarkdown ? 'text/markdown;charset=utf-8' : 'text/plain;charset=utf-8',
-      );
-      return;
-    }
-    if (href) {
-      const anchor = document.createElement('a');
-      anchor.href = href;
-      anchor.download = filename;
-      anchor.click();
-    }
-  };
-
-  return (
-    <button
-      type='button'
-      className='workflow-slot__file-action-btn writer-artifact__download-btn'
-      onClick={handleDownload}
-      disabled={!content?.trim() && !href}
-    >
-      {label}
-    </button>
   );
 }
 
@@ -786,10 +741,22 @@ function WritingOutputView({ data, hideDownload = false }: { data: unknown; hide
     <div className='writer-artifact writer-artifact--output'>
       {!hideDownload ? (
         <div className='writer-artifact__output-toolbar'>
-          <ArtifactDownloadButton
-            label={tr('chat.writer.downloadMarkdown')}
-            filename='writing_output.md'
-            content={content}
+          <WriterDownloadFormatButton
+            markdown={{
+              filename: 'writing_output.md',
+              content,
+              mimeType: 'text/markdown;charset=utf-8',
+              cacheKey: writerDownloadCacheKey('writing-output:markdown', content),
+            }}
+            lmd={{
+              filename: 'writing_output.lmd',
+              mimeType: 'application/json;charset=utf-8',
+              cacheKey: writerDownloadCacheKey('writing-output:lmd', content),
+              conversionSource: content,
+              content: () => writerDocumentToLmdContent(
+                writerDocumentFromMarkdown(content, 'writing-output'),
+              ),
+            }}
           />
         </div>
       ) : null}

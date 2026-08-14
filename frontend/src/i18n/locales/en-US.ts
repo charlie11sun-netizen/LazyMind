@@ -1710,6 +1710,12 @@ const enUS = {
     },
     writer: {
       downloadMarkdown: "Download Markdown",
+      downloadFormatTitle: "Choose download format",
+      downloadFormatDescription: "Choose a format to download this document.",
+      downloadFormatMarkdownHint: "Best for reading, editing, and sharing",
+      downloadFormatLmdHint: "Preserves document structure for continued editing",
+      downloadFormatConfirm: "Download {{format}}",
+      downloadFormatFailed: "Download failed. Please try again.",
       contentStructure: "Content structure",
       creationNotes: "Creation notes",
       documentInformation: "Document information",

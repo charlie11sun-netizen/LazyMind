@@ -404,7 +404,7 @@ export function MarkdownArtifactEditor({
   useEffect(() => {
     if (!editingKey || !onDownload || !tabActive) return undefined;
     return registerFooterAction(editingKey, {
-      label: t('chat.writer.downloadMarkdown'),
+      label: t('chat.slots.download'),
       order: 10,
       tone: 'secondary',
       icon: 'download',

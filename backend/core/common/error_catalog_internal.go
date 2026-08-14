@@ -478,6 +478,7 @@ func init() {
 		"writer artifact path is outside allowed storage", "read writer artifact",
 		"active draft_document markdown is empty",
 		"active draft_document must be an .lmd or .md artifact",
+		"invalid writer download conversion key", "invalid writer download filename",
 	} {
 		registerAdditionalErrorAlias(source, "Invalid request", http.StatusBadRequest, 2000103)
 	}
@@ -499,6 +500,7 @@ func init() {
 	for _, source := range []string{
 		"workflow session not found", "selected artifact not found",
 		"writer session not found", "active draft_document not found",
+		"writer download conversion not found",
 	} {
 		registerAdditionalErrorAlias(source, "Resource not found", http.StatusNotFound, 2000106)
 	}
@@ -515,6 +517,9 @@ func init() {
 		"decode conversation ext",
 		"decode sync_document action response", "artifact sync state save failed",
 		"task unavailable",
+		"query writer download conversion failed", "writer download conversion path is invalid",
+		"open writer download conversion failed", "read writer download conversion failed",
+		"save writer download conversion failed", "index writer download conversion failed",
 	} {
 		registerAdditionalErrorAlias(source, "Internal server error", http.StatusInternalServerError, 2000000)
 	}

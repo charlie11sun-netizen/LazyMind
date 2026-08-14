@@ -1679,6 +1679,12 @@ const zhCN = {
     },
     writer: {
       downloadMarkdown: "下载 Markdown",
+      downloadFormatTitle: "选择下载格式",
+      downloadFormatDescription: "请选择一种格式下载当前文档。",
+      downloadFormatMarkdownHint: "适合阅读、编辑和分享",
+      downloadFormatLmdHint: "保留文档结构，适合继续编辑",
+      downloadFormatConfirm: "下载 {{format}}",
+      downloadFormatFailed: "下载失败，请重试",
       contentStructure: "内容结构",
       creationNotes: "生成说明",
       documentInformation: "文档信息",
