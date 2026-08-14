@@ -3,6 +3,7 @@ package workflow
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -25,12 +26,20 @@ import (
 )
 
 const maxWriterDownloadConversionSize int64 = 20 * 1024 * 1024
+const maxWriterDownloadConversionRequestSize int64 = 64 * 1024 * 1024
 
 var writerDownloadSourceHashPattern = regexp.MustCompile(`^[a-f0-9]{64}$`)
 
 type writerDownloadFormatSpec struct {
 	extension string
 	mimeType  string
+}
+
+type writerDownloadConvertRequest struct {
+	SourceFormat string `json:"source_format"`
+	TargetFormat string `json:"target_format"`
+	Content      string `json:"content"`
+	DocumentID   string `json:"document_id,omitempty"`
 }
 
 func writerDownloadSpec(targetFormat string) (writerDownloadFormatSpec, bool) {
@@ -41,6 +50,15 @@ func writerDownloadSpec(targetFormat string) (writerDownloadFormatSpec, bool) {
 		return writerDownloadFormatSpec{extension: ".lmd", mimeType: "application/json; charset=utf-8"}, true
 	default:
 		return writerDownloadFormatSpec{}, false
+	}
+}
+
+func writerDownloadSourceFormat(value string) (string, bool) {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "markdown", "lmd", "writer_document":
+		return strings.ToLower(strings.TrimSpace(value)), true
+	default:
+		return "", false
 	}
 }
 
@@ -121,6 +139,75 @@ func writeWriterDownloadFile(path string, content []byte) error {
 		return err
 	}
 	return os.Rename(tempPath, path)
+}
+
+// ConvertWriterDownload delegates canonical Writer conversion to LazyLLM.
+func ConvertWriterDownload(w http.ResponseWriter, r *http.Request) {
+	if store.UserID(r) == "" {
+		common.ReplyErr(w, "missing X-User-Id", http.StatusUnauthorized)
+		return
+	}
+	var request writerDownloadConvertRequest
+	decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxWriterDownloadConversionRequestSize))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&request); err != nil {
+		common.ReplyErr(w, "invalid writer download conversion request", http.StatusBadRequest)
+		return
+	}
+	sourceFormat, ok := writerDownloadSourceFormat(request.SourceFormat)
+	if !ok {
+		common.ReplyErr(w, "invalid writer download source format", http.StatusBadRequest)
+		return
+	}
+	targetFormat := strings.ToLower(strings.TrimSpace(request.TargetFormat))
+	spec, ok := writerDownloadSpec(targetFormat)
+	if !ok {
+		common.ReplyErr(w, "invalid writer download target format", http.StatusBadRequest)
+		return
+	}
+	if int64(len([]byte(request.Content))) > maxWriterDownloadConversionSize {
+		common.ReplyErr(w, "writer download conversion is too large", http.StatusRequestEntityTooLarge)
+		return
+	}
+	request.SourceFormat = sourceFormat
+	request.TargetFormat = targetFormat
+	request.DocumentID = strings.TrimSpace(request.DocumentID)
+	if len(request.DocumentID) > 255 {
+		common.ReplyErr(w, "invalid writer download conversion request", http.StatusBadRequest)
+		return
+	}
+	body, err := json.Marshal(request)
+	if err != nil {
+		common.ReplyErr(w, "encode writer download conversion request failed", http.StatusInternalServerError)
+		return
+	}
+	converted, status, err := common.HTTPPost(
+		r.Context(),
+		common.JoinURL(common.ChatServiceEndpoint(), "/api/writer/documents:convert"),
+		"application/json",
+		body,
+	)
+	if err != nil {
+		common.ReplyErr(w, "writer download conversion service unavailable", http.StatusBadGateway)
+		return
+	}
+	if status != http.StatusOK {
+		responseStatus := http.StatusBadGateway
+		if status >= http.StatusBadRequest && status < http.StatusInternalServerError {
+			responseStatus = http.StatusUnprocessableEntity
+		}
+		common.ReplyErr(w, "writer download conversion failed", responseStatus)
+		return
+	}
+	if int64(len(converted)) > maxWriterDownloadConversionSize {
+		common.ReplyErr(w, "writer download conversion is too large", http.StatusRequestEntityTooLarge)
+		return
+	}
+	w.Header().Set("Content-Type", spec.mimeType)
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	w.Header().Set("Cache-Control", "no-store")
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(converted)
 }
 
 // GetWriterDownloadConversion returns an already converted Writer download.

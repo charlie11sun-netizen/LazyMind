@@ -17,11 +17,8 @@ import { WriterIRControl, type WriterIRSaveMode, type WriterIRSaveResult } from 
 import {
   WriterDownloadFormatButton,
   WriterDownloadFormatDialog,
-  writerDocumentToLmdContent,
-  writerDocumentToMarkdown,
   writerDownloadCacheKey,
   writerDownloadFilename,
-  writerDocumentFromMarkdown,
   writerMarkdownTitle,
 } from './WriterDownloadFormat';
 import { MarkdownArtifactEditor } from './MarkdownArtifactEditor';
@@ -36,6 +33,7 @@ import {
   normalizeWriterDocumentForSync,
   restoreLegacyWriterImageReference,
   updateWriterBlockContent,
+  type WriterBlock,
   type WriterDocument,
 } from './writerIR';
 import { WorkflowPanelTabActiveContext, SlotEditingContext } from './slotEditingContext';
@@ -414,15 +412,43 @@ function snapshotDiffCacheKey(snapshot: unknown): string {
 function formatPayloadForDiff(payload: unknown): string {
   const unwrapped = unwrapArtifactPayload(payload);
   if (isWriterDocument(unwrapped)) {
-    return writerDocumentToMarkdown(unwrapped);
+    return writerDocumentDiffText(unwrapped);
   }
   if (isWriterDocument(payload)) {
-    return writerDocumentToMarkdown(payload);
+    return writerDocumentDiffText(payload);
   }
   if (typeof unwrapped === 'string') return unwrapped;
   if (unwrapped != null) return JSON.stringify(unwrapped, null, 2);
   if (typeof payload === 'string') return payload;
   return payload == null ? '' : JSON.stringify(payload, null, 2);
+}
+
+function writerBlockDiffText(block: WriterBlock, headingLevel = 2): string {
+  const content = block.content ?? '';
+  let current = content;
+  if (block.type === 'heading') {
+    const level = Math.min(6, Math.max(1, Number(block.numbering?.level ?? headingLevel)));
+    current = `${'#'.repeat(level)} ${content}`;
+  } else if (block.type === 'list_item') {
+    const marker = block.numbering?.ordered ? '1.' : '-';
+    current = `${marker} ${content}`;
+  } else if (block.type === 'code' && !/^\s*(?:```|~~~)/.test(content)) {
+    current = `\`\`\`\n${content}\n\`\`\``;
+  } else if (block.type === 'quote') {
+    current = content.split('\n').map((line) => `> ${line}`).join('\n');
+  }
+  const children = (block.children ?? [])
+    .map((child) => writerBlockDiffText(child, headingLevel + 1))
+    .filter(Boolean)
+    .join('\n\n');
+  return [current, children].filter(Boolean).join('\n\n');
+}
+
+function writerDocumentDiffText(document: WriterDocument): string {
+  return [
+    document.title ? `# ${document.title}` : '',
+    document.blocks.map((block) => writerBlockDiffText(block)).filter(Boolean).join('\n\n'),
+  ].filter(Boolean).join('\n\n');
 }
 
 async function resolveSnapshotDiffText(snapshot: unknown): Promise<string> {
@@ -2575,7 +2601,7 @@ function SlotJsonFile({
 
   const [downloadFormatOpen, setDownloadFormatOpen] = useState(false);
   const writerDocumentCacheContent = useMemo(
-    () => (writerDocument ? JSON.stringify(writerDocument) : ''),
+    () => (writerDocument ? JSON.stringify(normalizeWriterDocumentForSync(writerDocument)) : ''),
     [writerDocument],
   );
   const openDownloadFormat = useCallback(() => {
@@ -2725,14 +2751,14 @@ function SlotJsonFile({
             mimeType: 'text/markdown;charset=utf-8',
             cacheKey: writerDownloadCacheKey('writer-document:markdown', writerDocumentCacheContent),
             conversionSource: writerDocumentCacheContent,
-            content: () => writerDocumentToMarkdown(writerDocument),
+            conversionSourceFormat: 'writer_document',
           }}
           lmd={{
             filename: writerLmdFilename(name, writerDocument.title),
             mimeType: 'application/json;charset=utf-8',
             cacheKey: writerDownloadCacheKey('writer-document:lmd', writerDocumentCacheContent),
             conversionSource: writerDocumentCacheContent,
-            content: () => writerDocumentToLmdContent(normalizeWriterDocumentForSync(writerDocument)),
+            conversionSourceFormat: 'writer_document',
           }}
         />
       )}
@@ -2812,7 +2838,7 @@ function SlotInlineStructured({
     && rewritePreview === null;
   const [downloadFormatOpen, setDownloadFormatOpen] = useState(false);
   const writerDocumentCacheContent = useMemo(
-    () => (writerDocument ? JSON.stringify(writerDocument) : ''),
+    () => (writerDocument ? JSON.stringify(normalizeWriterDocumentForSync(writerDocument)) : ''),
     [writerDocument],
   );
 
@@ -3022,14 +3048,14 @@ function SlotInlineStructured({
             mimeType: 'text/markdown;charset=utf-8',
             cacheKey: writerDownloadCacheKey('inline-writer-document:markdown', writerDocumentCacheContent),
             conversionSource: writerDocumentCacheContent,
-            content: () => writerDocumentToMarkdown(writerDocument),
+            conversionSourceFormat: 'writer_document',
           }}
           lmd={{
             filename: writerLmdFilename(slot.caption || resolvedSlotId, writerDocument.title),
             mimeType: 'application/json;charset=utf-8',
             cacheKey: writerDownloadCacheKey('inline-writer-document:lmd', writerDocumentCacheContent),
             conversionSource: writerDocumentCacheContent,
-            content: () => writerDocumentToLmdContent(normalizeWriterDocumentForSync(writerDocument)),
+            conversionSourceFormat: 'writer_document',
           }}
         />
       )}
@@ -3403,9 +3429,7 @@ function SlotMarkdownFile({
               mimeType: 'application/json;charset=utf-8',
               cacheKey: lmdCacheKey,
               conversionSource: downloadMarkdownContent,
-              content: () => writerDocumentToLmdContent(
-                writerDocumentFromMarkdown(downloadMarkdownContent, name),
-              ),
+              conversionSourceFormat: 'markdown',
             }}
           />
         )}
@@ -3510,9 +3534,7 @@ function SlotMarkdownFile({
             mimeType: 'application/json;charset=utf-8',
             cacheKey: lmdCacheKey,
             conversionSource: downloadMarkdownContent,
-            content: () => writerDocumentToLmdContent(
-              writerDocumentFromMarkdown(downloadMarkdownContent, name),
-            ),
+            conversionSourceFormat: 'markdown',
           }}
         />
       )}

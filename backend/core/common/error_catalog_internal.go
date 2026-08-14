@@ -479,6 +479,8 @@ func init() {
 		"active draft_document markdown is empty",
 		"active draft_document must be an .lmd or .md artifact",
 		"invalid writer download conversion key", "invalid writer download filename",
+		"invalid writer download conversion request", "invalid writer download source format",
+		"invalid writer download target format", "writer download conversion failed",
 	} {
 		registerAdditionalErrorAlias(source, "Invalid request", http.StatusBadRequest, 2000103)
 	}
@@ -520,6 +522,7 @@ func init() {
 		"query writer download conversion failed", "writer download conversion path is invalid",
 		"open writer download conversion failed", "read writer download conversion failed",
 		"save writer download conversion failed", "index writer download conversion failed",
+		"encode writer download conversion request failed",
 	} {
 		registerAdditionalErrorAlias(source, "Internal server error", http.StatusInternalServerError, 2000000)
 	}
@@ -528,6 +531,7 @@ func init() {
 		"sensitive-word check failed",
 		"workflow artifact action failed",
 		"writer document write-back failed",
+		"writer download conversion service unavailable",
 	} {
 		registerAdditionalErrorAlias(source, "Upstream service error", http.StatusBadGateway, 2000110)
 	}

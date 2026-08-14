@@ -10,13 +10,8 @@ import { axiosInstance } from '@/components/request';
 import { coreApiUrl } from '@/runtime/apiBase';
 import './WriterDownloadFormat.scss';
 
-export {
-  writerDocumentFromMarkdown,
-  writerDocumentToLmdContent,
-  writerDocumentToMarkdown,
-} from './writerMarkdownConversion';
-
 export type WriterDownloadFormat = 'markdown' | 'lmd';
+export type WriterDownloadSourceFormat = WriterDownloadFormat | 'writer_document';
 
 function markdownTitleText(value: string): string {
   return value
@@ -87,6 +82,8 @@ export interface WriterDownloadSource {
   cacheKey?: string;
   /** Canonical source used to persist a derived conversion across page loads. */
   conversionSource?: string;
+  /** Format of conversionSource as understood by the LazyLLM Writer converter. */
+  conversionSourceFormat?: WriterDownloadSourceFormat;
   mimeType?: string;
 }
 
@@ -107,7 +104,7 @@ interface WriterDownloadFormatButtonProps {
 }
 
 const preparedFileCache = new Map<string, Promise<Blob>>();
-const WRITER_DOWNLOAD_CONVERSION_VERSION = 'writer-markdown-conversion-v1';
+const WRITER_DOWNLOAD_CONVERSION_VERSION = 'lazyllm-writer-conversion-v1';
 
 function hashText(value: string): string {
   let hash = 2166136261;
@@ -130,10 +127,15 @@ function sourceCacheKey(source: WriterDownloadSource): string | undefined {
   return undefined;
 }
 
-export async function writerDownloadSourceHash(source: string): Promise<string | undefined> {
+export async function writerDownloadSourceHash(
+  source: string,
+  sourceFormat = '',
+): Promise<string | undefined> {
   const subtle = globalThis.crypto?.subtle;
   if (!subtle) return undefined;
-  const bytes = new TextEncoder().encode(`${WRITER_DOWNLOAD_CONVERSION_VERSION}\0${source}`);
+  const bytes = new TextEncoder().encode(
+    `${WRITER_DOWNLOAD_CONVERSION_VERSION}\0${sourceFormat}\0${source}`,
+  );
   const digest = await subtle.digest('SHA-256', bytes);
   return Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, '0')).join('');
 }
@@ -185,6 +187,29 @@ async function savePersistentConversion(
   }
 }
 
+async function convertWriterDownload(
+  source: WriterDownloadSource,
+  format: WriterDownloadFormat,
+): Promise<Blob> {
+  if (source.conversionSource === undefined || !source.conversionSourceFormat) {
+    throw new Error('download conversion source is incomplete');
+  }
+  const response = await axiosInstance.post<Blob>(
+    coreApiUrl('writer-download-conversions:convert'),
+    {
+      source_format: source.conversionSourceFormat,
+      target_format: format,
+      content: source.conversionSource,
+      document_id: writerFilenameStem(source.filename) || 'writer-document',
+    },
+    {
+      responseType: 'blob',
+      silentError: true,
+    } as never,
+  );
+  return response.data;
+}
+
 export function clearWriterDownloadMemoryCache(): void {
   preparedFileCache.clear();
 }
@@ -202,21 +227,26 @@ export async function prepareWriterDownloadBlob(
   const pending = (async () => {
     const sourceHash = source.conversionSource === undefined
       ? undefined
-      : await writerDownloadSourceHash(source.conversionSource);
+      : await writerDownloadSourceHash(source.conversionSource, source.conversionSourceFormat);
     if (sourceHash) {
       const persisted = await loadPersistentConversion(sourceHash, format);
       if (persisted) return persisted;
     }
 
-    const content = await Promise.resolve(
-      typeof source.content === 'function' ? source.content() : source.content,
-    );
-    if (content === undefined) {
-      throw new Error('download source has no content');
+    let blob: Blob;
+    if (source.conversionSource !== undefined) {
+      blob = await convertWriterDownload(source, format);
+    } else {
+      const content = await Promise.resolve(
+        typeof source.content === 'function' ? source.content() : source.content,
+      );
+      if (content === undefined) {
+        throw new Error('download source has no content');
+      }
+      blob = new Blob([content], {
+        type: source.mimeType ?? 'application/octet-stream',
+      });
     }
-    const blob = new Blob([content], {
-      type: source.mimeType ?? 'application/octet-stream',
-    });
     if (sourceHash) {
       await savePersistentConversion(sourceHash, format, source, blob);
     }

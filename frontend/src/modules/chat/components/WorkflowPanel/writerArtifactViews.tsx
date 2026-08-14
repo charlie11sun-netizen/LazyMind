@@ -3,10 +3,9 @@ import i18n from '@/i18n';
 import { useTranslation } from 'react-i18next';
 import {
   WriterDownloadFormatButton,
-  writerDocumentFromMarkdown,
-  writerDocumentToLmdContent,
   writerDownloadCacheKey,
   writerDownloadFilename,
+  writerMarkdownTitle,
 } from './WriterDownloadFormat';
 
 function tr(key: string, options?: Record<string, unknown>): string {
@@ -738,9 +737,9 @@ function WritingOutputView({ data, hideDownload = false }: { data: unknown; hide
   if (!content) {
     return <div className='writer-artifact__empty'>{tr('chat.writer.noFinalContent')}</div>;
   }
-  const downloadDocument = writerDocumentFromMarkdown(content, 'writing-output');
-  const markdownFilename = writerDownloadFilename(downloadDocument.title, 'md', 'writing_output');
-  const lmdFilename = writerDownloadFilename(downloadDocument.title, 'lmd', 'writing_output');
+  const downloadTitle = writerMarkdownTitle(content);
+  const markdownFilename = writerDownloadFilename(downloadTitle, 'md', 'writing_output');
+  const lmdFilename = writerDownloadFilename(downloadTitle, 'lmd', 'writing_output');
   return (
     <div className='writer-artifact writer-artifact--output'>
       {!hideDownload ? (
@@ -757,7 +756,7 @@ function WritingOutputView({ data, hideDownload = false }: { data: unknown; hide
               mimeType: 'application/json;charset=utf-8',
               cacheKey: writerDownloadCacheKey('writing-output:lmd', content),
               conversionSource: content,
-              content: () => writerDocumentToLmdContent(downloadDocument),
+              conversionSourceFormat: 'markdown',
             }}
           />
         </div>
