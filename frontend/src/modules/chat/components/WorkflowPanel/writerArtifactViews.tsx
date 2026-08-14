@@ -6,6 +6,7 @@ import {
   writerDocumentFromMarkdown,
   writerDocumentToLmdContent,
   writerDownloadCacheKey,
+  writerDownloadFilename,
 } from './WriterDownloadFormat';
 
 function tr(key: string, options?: Record<string, unknown>): string {
@@ -737,25 +738,26 @@ function WritingOutputView({ data, hideDownload = false }: { data: unknown; hide
   if (!content) {
     return <div className='writer-artifact__empty'>{tr('chat.writer.noFinalContent')}</div>;
   }
+  const downloadDocument = writerDocumentFromMarkdown(content, 'writing-output');
+  const markdownFilename = writerDownloadFilename(downloadDocument.title, 'md', 'writing_output');
+  const lmdFilename = writerDownloadFilename(downloadDocument.title, 'lmd', 'writing_output');
   return (
     <div className='writer-artifact writer-artifact--output'>
       {!hideDownload ? (
         <div className='writer-artifact__output-toolbar'>
           <WriterDownloadFormatButton
             markdown={{
-              filename: 'writing_output.md',
+              filename: markdownFilename,
               content,
               mimeType: 'text/markdown;charset=utf-8',
               cacheKey: writerDownloadCacheKey('writing-output:markdown', content),
             }}
             lmd={{
-              filename: 'writing_output.lmd',
+              filename: lmdFilename,
               mimeType: 'application/json;charset=utf-8',
               cacheKey: writerDownloadCacheKey('writing-output:lmd', content),
               conversionSource: content,
-              content: () => writerDocumentToLmdContent(
-                writerDocumentFromMarkdown(content, 'writing-output'),
-              ),
+              content: () => writerDocumentToLmdContent(downloadDocument),
             }}
           />
         </div>

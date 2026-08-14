@@ -18,6 +18,67 @@ export {
 
 export type WriterDownloadFormat = 'markdown' | 'lmd';
 
+function markdownTitleText(value: string): string {
+  return value
+    .replace(/!\[([^\]]*)\]\([^)]*\)/g, '$1')
+    .replace(/\[([^\]]+)\]\([^)]*\)/g, '$1')
+    .replace(/\\([\\`*_[\]{}#+.!|>-])/g, '$1')
+    .replace(/<[^>]+>/g, '')
+    .replace(/[*_~`]/g, '')
+    .trim();
+}
+
+export function writerMarkdownTitle(markdown: string): string {
+  const lines = markdown.replace(/\r\n?/g, '\n').split('\n');
+  let fence: { marker: string; length: number } | null = null;
+  for (let index = 0; index < lines.length; index += 1) {
+    const line = lines[index];
+    const fenceMatch = /^ {0,3}(`{3,}|~{3,})/.exec(line);
+    if (fenceMatch) {
+      const marker = fenceMatch[1][0];
+      if (!fence) fence = { marker, length: fenceMatch[1].length };
+      else if (fence.marker === marker && fenceMatch[1].length >= fence.length) fence = null;
+      continue;
+    }
+    if (fence) continue;
+
+    const atx = /^ {0,3}#(?!#)[ \t]+(.+?)[ \t]*#*[ \t]*$/.exec(line);
+    if (atx) return markdownTitleText(atx[1]);
+    if (
+      line.trim()
+      && index + 1 < lines.length
+      && /^ {0,3}=+[ \t]*$/.test(lines[index + 1])
+    ) {
+      return markdownTitleText(line.trim());
+    }
+  }
+  return '';
+}
+
+function writerFilenameStem(value: string): string {
+  const withoutExtension = value.trim()
+    .replace(/_ir(?=\.(?:lmd|json)$)/i, '')
+    .replace(/\.(?:md|markdown|lmd|json)$/i, '');
+  const sanitized = withoutExtension
+    .normalize('NFC')
+    .replace(/[<>:"/\\|?*\u0000-\u001f]/g, '-')
+    .replace(/\s+/g, ' ')
+    .replace(/-+/g, '-')
+    .replace(/^[ .-]+|[ .-]+$/g, '');
+  const shortened = Array.from(sanitized).slice(0, 120).join('').replace(/[ .]+$/g, '');
+  if (/^(?:con|prn|aux|nul|com[1-9]|lpt[1-9])$/i.test(shortened)) return `_${shortened}`;
+  return shortened;
+}
+
+export function writerDownloadFilename(
+  title: string,
+  extension: 'md' | 'lmd',
+  fallback = 'document',
+): string {
+  const basename = writerFilenameStem(title) || writerFilenameStem(fallback) || 'document';
+  return `${basename}.${extension}`;
+}
+
 export interface WriterDownloadSource {
   filename: string;
   href?: string;

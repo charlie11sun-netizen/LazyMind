@@ -20,7 +20,9 @@ import {
   writerDocumentToLmdContent,
   writerDocumentToMarkdown,
   writerDownloadCacheKey,
+  writerDownloadFilename,
   writerDocumentFromMarkdown,
+  writerMarkdownTitle,
 } from './WriterDownloadFormat';
 import { MarkdownArtifactEditor } from './MarkdownArtifactEditor';
 import {
@@ -2041,17 +2043,12 @@ async function syncWriterDocumentSlot(
   };
 }
 
-function writerMarkdownFilename(name: string): string {
-  const trimmed = name.trim() || 'document';
-  if (trimmed.toLowerCase().endsWith('_ir.lmd')) return `${trimmed.slice(0, -7)}.md`;
-  if (trimmed.toLowerCase().endsWith('_ir.json')) return `${trimmed.slice(0, -8)}.md`;
-  return `${trimmed.replace(/\.(?:lmd|json)$/i, '')}.md`;
+function writerMarkdownFilename(name: string, title = ''): string {
+  return writerDownloadFilename(title, 'md', name);
 }
 
-function writerLmdFilename(name: string): string {
-  const trimmed = name.trim() || 'document';
-  if (trimmed.toLowerCase().endsWith('.lmd')) return trimmed;
-  return `${trimmed.replace(/\.(?:md|markdown|json)$/i, '')}.lmd`;
+function writerLmdFilename(name: string, title = ''): string {
+  return writerDownloadFilename(title, 'lmd', name);
 }
 
 function shouldRenderInlineStructuredContent(
@@ -2724,14 +2721,14 @@ function SlotJsonFile({
           open={downloadFormatOpen}
           onOpenChange={setDownloadFormatOpen}
           markdown={{
-            filename: writerMarkdownFilename(name),
+            filename: writerMarkdownFilename(name, writerDocument.title),
             mimeType: 'text/markdown;charset=utf-8',
             cacheKey: writerDownloadCacheKey('writer-document:markdown', writerDocumentCacheContent),
             conversionSource: writerDocumentCacheContent,
             content: () => writerDocumentToMarkdown(writerDocument),
           }}
           lmd={{
-            filename: writerLmdFilename(name),
+            filename: writerLmdFilename(name, writerDocument.title),
             mimeType: 'application/json;charset=utf-8',
             cacheKey: writerDownloadCacheKey('writer-document:lmd', writerDocumentCacheContent),
             conversionSource: writerDocumentCacheContent,
@@ -3021,14 +3018,14 @@ function SlotInlineStructured({
           open={downloadFormatOpen}
           onOpenChange={setDownloadFormatOpen}
           markdown={{
-            filename: writerMarkdownFilename(slot.caption || resolvedSlotId),
+            filename: writerMarkdownFilename(slot.caption || resolvedSlotId, writerDocument.title),
             mimeType: 'text/markdown;charset=utf-8',
             cacheKey: writerDownloadCacheKey('inline-writer-document:markdown', writerDocumentCacheContent),
             conversionSource: writerDocumentCacheContent,
             content: () => writerDocumentToMarkdown(writerDocument),
           }}
           lmd={{
-            filename: writerLmdFilename(slot.caption || resolvedSlotId),
+            filename: writerLmdFilename(slot.caption || resolvedSlotId, writerDocument.title),
             mimeType: 'application/json;charset=utf-8',
             cacheKey: writerDownloadCacheKey('inline-writer-document:lmd', writerDocumentCacheContent),
             conversionSource: writerDocumentCacheContent,
@@ -3226,13 +3223,19 @@ function SlotMarkdownFile({
     setDownloadFormatOpen(true);
   }, []);
 
-  const markdownFilename = useMemo(
-    () => name.toLowerCase().endsWith('.md') || name.toLowerCase().endsWith('.markdown')
-      ? name
-      : `${name.replace(/\.[^.]+$/, '') || 'writing_output'}.md`,
-    [name],
+  const markdownFilename = useMemo(() => writerMarkdownFilename(name), [name]);
+  const downloadArticleTitle = useMemo(
+    () => writerMarkdownTitle(downloadMarkdownContent),
+    [downloadMarkdownContent],
   );
-  const lmdFilename = useMemo(() => writerLmdFilename(name), [name]);
+  const downloadMarkdownFilename = useMemo(
+    () => writerMarkdownFilename(name, downloadArticleTitle),
+    [downloadArticleTitle, name],
+  );
+  const lmdFilename = useMemo(
+    () => writerLmdFilename(name, downloadArticleTitle),
+    [downloadArticleTitle, name],
+  );
   const markdownCacheKey = useMemo(
     () => writerDownloadCacheKey('markdown-file:markdown', downloadMarkdownContent),
     [downloadMarkdownContent],
@@ -3387,13 +3390,13 @@ function SlotMarkdownFile({
         {!canEditMarkdown && (
           <WriterDownloadFormatButton
             markdown={{
-              filename: markdownFilename,
+              filename: downloadMarkdownFilename,
               content: downloadMarkdownContent,
               mimeType: 'text/markdown;charset=utf-8',
               cacheKey: markdownCacheKey,
             }}
             lmd={canUseOriginalLmd ? {
-              filename: originalName,
+              filename: lmdFilename,
               href: originalUrl!,
             } : {
               filename: lmdFilename,
@@ -3494,13 +3497,13 @@ function SlotMarkdownFile({
           open={downloadFormatOpen}
           onOpenChange={setDownloadFormatOpen}
           markdown={{
-            filename: markdownFilename,
+            filename: downloadMarkdownFilename,
             content: downloadMarkdownContent,
             mimeType: 'text/markdown;charset=utf-8',
             cacheKey: markdownCacheKey,
           }}
           lmd={canUseOriginalLmd ? {
-            filename: originalName,
+            filename: lmdFilename,
             href: originalUrl!,
           } : {
             filename: lmdFilename,
