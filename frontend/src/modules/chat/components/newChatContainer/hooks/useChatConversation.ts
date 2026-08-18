@@ -33,6 +33,7 @@ import {
   buildCitedMessageText,
   MAX_CITE_MESSAGE_COUNT,
 } from "../utils/citeMessage";
+import { withAskAnswersStructured } from "../utils/askAnswers";
 import { getFileUrls } from "../utils/fileInputs";
 import type { ChatContainerProps } from "../types";
 import type { useUserMessageEdit } from "./useUserMessageEdit";
@@ -1212,20 +1213,27 @@ export function useChatConversation({
 
     scroll.isMouseScrollingRef.current = true;
     scroll.scrollToEnd();
-    await openSSE(inputs, ChatConversationsRequestActionEnum.ChatActionNext, {
-      ...(params.run_in_background ? { run_in_background: true } : {}),
-      ...(params.thinking_depth
-        ? { thinking_depth: params.thinking_depth }
-        : {}),
-      ...(params.mentions?.length ? { mentions: params.mentions } : {}),
-      ...(paramsCiteHistoryIds?.length
-        ? {
-            cite_history_ids: paramsCiteHistoryIds.filter(
-              (historyId): historyId is string => Boolean(historyId?.trim()),
-            ),
-          }
-        : {}),
-    });
+    await openSSE(
+      inputs,
+      ChatConversationsRequestActionEnum.ChatActionNext,
+      withAskAnswersStructured(
+        {
+          ...(params.run_in_background ? { run_in_background: true } : {}),
+          ...(params.thinking_depth
+            ? { thinking_depth: params.thinking_depth }
+            : {}),
+          ...(params.mentions?.length ? { mentions: params.mentions } : {}),
+          ...(paramsCiteHistoryIds?.length
+            ? {
+                cite_history_ids: paramsCiteHistoryIds.filter(
+                  (historyId): historyId is string => Boolean(historyId?.trim()),
+                ),
+              }
+            : {}),
+        },
+        params.ask_answers_structured,
+      ),
+    );
 
     const currentId = currentConversationIdRef.current;
     if (currentId) {
