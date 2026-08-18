@@ -30,7 +30,9 @@ value is merely a local path string does not satisfy an output and must be RETRY
 - PASS when draft_document and writing_context_after_draft exist.
 - draft_document must be Markdown, or non-outline WriterDocument IR with ui_editable=true.
 - An outline-stage artifact saved under draft_document is invalid and must be RETRY.
-- For generation/rewrite mode, section_instructions and draft_blocks must exist in the
+- Flat generation must include short_writing_plan and must not require outline_document,
+  section_instructions, or draft_blocks.
+- Sectioned generation/rewrite mode requires section_instructions and draft_blocks in the
   selected representation.
 - IR generation also requires visual_plan and resolved_media_assets. IR generation must
   not create a second Markdown draft artifact.

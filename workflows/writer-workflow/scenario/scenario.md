@@ -48,7 +48,14 @@ provider-confirmed IR as the next artifact revision.
 
 `write_document` owns the single user-visible `draft_document` slot and has three modes.
 
-Generation/rewrite mode:
+Flat short-document generation mode:
+
+1. skip `outline`;
+2. generate one whole-document `short_writing_plan`;
+3. generate the complete Markdown article in one pass;
+4. save an H1 title followed by continuous body text as `draft_document`.
+
+Sectioned generation/rewrite mode:
 
 1. read the latest selected `outline_document`;
 2. regenerate section instructions;
@@ -94,6 +101,7 @@ contains Image WriterBlocks.
 ## Supported paths
 
 - From scratch: `prepare → outline → write_document`
+- Flat short article: `prepare → write_document`
 - Supplied Feishu outline: `prepare → outline → write_document`
 - Existing Feishu document revision: `prepare → write_document`
 - Existing Feishu document full rewrite: `prepare → write_document`

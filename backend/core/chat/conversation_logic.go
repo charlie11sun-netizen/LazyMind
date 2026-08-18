@@ -482,6 +482,46 @@ func buildHistoryMessages(histories []orm.ChatHistory, askAnswersStructured map[
 	return out
 }
 
+func clarifiedUserQuery(
+	histories []orm.ChatHistory,
+	query string,
+	askAnswersStructured map[string]any,
+) string {
+	if askAnswersStructured == nil {
+		return query
+	}
+	askID, _ := askAnswersStructured["ask_id"].(string)
+	for i := len(histories) - 1; i >= 0; i-- {
+		history := histories[i]
+		if len(history.Ext) == 0 {
+			continue
+		}
+		var ext map[string]any
+		if json.Unmarshal(history.Ext, &ext) != nil {
+			continue
+		}
+		pending, _ := ext["ask_pending"].(map[string]any)
+		if pending == nil {
+			continue
+		}
+		if answered, _ := ext["ask_answered"].(bool); answered {
+			continue
+		}
+		pendingID, _ := pending["ask_id"].(string)
+		if askID != "" && pendingID != "" && askID != pendingID {
+			continue
+		}
+		original := strings.TrimSpace(history.RawContent)
+		clarification := strings.TrimSpace(query)
+		if original == "" || original == clarification {
+			return query
+		}
+		return "Original request:\n" + original +
+			"\n\nClarification answer:\n" + clarification
+	}
+	return query
+}
+
 var askUserToolResultPattern = regexp.MustCompile(`(?s)(<tool_result\b[^>]*>)Question sent to user \(ask_id=[^)]+\)\.(</tool_result>)`)
 var toolResultBlockPattern = regexp.MustCompile(`(?s)<tool_result\b[^>]*>.*?</tool_result>`)
 
@@ -977,12 +1017,13 @@ func buildChatRequestBody(ctx context.Context, db *gorm.DB, convID, sessionID, q
 	}
 	currentFilePaths := filePathsForUpstreamChat(raw)
 	filesMap := filesPerTurnMap(histories, currentFilePaths, currentSeq)
+	askAnswersStructured := askAnswersStructuredFromRaw(raw)
 	body := map[string]any{
 		"query":            query,
-		"user_query":       query,
+		"user_query":       clarifiedUserQuery(histories, query, askAnswersStructured),
 		"session_id":       sessionID,
 		"conversation_id":  convID,
-		"history":          buildHistoryMessages(histories, askAnswersStructuredFromRaw(raw)),
+		"history":          buildHistoryMessages(histories, askAnswersStructured),
 		"filters":          raw["filters"],
 		"files":            filesMap,
 		"current_turn_seq": currentSeq,

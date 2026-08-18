@@ -176,7 +176,8 @@ class HostWorkflowToolkit:
         return self._client().get_workflow(workflow_id, revision_id).result
 
     def prepare_workflow(self, workflow_id: str, input_bindings: Optional[Dict[str, Any]] = None,
-                         command_id: str = '', request_context: str = '') -> Dict[str, Any]:
+                         command_id: str = '', request_context: str = '',
+                         workflow_parameters: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         """Prepare a Workflow; in LazyMind create its Session and return Ready steps."""
         self._require_allowed(workflow_id)
         client = self._client()
@@ -185,6 +186,7 @@ class HostWorkflowToolkit:
             fields={
                 **({'origin_ref': self._origin_ref} if self._origin_ref else {}),
                 **({'request_context': request_context} if request_context else {}),
+                **({'workflow_parameters': workflow_parameters} if workflow_parameters else {}),
             } or None).result
         if not self._origin_ref or prepared.get('status') != 'ready':
             return prepared

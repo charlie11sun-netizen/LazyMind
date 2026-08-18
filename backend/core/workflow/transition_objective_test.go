@@ -23,3 +23,12 @@ func TestSessionIntentTextReadsPersistedTriggerContext(t *testing.T) {
 		t.Fatalf("unexpected session intent: %q", got)
 	}
 }
+
+func TestSessionIntentWorkflowParametersReadsPersistedTriggerParameters(t *testing.T) {
+	got := sessionIntentWorkflowParameters(
+		`{"text":"write an article","workflow_parameters":{"structure_mode":"flat"}}`,
+	)
+	if got["structure_mode"] != "flat" {
+		t.Fatalf("unexpected workflow parameters: %#v", got)
+	}
+}

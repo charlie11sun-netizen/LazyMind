@@ -184,6 +184,7 @@ type prepareRequest struct {
 	ConversationID string         `json:"conversation_id"`
 	ControllerHost string         `json:"controller_host"`
 	RequestContext string         `json:"request_context"`
+	WorkflowParams map[string]any `json:"workflow_parameters"`
 }
 
 type toolCommandRequest struct {
@@ -737,8 +738,12 @@ func (h Handler) Consume(w http.ResponseWriter, r *http.Request) {
 			fail(w, http.StatusConflict, code, createErr.Error(), false)
 			return
 		}
-		if strings.TrimSpace(original.RequestContext) != "" {
-			intentJSON, _ := json.Marshal(map[string]string{"text": original.RequestContext})
+		if strings.TrimSpace(original.RequestContext) != "" || len(original.WorkflowParams) > 0 {
+			intent := map[string]any{"text": original.RequestContext}
+			if len(original.WorkflowParams) > 0 {
+				intent["workflow_parameters"] = original.WorkflowParams
+			}
+			intentJSON, _ := json.Marshal(intent)
 			if intentErr := h.Store.UpdateSessionIntent(
 				r.Context(), session.ID, string(intentJSON),
 			); intentErr != nil {

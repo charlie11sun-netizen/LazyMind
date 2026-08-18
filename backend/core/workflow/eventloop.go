@@ -72,6 +72,7 @@ type WorkflowStepParams struct {
 	// Key = conversation turn sequence (string), value = list of absolute file paths.
 	HistoryFilesPerTurn map[string][]string `json:"history_files_per_turn,omitempty"`
 	ParentAgenticConfig map[string]any      `json:"parent_agentic_config,omitempty"`
+	WorkflowParameters  map[string]any      `json:"workflow_parameters,omitempty"`
 
 	// Filters carries retrieval filters (e.g. kb_id) from the chat session into plugin steps.
 	Filters map[string]any `json:"filters,omitempty"`
@@ -133,6 +134,9 @@ func (p WorkflowStepParams) asMap() map[string]any {
 	}
 	if len(p.ParentAgenticConfig) > 0 {
 		m["parent_agentic_config"] = p.ParentAgenticConfig
+	}
+	if len(p.WorkflowParameters) > 0 {
+		m["workflow_parameters"] = p.WorkflowParameters
 	}
 	if len(p.Filters) > 0 {
 		m["filters"] = p.Filters
@@ -531,6 +535,9 @@ func launchWorkflowAttempt(
 		"session_id":    sessionID,
 		"user_input":    params.UserInput,
 		"is_cold_start": isCold,
+	}
+	if len(params.WorkflowParameters) > 0 {
+		rawParamsMap["workflow_parameters"] = params.WorkflowParameters
 	}
 	refOrID := params.WorkflowRef
 	if refOrID == "" {

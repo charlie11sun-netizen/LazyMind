@@ -86,6 +86,7 @@ class WriterCommand(BaseModel):
     source_role: Literal['none', 'outline', 'document']
     target_stage: Literal['prepared', 'outline', 'document']
     next_step: Literal['outline', 'write_document', '__end__']
+    structure_mode: Literal['flat', 'sectioned'] = 'sectioned'
     user_instruction: str
     source_ref: str | None = None
     target_ref: str | None = None
@@ -227,8 +228,13 @@ def writer_resolve_command(
     if target_stage == 'prepared' and action != 'read':
         raise ValueError('target_stage="prepared" requires action="read".')
 
+    structure_mode = (
+        _authoritative_writer_structure_mode() if action == 'create' else 'sectioned'
+    )
     if action == 'read':
         next_step = '__end__'
+    elif action == 'create' and structure_mode == 'flat':
+        next_step = 'write_document'
     elif action == 'rewrite' or (action == 'revise' and source_role == 'document'):
         next_step = 'write_document'
     else:
@@ -239,6 +245,7 @@ def writer_resolve_command(
         source_role=source_role,
         target_stage=target_stage,
         next_step=next_step,
+        structure_mode=structure_mode,
         user_instruction=user_input,
         source_ref=source_ref or None,
         target_ref=target_ref or None,
@@ -333,6 +340,16 @@ def _resolve_prepare_control(
     if _EXPLICIT_OUTLINE_TARGET.search(user_input):
         return operation, 'outline'
     return operation, 'document'
+
+
+def _authoritative_writer_structure_mode() -> Literal['flat', 'sectioned']:
+    """Read the ChatAgent's routing decision without reinterpreting user text."""
+    ctx = require_context()
+    workflow_parameters = (ctx.params or {}).get('workflow_parameters') or {}
+    structure_mode = str(workflow_parameters.get('structure_mode') or 'sectioned')
+    if structure_mode not in {'flat', 'sectioned'}:
+        raise ValueError('workflow_parameters.structure_mode must be flat or sectioned.')
+    return structure_mode
 
 
 def _extract_visual_policy(query: str) -> dict[str, bool]:
@@ -942,6 +959,7 @@ def writer_prepare_workspace(
         'resource_profiles': resource_profiles,
         'writing_context': writing_context,
         'representation': representation,
+        'structure_mode': command.structure_mode,
         'next_step': command.next_step,
         'control': {'next_step': command.next_step},
         'warnings': media_result.get('warnings') or [],
@@ -1291,6 +1309,51 @@ def writer_generate_section_instructions(
         'visual_need_ids': [str(need.get('need_id') or '') for need in visual_needs],
         'warnings': payload.get('warnings') or [],
     }
+
+
+def writer_generate_short_writing_plan(
+    writing_task_path: str,
+    writing_context_path: str,
+) -> str:
+    """Generate and persist one whole-document plan for a flat article."""
+    content = WriterCreateToolkit().generate_short_writing_plan(
+        writing_task_json=_read_json_string(writing_task_path),
+        writing_context_json=_read_json_string(writing_context_path),
+    )
+    return _save_json_artifact(
+        'short_writing_plan',
+        content,
+        writer_schema('planning.ShortWritingPlan'),
+        directory=_run_root('short-writing-plan'),
+    )
+
+
+def writer_generate_short_document(
+    writing_task_path: str,
+    short_writing_plan_path: str,
+    writing_context_path: str,
+) -> str:
+    """Generate and persist one complete flat Markdown article."""
+    events = DraftMarkdownStreamEventEmitter(require_context().emit)
+    try:
+        document = WriterCreateToolkit().stream_short_document(
+            writing_task_json=_read_json_string(writing_task_path),
+            short_writing_plan_json=_read_json_string(short_writing_plan_path),
+            writing_context_json=_read_json_string(writing_context_path),
+            on_delta=events.feed,
+        )
+        path = _save_writer_document(
+            'draft_document',
+            document,
+            expected_stage='draft',
+            editable=True,
+            directory=_run_root('short-document'),
+        )
+    except Exception as exc:
+        events.abort(str(exc))
+        raise
+    events.end()
+    return path
 
 
 def _acquire_generated_image(
@@ -2484,6 +2547,7 @@ def _draft_workspace_completion(
         'status': 'completed',
         'operation': result.get('operation'),
         'representation': result.get('representation'),
+        'structure_mode': result.get('structure_mode'),
         'draft_section_count': len(draft_blocks) if isinstance(draft_blocks, list) else None,
         'saved_artifact_keys': saved_keys,
         'warnings': list(result.get('warnings') or []),
@@ -2558,6 +2622,7 @@ def writer_draft_workspace() -> dict:
     result: dict[str, Any] = dict(state.get('result') or {})
     result['operation'] = operation
     result['writer_command'] = writer_command_path
+    result['structure_mode'] = command.structure_mode
     if state.get('completed'):
         _emit_writer_progress('正在复用已完成的成稿 checkpoint')
         saved_keys = list(state.get('saved_artifact_keys') or [])
@@ -2569,7 +2634,28 @@ def writer_draft_workspace() -> dict:
         return _draft_workspace_completion(result, saved_keys)
 
     resolved_media = str(result.get('resolved_media_assets') or '')
-    if operation in {'generate', 'rewrite'}:
+    if operation == 'generate' and command.structure_mode == 'flat':
+        task = _read_json_file(writing_task_path)
+        representation = str((task.get('output') or {}).get('representation') or '').strip()
+        if representation != 'markdown':
+            raise ValueError('Flat short-document generation requires Markdown representation.')
+        if not result.get('short_writing_plan'):
+            result['short_writing_plan'] = writer_generate_short_writing_plan(
+                writing_task_path=writing_task_path,
+                writing_context_path=writing_context_path,
+            )
+            state['result'] = result
+            _persist_draft_workspace_state(state, checkpoint_path)
+        if not result.get('draft_document'):
+            result['draft_document'] = writer_generate_short_document(
+                writing_task_path=writing_task_path,
+                short_writing_plan_path=result['short_writing_plan'],
+                writing_context_path=writing_context_path,
+            )
+            result['representation'] = 'markdown'
+            state['result'] = result
+            _persist_draft_workspace_state(state, checkpoint_path)
+    elif operation in {'generate', 'rewrite'}:
         if operation == 'generate':
             if not outline_document_path:
                 raise ValueError('outline_document_path is required for generate.')

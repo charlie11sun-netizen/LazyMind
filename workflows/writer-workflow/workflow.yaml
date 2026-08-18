@@ -1,8 +1,8 @@
 id: writer-workflow
 name: AI Writer
 description: >
-  Read source documents and knowledge, create or reuse an outline, draft a
-  structured document, revise either the outline or full text, and produce
+  Read source documents and knowledge, create a flat short article or reuse an
+  outline for a structured document, revise either the outline or full text, and produce
   Markdown or WriterDocument IR according to the selected writing path. Exporting
   an IR draft as Markdown is a separate user-initiated download flow.
 
@@ -27,6 +27,19 @@ when_to_use: >
   likewise preserve every user-supplied source and destination URL verbatim,
   including URLs supplied through ask_user; a content summary never replaces
   its locator.
+  Before triggering a new from-scratch writing request, resolve its presentation
+  structure. A request that explicitly asks for continuous prose or says not to use
+  subheadings uses `structure_mode=flat`. A request that explicitly asks for chapters,
+  sections, or a long structured document uses `structure_mode=sectioned`.
+  If neither presentation is clear and `ask_user` is available, call `ask_user` before
+  triggering this workflow. Ask exactly one question with `type=single` and the choices
+  `连续正文（不使用小标题）` and `分章节展开`, set `allow_other=false`, and do not add a third
+  choice. After the user answers, trigger the workflow with the matching structure_mode;
+  request_context still contains both the original writing request and the clarification
+  answer. If `ask_user` is not available, use `structure_mode=sectioned`. Always use
+  `structure_mode=sectioned` for revisions or supplied outlines. The Writer Workflow
+  consumes this parameter as the routing decision and must not classify the request text
+  again.
 
 tool_scripts:
   - path: scripts/tools.py
@@ -44,6 +57,8 @@ tool_scripts:
       - writer_generate_rewrite_outline
       - writer_generate_rewrite_section_instructions
       - writer_generate_section_instructions
+      - writer_generate_short_writing_plan
+      - writer_generate_short_document
       - writer_resolve_visual_media
       - writer_resolve_revision_media
       - writer_generate_draft_document
@@ -163,6 +178,10 @@ slots:
     label: Section Instructions
     type: file
     cardinality: single
+  - id: short_writing_plan
+    label: Short Writing Plan
+    type: file
+    cardinality: single
   - id: draft_blocks
     label: Draft Blocks
     type: file
@@ -246,5 +265,6 @@ i18n:
       target_document: {label: 云文档目标}
       outline_document: {label: 大纲}
       section_instructions: {label: 章节规划}
+      short_writing_plan: {label: 短文写作计划}
       draft_blocks: {label: 章节草稿}
       draft_document: {label: 成稿}

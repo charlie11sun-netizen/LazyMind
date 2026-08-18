@@ -13,7 +13,8 @@ transitions:
         as an outline to use or revise.
     - to: write_document
       when: >
-        Revise or fully rewrite an existing full document directly. This is the mandatory
+        Generate a new flat article without an outline, or revise or fully rewrite an
+        existing full document directly. This is the mandatory
         route when the user asks to add, delete, replace, or rewrite sections or paragraphs,
         condense the whole document, change its chapter count, or merge or reorder chapters
         in a supplied article, report, or other complete document. References to headings,
@@ -70,10 +71,12 @@ steps:
       The wrapper reads the authoritative user request directly. Pass source_filename only for an
       uploaded .md, .markdown, .txt, or .lmd source, using its basename exactly. Never put
       a Feishu/Lark URL or an uploaded image filename in source_filename. The workspace
-      saves its declared artifacts itself. Do not invent fallback artifacts.
+      saves its declared artifacts itself. It also reads the immutable structure_mode supplied
+      by ChatAgent; do not infer that mode from the request. Do not invent fallback artifacts.
 
       Report representation and the exact `REQUIRED_NEXT_STEP: <next_step>` returned.
-      If source_document is absent, state that processing continues directly to outline.
+      Do not assume that a missing source_document implies outline; flat creation continues
+      directly to write_document according to the returned next_step.
     tools:
       - kb
       - writer_prepare_workspace
@@ -180,9 +183,7 @@ steps:
       - material: writer_command
         required: true
       - material: outline_document
-        required: true
-        alternatives:
-          - material: source_document
+        required: false
       - material: writing_task
         required: true
       - material: media_assets
@@ -199,6 +200,8 @@ steps:
       - material: draft_document
       - material: writing_context_after_draft
       - material: section_instructions
+        required: false
+      - material: short_writing_plan
         required: false
       - material: visual_plan
         required: false
@@ -220,8 +223,9 @@ steps:
         required: false
     acceptance_criteria: |
       draft_document and writing_context_after_draft are present. Markdown output is a
-      `.md` file or an IR document with ui_editable=true. Drafting artifacts are required
-      for generation/rewrite mode; IR generation also requires visual_plan and
+      `.md` file or an IR document with ui_editable=true. Flat generation requires
+      short_writing_plan and no outline, section_instructions, or draft_blocks. Sectioned
+      generation/rewrite requires section_instructions and draft_blocks; IR generation also requires visual_plan and
       resolved_media_assets. A targeted revision requires document_revision_task,
       document_locate_result, document_modify_plan, document_revision_set, and a successful
       document_revision_result. A targeted image-adding revision also requires resolved_media_assets.

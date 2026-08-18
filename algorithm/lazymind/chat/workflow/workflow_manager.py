@@ -10,7 +10,7 @@ import json
 import logging
 import re
 from dataclasses import asdict, dataclass
-from typing import Any, Callable, Dict, List, Optional, Union
+from typing import Any, Callable, Dict, List, Literal, Optional, Union
 
 import httpx
 import lazyllm
@@ -521,7 +521,10 @@ def _workflow_trigger_tools(
         def make_trigger(
             bound_id: str, bound_ref: str, bound_revision: str, bound_query: str,
         ) -> Any:
-            def run_trigger(input_bindings: Optional[Dict[str, str]] = None) -> Dict[str, Any]:
+            def run_trigger(
+                input_bindings: Optional[Dict[str, str]] = None,
+                workflow_parameters: Optional[Dict[str, Any]] = None,
+            ) -> Dict[str, Any]:
                 effective_context = bound_query
                 resolved_bindings: Dict[str, Any] = {}
                 for material_id, attachment_ref in (input_bindings or {}).items():
@@ -543,6 +546,7 @@ def _workflow_trigger_tools(
                 prepared = toolkit.prepare_workflow(
                     bound_id, input_bindings=resolved_bindings,
                     request_context=effective_context,
+                    workflow_parameters=workflow_parameters,
                 )
                 session_id = str(prepared.get('session_id') or '')
                 if not session_id:
@@ -618,7 +622,25 @@ def _workflow_trigger_tools(
                         ),
                     },
                 }
-            if attachments_available:
+            if bound_id == 'writer-workflow' and attachments_available:
+                def bound_trigger(
+                    structure_mode: Literal['flat', 'sectioned'] = 'sectioned',
+                    input_bindings: Optional[Dict[str, str]] = None,
+                ) -> Dict[str, Any]:
+                    """Initialize AI Writer with an explicit presentation structure."""
+                    return run_trigger(
+                        input_bindings,
+                        {'structure_mode': structure_mode},
+                    )
+            elif bound_id == 'writer-workflow':
+                def bound_trigger(
+                    structure_mode: Literal['flat', 'sectioned'] = 'sectioned',
+                ) -> Dict[str, Any]:
+                    """Initialize AI Writer with an explicit presentation structure."""
+                    return run_trigger(
+                        workflow_parameters={'structure_mode': structure_mode},
+                    )
+            elif attachments_available:
                 def bound_trigger(
                     input_bindings: Optional[Dict[str, str]] = None,
                 ) -> Dict[str, Any]:
@@ -641,7 +663,14 @@ def _workflow_trigger_tools(
             ' No user attachments are available; start without input bindings so the '
             'Workflow can generate from text or collect images itself.'
         )
-        trigger_workflow.__doc__ = description + attachment_guidance
+        structure_guidance = (
+            ' Set structure_mode="flat" only for a new article explicitly requested as '
+            'continuous prose without subheadings. Set structure_mode="sectioned" for an '
+            'explicitly sectioned document, all non-creation operations, or the documented '
+            'fallback when clarification is unavailable.'
+            if workflow_id == 'writer-workflow' else ''
+        )
+        trigger_workflow.__doc__ = description + structure_guidance + attachment_guidance
         tools.append(trigger_workflow)
     return tools
 

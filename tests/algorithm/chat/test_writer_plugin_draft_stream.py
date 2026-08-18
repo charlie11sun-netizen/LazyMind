@@ -40,6 +40,154 @@ def test_build_writing_task_extracts_document_length_constraints(query, expected
     assert task.get('constraints', {}) == expected
 
 
+@pytest.mark.parametrize(
+    ('structure_mode', 'expected_step'),
+    [
+        ('flat', 'write_document'),
+        ('sectioned', 'outline'),
+    ],
+)
+def test_writer_command_trusts_explicit_workflow_structure_mode(
+    monkeypatch,
+    tmp_path,
+    structure_mode,
+    expected_step,
+):
+    tools = _load_tools_module()
+    query = '写一篇介绍新能源汽车降价的文章'
+    context = SimpleNamespace(
+        workspace_path=str(tmp_path),
+        params={
+            'step_id': 'prepare',
+            'user_input': query,
+            'workflow_parameters': {'structure_mode': structure_mode},
+        },
+    )
+    monkeypatch.setattr(tools, 'require_context', lambda: context)
+
+    command_path = tools.writer_resolve_command(
+        user_input=query,
+        action='create',
+        source_role='none',
+    )
+    command = tools._load_writer_command(command_path)
+
+    assert command.structure_mode == structure_mode
+    assert command.next_step == expected_step
+
+
+def test_writer_command_does_not_infer_structure_mode_from_keywords(monkeypatch, tmp_path):
+    tools = _load_tools_module()
+    query = '写一篇连续正文，不使用小标题'
+    context = SimpleNamespace(
+        workspace_path=str(tmp_path),
+        params={'step_id': 'prepare', 'user_input': query},
+    )
+    monkeypatch.setattr(tools, 'require_context', lambda: context)
+
+    command_path = tools.writer_resolve_command(
+        user_input=query,
+        action='create',
+        source_role='none',
+    )
+    command = tools._load_writer_command(command_path)
+
+    assert command.structure_mode == 'sectioned'
+    assert command.next_step == 'outline'
+
+
+def test_writer_workflow_requires_ask_user_before_ambiguous_creation():
+    content = (_ROOT / 'workflows' / 'writer-workflow' / 'workflow.yaml').read_text(
+        encoding='utf-8',
+    )
+
+    assert '`type=single`' in content
+    assert '`allow_other=false`' in content
+    assert '`连续正文（不使用小标题）`' in content
+    assert '`分章节展开`' in content
+    assert 'matching structure_mode' in content
+    assert 'must not classify the request text' in content
+
+
+def test_flat_draft_workspace_skips_outline_and_section_generation(monkeypatch, tmp_path):
+    tools = _load_tools_module()
+    query = '写一篇连续正文，不使用小标题'
+    command = tools.WriterCommand(
+        action='create',
+        source_role='none',
+        target_stage='document',
+        next_step='write_document',
+        structure_mode='flat',
+        user_instruction=query,
+        request_fingerprint=tools._writer_request_fingerprint(query),
+    )
+    command_path = tmp_path / 'writer_command.json'
+    command_path.write_text(command.model_dump_json(), encoding='utf-8')
+    task_path = tmp_path / 'writing_task.json'
+    task_path.write_text(json.dumps({
+        'query': query,
+        'task_type': 'write',
+        'output': {'representation': 'markdown'},
+    }), encoding='utf-8')
+    context_path = tmp_path / 'writing_context.json'
+    context_path.write_text('{"context_id":"ctx-flat"}', encoding='utf-8')
+    media_path = tmp_path / 'media_assets.json'
+    media_path.write_text('{"assets":{}}', encoding='utf-8')
+    plan_path = tmp_path / 'short_writing_plan.json'
+    plan_path.write_text('{}', encoding='utf-8')
+    draft_path = tmp_path / 'draft.md'
+    draft_path.write_text('# 标题\n\n正文。\n', encoding='utf-8')
+    updated_context_path = tmp_path / 'writing_context_after_draft.json'
+    updated_context_path.write_text('{"context_id":"ctx-flat"}', encoding='utf-8')
+    context = SimpleNamespace(
+        workspace_path=str(tmp_path),
+        params={
+            'step_id': 'write_document',
+            'user_input': query,
+            'remote_inputs': {
+                'writer_command': str(command_path),
+                'writing_task': str(task_path),
+                'writing_context': str(context_path),
+                'media_assets': str(media_path),
+            },
+        },
+        emit=lambda _event: None,
+    )
+    calls = []
+    monkeypatch.setattr(tools, 'require_context', lambda: context)
+    monkeypatch.setattr(
+        tools,
+        'writer_generate_short_writing_plan',
+        lambda **_kwargs: calls.append('short_plan') or str(plan_path),
+    )
+    monkeypatch.setattr(
+        tools,
+        'writer_generate_short_document',
+        lambda **_kwargs: calls.append('short_document') or str(draft_path),
+    )
+    monkeypatch.setattr(
+        tools,
+        'writer_generate_section_instructions',
+        lambda **_kwargs: (_ for _ in ()).throw(AssertionError('must skip section planning')),
+    )
+    monkeypatch.setattr(
+        tools,
+        'writer_update_writing_context',
+        lambda **_kwargs: str(updated_context_path),
+    )
+    monkeypatch.setattr(
+        tools,
+        '_save_draft_workspace_artifacts',
+        lambda _result: ['short_writing_plan', 'draft_document', 'writing_context_after_draft'],
+    )
+
+    result = tools.writer_draft_workspace()
+
+    assert calls == ['short_plan', 'short_document']
+    assert result['structure_mode'] == 'flat'
+    assert result['draft_section_count'] is None
+
+
 def test_write_document_revision_emits_markdown_draft_stream(monkeypatch, tmp_path):
     tools = _load_tools_module()
     events: list[dict] = []

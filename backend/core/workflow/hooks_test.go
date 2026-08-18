@@ -23,6 +23,9 @@ func TestWorkflowStepParamsExposePinnedScriptTools(t *testing.T) {
 	params := WorkflowStepParams{
 		WorkflowID: "test-workflow", RevisionID: "revision-1", TreeHash: "tree-1",
 		LegacyTools: []string{"create_list_fixtures"},
+		WorkflowParameters: map[string]any{
+			"structure_mode": "flat",
+		},
 	}
 	got := params.asMap()
 	if got["revision_id"] != "revision-1" || got["tree_hash"] != "tree-1" {
@@ -31,6 +34,10 @@ func TestWorkflowStepParamsExposePinnedScriptTools(t *testing.T) {
 	tools, ok := got["legacy_tools"].([]string)
 	if !ok || len(tools) != 1 || tools[0] != "create_list_fixtures" {
 		t.Fatalf("compiled script tools missing: %#v", got)
+	}
+	workflowParameters, ok := got["workflow_parameters"].(map[string]any)
+	if !ok || workflowParameters["structure_mode"] != "flat" {
+		t.Fatalf("workflow parameters missing: %#v", got)
 	}
 }
 

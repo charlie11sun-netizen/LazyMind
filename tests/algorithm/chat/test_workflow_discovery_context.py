@@ -1,12 +1,14 @@
+import inspect
 import json
 
 import lazyllm
-
+from lazyllm.tools.agent import ToolManager
 from lazymind.chat.workflow import workflow_manager
 from lazymind.chat.workflow.workflow_manager import (
     build_workflow_discovery_context,
     resolve_workflow_injection,
 )
+from lazymind.workflow_toolkit import HostWorkflowToolkit
 
 
 def _catalog():
@@ -117,6 +119,69 @@ def test_selected_workflow_expands_trigger_and_execution_tools():
     assert 'resume_workflow' not in tool_names
     assert not any(isinstance(tool, dict) for tool in contribution.tools)
     assert 'Explicit Workflow Selection' in contribution.runtime_context
+
+
+def test_writer_trigger_exposes_structure_mode_parameter():
+    catalog = [{
+        'workflow_ref': 'builtin:writer-workflow',
+        'workflow_id': 'writer-workflow',
+        'name': 'AI Writer',
+        'description': 'Write a complete document.',
+        'when_to_use': 'Resolve presentation structure before triggering.',
+        'revision_id': 'rev-writer',
+    }]
+    contribution = resolve_workflow_injection(
+        None,
+        conversation_id='conversation-1',
+        current_query='写一篇文章',
+        workflow_catalog=catalog,
+        allowed_workflow_refs=['builtin:writer-workflow'],
+        workflow_activations=build_workflow_discovery_context(catalog).activations,
+    )
+    trigger = next(
+        tool for tool in contribution.tools
+        if getattr(tool, '__name__', '') == 'trigger_writer_workflow'
+    )
+
+    parameter = inspect.signature(trigger).parameters['structure_mode']
+    schema = ToolManager([trigger]).tools_description[0]['function']['parameters']
+
+    assert parameter.default == 'sectioned'
+    assert schema['properties']['structure_mode']['enum'] == ['flat', 'sectioned']
+    assert 'structure_mode="flat"' in (trigger.__doc__ or '')
+
+
+def test_workflow_toolkit_passes_workflow_parameters_to_preparation():
+    class Response:
+        def __init__(self):
+            self.result = {'status': 'needs_input'}
+
+    class Client:
+        def __init__(self):
+            self.fields = None
+
+        def prepare_workflow(self, _workflow_id, **kwargs):
+            self.fields = kwargs['fields']
+            return Response()
+
+    client = Client()
+    toolkit = HostWorkflowToolkit(
+        lambda: client,
+        allowed_workflow_ids=['writer-workflow'],
+        origin_ref='conversation-1',
+    )
+
+    toolkit.prepare_workflow(
+        'writer-workflow',
+        request_context='写一篇文章',
+        workflow_parameters={'structure_mode': 'flat'},
+    )
+
+    assert client.fields == {
+        'origin_ref': 'conversation-1',
+        'request_context': '写一篇文章',
+        'workflow_parameters': {'structure_mode': 'flat'},
+    }
 
 
 def test_active_workflow_hides_triggers_and_resume(monkeypatch):

@@ -24,6 +24,7 @@ from lazyllm.tools.writer.data_models import (
     PatchSet,
     SectionInstruction,
     SectionInstructionList,
+    ShortWritingPlan,
     TargetDocument,
     VisualInstruction,
     VisualPlan,
@@ -1006,6 +1007,91 @@ class WriterToolkitBase:
             'visual_plan': visual_plan,
             'warnings': warnings,
         })
+
+    def generate_short_writing_plan(
+        self,
+        writing_task_json: str,
+        writing_context_json: str,
+    ) -> str:
+        """Generate one whole-document plan for a flat short article."""
+        root = _temp_root()
+        task_path = _write_input_artifact(
+            root,
+            'writing_task.json',
+            _json_loads(writing_task_json, {}),
+            writer_schema('task.WritingTask'),
+        )
+        context_path = _write_input_artifact(
+            root,
+            'writing_context.json',
+            _json_loads(writing_context_json, {}),
+            writer_schema('context.WritingContext'),
+        )
+        result = WriterPlanningTools(
+            llm=AutoModel(model='llm'), artifact_store=str(root),
+        ).generate_short_writing_plan(task=task_path, context=context_path)
+        plan = ShortWritingPlan.model_validate(_primary_data(result))
+        return plan.model_dump_json(exclude_defaults=True)
+
+    def stream_short_document(
+        self,
+        writing_task_json: str,
+        short_writing_plan_json: str,
+        writing_context_json: str,
+        on_delta: Callable[[str], None],
+    ) -> str:
+        """Generate one flat Markdown article while exposing preview deltas."""
+        root = _temp_root()
+        task_path = _write_input_artifact(
+            root,
+            'writing_task.json',
+            _json_loads(writing_task_json, {}),
+            writer_schema('task.WritingTask'),
+        )
+        plan_path = _write_input_artifact(
+            root,
+            'short_writing_plan.json',
+            _json_loads(short_writing_plan_json, {}),
+            writer_schema('planning.ShortWritingPlan'),
+        )
+        context_path = _write_input_artifact(
+            root,
+            'writing_context.json',
+            _json_loads(writing_context_json, {}),
+            writer_schema('context.WritingContext'),
+        )
+        drafting = WriterDraftingTools(
+            llm=AutoModel(model='llm'), artifact_store=str(root),
+        )
+        with drafting.stream_short_document(
+            task=task_path,
+            short_writing_plan=plan_path,
+            context=context_path,
+        ) as stream:
+            for delta in stream:
+                try:
+                    on_delta(delta)
+                except Exception as exc:  # noqa: BLE001 - preview forwarding is best effort.
+                    LOG.warning('[Writer] Short document delta callback failed: %s', exc)
+            result = stream.result()
+        document = _primary_data(result)
+        if not isinstance(document, str):
+            raise TypeError('Short document stream returned a non-Markdown artifact.')
+        return document
+
+    def generate_short_document(
+        self,
+        writing_task_json: str,
+        short_writing_plan_json: str,
+        writing_context_json: str,
+    ) -> str:
+        """Generate one flat Markdown article without exposing stream callbacks."""
+        return self.stream_short_document(
+            writing_task_json=writing_task_json,
+            short_writing_plan_json=short_writing_plan_json,
+            writing_context_json=writing_context_json,
+            on_delta=lambda _delta: None,
+        )
 
     def generate_draft_section(
         self,
@@ -2155,7 +2241,7 @@ class WriterToolkitBase:
 
 
 class WriterCreateToolkit(WriterToolkitBase):
-    """Create long-form writing from source profiling through final output.
+    """Create flat or sectioned writing from source profiling through final output.
 
     Start with build_writing_task, profile resources and create context. Build
     the outline before drafting sections, assemble the document, then validate
@@ -2166,7 +2252,8 @@ class WriterCreateToolkit(WriterToolkitBase):
         'build_writing_task', 'build_resources', 'profile_resources',
         'create_writing_context', 'prepare_outline', 'generate_outline',
         'generate_rewrite_outline', 'generate_rewrite_section_instructions',
-        'generate_section_instructions', 'generate_draft_section',
+        'generate_section_instructions', 'generate_short_writing_plan',
+        'generate_short_document', 'generate_draft_section',
         'generate_draft_section_markdown',
         'generate_draft_blocks', 'generate_draft_blocks_markdown',
         'generate_draft_document', 'generate_draft_document_markdown',

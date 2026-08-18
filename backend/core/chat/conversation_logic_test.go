@@ -352,6 +352,35 @@ func TestReplaceAskUserToolResultSupportsJSONCarrier(t *testing.T) {
 	}
 }
 
+func TestBuildChatRequestBodyCombinesOriginalRequestAndAskAnswer(t *testing.T) {
+	histories := []orm.ChatHistory{{
+		RawContent: "写一篇介绍新能源汽车降价的文章",
+		Ext: json.RawMessage(`{
+			"ask_pending":{"ask_id":"ask-1","questions":[]},
+			"ask_answered":false
+		}`),
+	}}
+	body := buildChatRequestBody(
+		context.TODO(), nil, "conv-1", "session-1", "连续正文（不使用小标题）",
+		histories,
+		map[string]any{
+			"ask_answers_structured": map[string]any{
+				"ask_id":    "ask-1",
+				"questions": []any{},
+			},
+		},
+		nil, "", 2,
+	)
+
+	userQuery, _ := body["user_query"].(string)
+	if !strings.Contains(userQuery, "写一篇介绍新能源汽车降价的文章") {
+		t.Fatalf("expected original request in user_query, got %q", userQuery)
+	}
+	if !strings.Contains(userQuery, "连续正文（不使用小标题）") {
+		t.Fatalf("expected clarification answer in user_query, got %q", userQuery)
+	}
+}
+
 func TestBuildChatRequestBodySkipsMemoryAndPreferenceWhenPersonalizationDisabled(t *testing.T) {
 	ctx := &evolution.ChatResourceContext{
 		DisabledTools:      []string{},
