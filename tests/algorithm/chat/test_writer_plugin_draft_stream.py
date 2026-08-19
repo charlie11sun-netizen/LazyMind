@@ -96,17 +96,15 @@ def test_writer_command_does_not_infer_structure_mode_from_keywords(monkeypatch,
     assert command.next_step == 'outline'
 
 
-def test_writer_workflow_requires_ask_user_before_ambiguous_creation():
+def test_writer_workflow_consumes_task_mode_structure_from_host():
     content = (_ROOT / 'workflows' / 'writer-workflow' / 'workflow.yaml').read_text(
         encoding='utf-8',
     )
 
-    assert '`type=single`' in content
-    assert '`allow_other=false`' in content
-    assert '`连续正文（不使用小标题）`' in content
-    assert '`分章节展开`' in content
-    assert 'matching structure_mode' in content
-    assert 'must not classify the request text' in content
+    assert 'In new-task mode, the Host resolves presentation structure' in content
+    assert 'immutable `structure_mode`' in content
+    assert 'Non-task creation keeps the existing' in content
+    assert 'must not classify request text again' in content
 
 
 def test_flat_draft_workspace_skips_outline_and_section_generation(monkeypatch, tmp_path):

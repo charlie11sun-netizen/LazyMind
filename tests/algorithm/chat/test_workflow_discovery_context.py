@@ -121,7 +121,7 @@ def test_selected_workflow_expands_trigger_and_execution_tools():
     assert 'Explicit Workflow Selection' in contribution.runtime_context
 
 
-def test_writer_trigger_exposes_structure_mode_parameter():
+def test_non_task_writer_trigger_keeps_sectioned_flow_without_model_parameter():
     catalog = [{
         'workflow_ref': 'builtin:writer-workflow',
         'workflow_id': 'writer-workflow',
@@ -143,12 +143,48 @@ def test_writer_trigger_exposes_structure_mode_parameter():
         if getattr(tool, '__name__', '') == 'trigger_writer_workflow'
     )
 
-    parameter = inspect.signature(trigger).parameters['structure_mode']
     schema = ToolManager([trigger]).tools_description[0]['function']['parameters']
 
-    assert parameter.default == 'sectioned'
-    assert schema['properties']['structure_mode']['enum'] == ['flat', 'sectioned']
-    assert 'structure_mode="flat"' in (trigger.__doc__ or '')
+    assert 'structure_mode' not in inspect.signature(trigger).parameters
+    assert 'structure_mode' not in schema['properties']
+    assert 'Host-resolved presentation structure' in (trigger.__doc__ or '')
+
+
+def test_task_writer_clarification_hides_trigger_and_requires_ask_user():
+    catalog = [{
+        'workflow_ref': 'builtin:writer-workflow',
+        'workflow_id': 'writer-workflow',
+        'name': 'AI Writer',
+        'description': 'Write a complete document.',
+        'when_to_use': 'Use for writing tasks.',
+        'revision_id': 'rev-writer',
+    }]
+    previous = lazyllm.globals.get('agentic_config')
+    lazyllm.globals['agentic_config'] = {
+        'enable_workflow': True,
+        'task_mode': True,
+        'writer_structure_route': 'clarify',
+    }
+    try:
+        contribution = resolve_workflow_injection(
+            None,
+            conversation_id='conversation-1',
+            current_query='写一篇新能源汽车降价的文章',
+            workflow_catalog=catalog,
+            allowed_workflow_refs=['builtin:writer-workflow'],
+            workflow_activations=build_workflow_discovery_context(catalog).activations,
+        )
+    finally:
+        if previous is None:
+            lazyllm.globals.pop('agentic_config', None)
+        else:
+            lazyllm.globals['agentic_config'] = previous
+
+    tool_names = {getattr(tool, '__name__', '') for tool in contribution.tools}
+    assert 'trigger_writer_workflow' not in tool_names
+    assert 'Call ask_user now' in contribution.runtime_context
+    assert '连续正文（不使用小标题）' in contribution.runtime_context
+    assert '分章节展开' in contribution.runtime_context
 
 
 def test_workflow_toolkit_passes_workflow_parameters_to_preparation():

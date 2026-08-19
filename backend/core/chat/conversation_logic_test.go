@@ -381,6 +381,56 @@ func TestBuildChatRequestBodyCombinesOriginalRequestAndAskAnswer(t *testing.T) {
 	}
 }
 
+func TestBuildChatRequestBodyMarksInitialBackgroundRequestAsTaskMode(t *testing.T) {
+	body := buildChatRequestBody(
+		context.TODO(), nil, "conv-task", "session-task", "写一篇文章", nil,
+		map[string]any{"run_in_background": true}, nil, "user-1", 1,
+	)
+
+	if taskMode, _ := body["task_mode"].(bool); !taskMode {
+		t.Fatalf("expected background request to set task_mode, got %#v", body["task_mode"])
+	}
+	if req := buildLazyChatRequest(body); !req.Runtime.TaskMode {
+		t.Fatal("expected task_mode to reach the upstream ChatRequest")
+	}
+}
+
+func TestBuildChatRequestBodyKeepsTaskModeForAskUserContinuation(t *testing.T) {
+	db := orm.MigrateTestDB(t, &orm.Conversation{})
+	now := time.Now()
+	if err := db.Create(&orm.Conversation{
+		ID:          "conv-task",
+		DisplayName: "writer task",
+		ChannelID:   "default",
+		IsTaskConv:  true,
+		BaseModel: orm.BaseModel{
+			CreateUserID: "user-1",
+			CreatedAt:    now,
+			UpdatedAt:    now,
+		},
+	}).Error; err != nil {
+		t.Fatalf("create task conversation: %v", err)
+	}
+
+	body := buildChatRequestBody(
+		t.Context(), db.DB, "conv-task", "session-task", "连续正文（不使用小标题）",
+		nil, map[string]any{}, nil, "user-1", 2,
+	)
+	if taskMode, _ := body["task_mode"].(bool); !taskMode {
+		t.Fatalf("expected task conversation continuation to keep task_mode, got %#v", body)
+	}
+}
+
+func TestBuildChatRequestBodyDoesNotMarkNormalChatAsTaskMode(t *testing.T) {
+	body := buildChatRequestBody(
+		context.TODO(), nil, "conv-chat", "session-chat", "写一篇文章", nil,
+		map[string]any{}, nil, "user-1", 1,
+	)
+	if _, exists := body["task_mode"]; exists {
+		t.Fatalf("normal chat must not enter task writer routing: %#v", body["task_mode"])
+	}
+}
+
 func TestBuildChatRequestBodySkipsMemoryAndPreferenceWhenPersonalizationDisabled(t *testing.T) {
 	ctx := &evolution.ChatResourceContext{
 		DisabledTools:      []string{},

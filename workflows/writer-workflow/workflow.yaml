@@ -27,19 +27,10 @@ when_to_use: >
   likewise preserve every user-supplied source and destination URL verbatim,
   including URLs supplied through ask_user; a content summary never replaces
   its locator.
-  Before triggering a new from-scratch writing request, resolve its presentation
-  structure. A request that explicitly asks for continuous prose or says not to use
-  subheadings uses `structure_mode=flat`. A request that explicitly asks for chapters,
-  sections, or a long structured document uses `structure_mode=sectioned`.
-  If neither presentation is clear and `ask_user` is available, call `ask_user` before
-  triggering this workflow. Ask exactly one question with `type=single` and the choices
-  `连续正文（不使用小标题）` and `分章节展开`, set `allow_other=false`, and do not add a third
-  choice. After the user answers, trigger the workflow with the matching structure_mode;
-  request_context still contains both the original writing request and the clarification
-  answer. If `ask_user` is not available, use `structure_mode=sectioned`. Always use
-  `structure_mode=sectioned` for revisions or supplied outlines. The Writer Workflow
-  consumes this parameter as the routing decision and must not classify the request text
-  again.
+  In new-task mode, the Host resolves presentation structure before this Workflow can be
+  triggered and supplies an immutable `structure_mode`. The Workflow must consume that
+  value and must not classify request text again. Non-task creation keeps the existing
+  sectioned flow. Revisions and supplied outlines are always sectioned.
 
 tool_scripts:
   - path: scripts/tools.py

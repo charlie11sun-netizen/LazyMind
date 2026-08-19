@@ -1037,6 +1037,17 @@ func buildChatRequestBody(ctx context.Context, db *gorm.DB, convID, sessionID, q
 		"mode":             mode,
 		"intent_context":   loadConversationIntentContext(ctx, db, convID),
 	}
+	taskMode, _ := raw["run_in_background"].(bool)
+	if !taskMode && db != nil && strings.TrimSpace(convID) != "" {
+		var conversation orm.Conversation
+		if err := db.WithContext(ctx).Select("is_task_conv").Where("id = ?", convID).
+			First(&conversation).Error; err == nil {
+			taskMode = conversation.IsTaskConv
+		}
+	}
+	if taskMode {
+		body["task_mode"] = true
+	}
 	requestDisabledTools := stringSliceFromAny(raw["disabled_tools"])
 	if len(requestDisabledTools) > 0 {
 		body["disabled_tools"] = requestDisabledTools

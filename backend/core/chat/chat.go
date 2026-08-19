@@ -107,6 +107,7 @@ type ChatRuntimeOptions struct {
 	ContextPromptExport           bool           `json:"context_prompt_export,omitempty"`
 	ContextPreviewAllowLLMRouting bool           `json:"context_preview_allow_llm_routing,omitempty"`
 	SkipSensitiveFilter           bool           `json:"skip_sensitive_filter,omitempty"`
+	TaskMode                      bool           `json:"task_mode,omitempty"`
 }
 
 type ChatPersonalizationOptions struct {
@@ -463,6 +464,9 @@ func buildLazyChatRequest(body map[string]any) *LazyChatRequest {
 	}
 	if skip, ok := body["skip_sensitive_filter"].(bool); ok {
 		req.Runtime.SkipSensitiveFilter = skip
+	}
+	if taskMode, ok := body["task_mode"].(bool); ok {
+		req.Runtime.TaskMode = taskMode
 	}
 	if llmConfig, ok := body["llm_config"].(map[string]any); ok {
 		req.Runtime.LLMConfig = llmConfig

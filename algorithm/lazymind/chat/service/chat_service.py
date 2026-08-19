@@ -65,6 +65,10 @@ from lazymind.chat.engine.tools.intent_writer import (
     render_intent_section,
 )
 from lazymind.chat.engine.tools.skill_listing import build_list_skills_tool
+from lazymind.chat.engine.prompts.writer_structure import (
+    resolve_writer_structure_route,
+    writer_structure_route_from_ask_answer,
+)
 from lazymind.chat.service.utils import (
     SensitiveFilter,
     SensitiveMatch,
@@ -372,6 +376,24 @@ def _build_ask_user_tool() -> list:
     return [ask_user]
 
 
+def _build_writer_structure_ask_tool() -> list:
+    """Return a fixed two-choice ask_user tool for task-mode writer routing."""
+    from lazymind.chat.engine.tools.ask_user import ask_user as send_ask_user
+
+    def ask_user() -> str:
+        """Ask the required task-mode Writer structure question and end the turn."""
+        return send_ask_user(
+            questions=[{
+                'text': '您希望文章使用哪种结构？',
+                'type': 'single',
+                'choices': ['连续正文（不使用小标题）', '分章节展开'],
+                'allow_other': False,
+            }],
+        )
+
+    return [ask_user]
+
+
 def _should_register_ask_user(
     agentic_config: Dict[str, Any],
     disabled_tools: set[str] | None = None,
@@ -439,6 +461,53 @@ def _resolve_task_profile_with_model(
         classifier=classify,
         enable_llm_fallback=True,
     )
+
+
+def _is_writer_creation_task(task_profile: Any) -> bool:
+    if task_profile is None:
+        return False
+    outcomes = {
+        task_profile.primary_outcome,
+        *(task_profile.secondary_outcomes or ()),
+    }
+    if 'create' not in outcomes:
+        return False
+    return (
+        task_profile.subject_kind == 'document'
+        or task_profile.outcome_subtype in {'text', 'document'}
+        or 'text' in (task_profile.secondary_subtypes or ())
+        or 'document' in (task_profile.secondary_subtypes or ())
+    )
+
+
+def _resolve_writer_structure_with_model(
+    query: str,
+    *,
+    trace_id: str = '',
+    session_id: str = '',
+) -> str:
+    set_trace_context({
+        'trace_id': trace_id,
+        'session_id': session_id or trace_id,
+        'sampled': True,
+    })
+
+    def classify(prompt: str) -> Any:
+        try:
+            router_llm = AutoModel(model='llm')
+            result = router_llm(
+                prompt,
+                response_format={'type': 'json_object'},
+                stream_output=False,
+                timeout=_TASK_PROFILE_ROUTER_TIMEOUT_SECONDS,
+            )
+            LOG.info(f'[ChatServer] [WRITER_STRUCTURE_RAW] result={result!r}')
+            return result
+        except Exception as exc:
+            LOG.warning(f'[ChatServer] [WRITER_STRUCTURE_ERROR] error={exc!r}')
+            raise
+
+    return resolve_writer_structure_route(query, classifier=classify)
 
 
 async def handle_chat(request: ChatRequest) -> Union[Dict[str, Any], StreamingResponse]:
@@ -749,6 +818,44 @@ async def _handle_chat_impl(
             task_profile.router_error,
         )
 
+    writer_structure_route = ''
+    if runtime.task_mode:
+        # The answer comes from the fixed two-choice Ask User card, so it is an
+        # authoritative selection rather than a new request to classify. This
+        # also avoids the generic task profiler treating the short answer as a
+        # direct-answer turn and dropping task-mode Writer routing.
+        selected_structure = writer_structure_route_from_ask_answer(query)
+        if selected_structure is not None:
+            writer_structure_route = selected_structure
+        else:
+            writer_task_profile = task_profile
+            if writer_task_profile is None:
+                writer_task_profile = resolve_task_profile(
+                    language_query,
+                    history=agent_history,
+                    intent=conversation.intent_context,
+                    classifier=None,
+                    enable_llm_fallback=False,
+                    thinking_depth=thinking_depth,
+                    has_attachments=bool(files_map),
+                    explicit_resources=explicit_resource_payload,
+                )
+            if _is_writer_creation_task(writer_task_profile):
+                writer_structure_route = await asyncio.to_thread(
+                    _resolve_writer_structure_with_model,
+                    language_query,
+                    trace_id=(conversation_id or conversation.session_id or '').strip(),
+                    session_id=conversation.session_id,
+                )
+        if writer_structure_route:
+            agentic_config['writer_structure_route'] = writer_structure_route
+            agentic_config['task_mode'] = True
+            LOG.info(
+                f'[ChatServer] [WRITER_STRUCTURE_ROUTE] [sid={conversation.session_id}] '
+                f'route={writer_structure_route} task_mode=true'
+            )
+
+    if task_profile is not None:
         excluded_kb_ids = set(task_profile.excluded_resources.knowledge_base_ids)
         if excluded_kb_ids and agentic_config.get('filters'):
             effective_filters = dict(agentic_config['filters'])
@@ -872,13 +979,25 @@ async def _handle_chat_impl(
     # Auto workflow mode is non-interactive by contract: ask_user must be absent,
     # not merely discouraged by prompt text.
     allow_ask_user = _should_register_ask_user(agentic_config, disabled)
-    ask_user_tools = _build_ask_user_tool() if allow_ask_user else []
+    if writer_structure_route == 'clarify' and 'ask_user' not in disabled:
+        allow_ask_user = True
+    ask_user_tools = (
+        _build_writer_structure_ask_tool()
+        if writer_structure_route == 'clarify' and allow_ask_user
+        else _build_ask_user_tool() if allow_ask_user else []
+    )
     ask_user_configs = [ASK_USER_TOOL_CONFIG] if ask_user_tools else []
     artifact_tools = _build_chat_artifact_tools()
     workspace = chat_agent_workspace(user_id or '0', conversation_id)
     skill_listing_tools = [build_list_skills_tool(agent.available_skills)]
     all_tools = ([intentwriter] + agent_tools + artifact_tools + subagent_tools + attachment_tools
                  + skill_listing_tools + ask_user_tools + workflow_tools + mcp_tools)
+    if writer_structure_route == 'clarify':
+        # Task-mode writer clarification is a hard boundary before Workflow creation.
+        # Keep only ChatAgent-owned clarification tools so execution cannot bypass it.
+        active_configs = []
+        attachment_configs = []
+        all_tools = [intentwriter, *ask_user_tools]
     active_workflow_tool_isolation = bool(
         isinstance(effective_workflow_context, dict)
         and effective_workflow_context.get('session_id')
