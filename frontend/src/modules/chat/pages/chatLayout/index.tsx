@@ -41,6 +41,7 @@ import { useTaskCenterStore } from "@/modules/chat/store/taskCenter";
 import type { SubAgentTask } from "@/modules/chat/store/taskCenter";
 import { useChatInputStore } from "@/modules/chat/store/chatInput";
 import { useChatThinkStore } from "@/modules/chat/store/chatThink";
+import { askAnswersStructuredRequestFields } from "@/modules/chat/components/newChatContainer/utils/askAnswers";
 
 // Stable empty reference to avoid returning a fresh array from the zustand
 // selector on every render, which (with useSyncExternalStore) would trigger an
@@ -485,6 +486,7 @@ const ChatLayout: FC<IChatLayoutProps> = (props) => {
         ...(Array.isArray(extras?.cite_history_ids) && extras.cite_history_ids.length > 0
           ? { cite_history_ids: extras.cite_history_ids }
           : {}),
+        ...askAnswersStructuredRequestFields(extras?.ask_answers_structured),
         // If the user changed workflow settings before a conversation was created,
         // carry them in the first request so Go can persist them on ensureConversation.
         // Only send the three known fields to avoid polluting the payload with API response leftovers.
