@@ -96,6 +96,30 @@ def test_writer_command_does_not_infer_structure_mode_from_keywords(monkeypatch,
     assert command.next_step == 'outline'
 
 
+def test_task_mode_writer_rejects_missing_structure_mode(monkeypatch, tmp_path):
+    tools = _load_tools_module()
+    query = '写一篇介绍新能源汽车降价的文章'
+    context = SimpleNamespace(
+        workspace_path=str(tmp_path),
+        params={
+            'step_id': 'prepare',
+            'user_input': query,
+            'workflow_parameters': {'task_mode': True},
+        },
+    )
+    monkeypatch.setattr(tools, 'require_context', lambda: context)
+
+    with pytest.raises(
+        ValueError,
+        match=r'Task-mode Writer requires workflow_parameters\.structure_mode',
+    ):
+        tools.writer_resolve_command(
+            user_input=query,
+            action='create',
+            source_role='none',
+        )
+
+
 def test_writer_workflow_consumes_task_mode_structure_from_host():
     content = (_ROOT / 'workflows' / 'writer-workflow' / 'workflow.yaml').read_text(
         encoding='utf-8',
@@ -137,6 +161,7 @@ def test_flat_draft_workspace_skips_outline_and_section_generation(monkeypatch, 
     draft_path.write_text('# 标题\n\n正文。\n', encoding='utf-8')
     updated_context_path = tmp_path / 'writing_context_after_draft.json'
     updated_context_path.write_text('{"context_id":"ctx-flat"}', encoding='utf-8')
+    short_document_args = {}
     context = SimpleNamespace(
         workspace_path=str(tmp_path),
         params={
@@ -161,7 +186,11 @@ def test_flat_draft_workspace_skips_outline_and_section_generation(monkeypatch, 
     monkeypatch.setattr(
         tools,
         'writer_generate_short_document',
-        lambda **_kwargs: calls.append('short_document') or str(draft_path),
+        lambda **kwargs: (
+            short_document_args.update(kwargs),
+            calls.append('short_document'),
+            str(draft_path),
+        )[-1],
     )
     monkeypatch.setattr(
         tools,
@@ -184,6 +213,110 @@ def test_flat_draft_workspace_skips_outline_and_section_generation(monkeypatch, 
     assert calls == ['short_plan', 'short_document']
     assert result['structure_mode'] == 'flat'
     assert result['draft_section_count'] is None
+    assert Path(short_document_args['visual_plan_path']).is_file()
+    assert short_document_args['resolved_media_assets_path'] == ''
+
+
+def test_flat_draft_workspace_resolves_planned_visuals(monkeypatch, tmp_path):
+    tools = _load_tools_module()
+    query = '写一篇连续正文，并加入一张说明图片'
+    command = tools.WriterCommand(
+        action='create',
+        source_role='none',
+        target_stage='document',
+        next_step='write_document',
+        structure_mode='flat',
+        user_instruction=query,
+        request_fingerprint=tools._writer_request_fingerprint(query),
+    )
+    command_path = tmp_path / 'writer_command.json'
+    command_path.write_text(command.model_dump_json(), encoding='utf-8')
+    task_path = tmp_path / 'writing_task.json'
+    task_path.write_text(json.dumps({
+        'query': query,
+        'task_type': 'write',
+        'output': {'representation': 'markdown'},
+    }), encoding='utf-8')
+    context_path = tmp_path / 'writing_context.json'
+    context_path.write_text('{"context_id":"ctx-flat-visual"}', encoding='utf-8')
+    media_path = tmp_path / 'media_assets.json'
+    media_path.write_text('{"library_id":"available","assets":{}}', encoding='utf-8')
+    plan_path = tmp_path / 'short_writing_plan.json'
+    plan_path.write_text(json.dumps({
+        'visual_needs': [
+            {
+                'need_id': 'visual-document-1',
+                'content_ref': {'document_root': True},
+                'visual_type': 'image',
+                'purpose': '说明消费者购车决策因素',
+                'required': True,
+            },
+        ],
+    }), encoding='utf-8')
+    resolved_path = tmp_path / 'resolved_media_assets.json'
+    resolved_path.write_text(json.dumps({
+        'library_id': 'resolved',
+        'assets': {},
+        'visual_need_asset_ids': {},
+    }), encoding='utf-8')
+    draft_path = tmp_path / 'draft.md'
+    draft_path.write_text('# 标题\n\n正文。\n', encoding='utf-8')
+    updated_context_path = tmp_path / 'writing_context_after_draft.json'
+    updated_context_path.write_text('{"context_id":"ctx-flat-visual"}', encoding='utf-8')
+    context = SimpleNamespace(
+        workspace_path=str(tmp_path),
+        params={
+            'step_id': 'write_document',
+            'user_input': query,
+            'remote_inputs': {
+                'writer_command': str(command_path),
+                'writing_task': str(task_path),
+                'writing_context': str(context_path),
+                'media_assets': str(media_path),
+            },
+        },
+        emit=lambda _event: None,
+    )
+    calls = []
+    short_document_args = {}
+    monkeypatch.setattr(tools, 'require_context', lambda: context)
+    monkeypatch.setattr(tools, 'writer_generate_short_writing_plan', lambda **_kwargs: str(plan_path))
+    monkeypatch.setattr(
+        tools,
+        'writer_resolve_visual_media',
+        lambda **kwargs: (
+            calls.append(('resolve', kwargs)),
+            {'resolved_media_assets': str(resolved_path), 'warnings': []},
+        )[-1],
+    )
+    monkeypatch.setattr(
+        tools,
+        'writer_generate_short_document',
+        lambda **kwargs: (
+            short_document_args.update(kwargs),
+            calls.append(('draft', kwargs)),
+            str(draft_path),
+        )[-1],
+    )
+    monkeypatch.setattr(tools, 'writer_update_writing_context', lambda **_kwargs: str(updated_context_path))
+    monkeypatch.setattr(
+        tools,
+        '_save_draft_workspace_artifacts',
+        lambda _result: [
+            'short_writing_plan',
+            'visual_plan',
+            'resolved_media_assets',
+            'draft_document',
+            'writing_context_after_draft',
+        ],
+    )
+
+    result = tools.writer_draft_workspace()
+
+    assert [name for name, _kwargs in calls] == ['resolve', 'draft']
+    assert short_document_args['resolved_media_assets_path'] == str(resolved_path)
+    assert Path(short_document_args['visual_plan_path']).is_file()
+    assert result['warnings'] == []
 
 
 def test_write_document_revision_emits_markdown_draft_stream(monkeypatch, tmp_path):
@@ -305,6 +438,86 @@ def test_markdown_media_fill_uses_persistent_uri_and_drops_missing_assets():
     assert '![Unresolved](https://example.com/unmaterialized.png)' in filled
     assert 'media-placeholder://' not in filled
     assert 'media-asset://' not in filled
+
+
+def test_short_visual_plan_reuses_normalized_plan_needs(monkeypatch, tmp_path):
+    tools = _load_tools_module()
+    context = SimpleNamespace(workspace_path=str(tmp_path), params={'step_id': 'write_document'})
+    monkeypatch.setattr(tools, 'require_context', lambda: context)
+    short_plan_path = tmp_path / 'short_writing_plan.json'
+    short_plan_path.write_text(json.dumps({
+        'visual_needs': [
+            {
+                'need_id': 'visual-document-1',
+                'content_ref': {'document_root': True},
+                'visual_type': 'image',
+                'purpose': '展示购车决策因素',
+                'required': False,
+                'meta': {'placement_hint': '分析风险之后'},
+            },
+        ],
+    }), encoding='utf-8')
+
+    result = tools._save_short_visual_plan(str(short_plan_path))
+    visual_plan = tools._read_json_file(result['visual_plan'])
+
+    assert result['visual_need_count'] == 1
+    assert result['visual_need_ids'] == ['visual-document-1']
+    visual = visual_plan['instructions'][0]
+    assert visual['content_ref']['document_root'] is True
+    assert visual['content_ref']['node_id'] is None
+    assert visual['content_ref']['heading_path'] == []
+    assert visual['required'] is False
+
+
+def test_short_document_fills_resolved_visual_placeholder(monkeypatch, tmp_path):
+    tools = _load_tools_module()
+    context = SimpleNamespace(
+        workspace_path=str(tmp_path),
+        params={'step_id': 'write_document'},
+        emit=lambda _event: None,
+    )
+    captured = {}
+
+    class FakeWriterCreateToolkit:
+        def stream_short_document(self, **kwargs):
+            captured.update(kwargs)
+            kwargs['on_delta']('# 标题\n\n正文。\n')
+            return '# 标题\n\n正文。\n\n![购车决策](media-placeholder://visual-document-1)\n'
+
+    monkeypatch.setattr(tools, 'require_context', lambda: context)
+    monkeypatch.setattr(tools, 'WriterCreateToolkit', FakeWriterCreateToolkit)
+    writing_task_path = tmp_path / 'writing_task.json'
+    writing_task_path.write_text('{}', encoding='utf-8')
+    short_plan_path = tmp_path / 'short_writing_plan.json'
+    short_plan_path.write_text('{}', encoding='utf-8')
+    writing_context_path = tmp_path / 'writing_context.json'
+    writing_context_path.write_text('{}', encoding='utf-8')
+    visual_plan_path = tmp_path / 'visual_plan.json'
+    visual_plan_path.write_text('{"instructions": []}', encoding='utf-8')
+    media_assets_path = tmp_path / 'resolved_media_assets.json'
+    media_assets_path.write_text(json.dumps({
+        'assets': {
+            'asset-1': {'uri': 'https://example.com/short-visual.png'},
+        },
+        'visual_need_asset_ids': {
+            'visual-document-1': ['asset-1'],
+        },
+    }), encoding='utf-8')
+
+    document_path = tools.writer_generate_short_document(
+        writing_task_path=str(writing_task_path),
+        short_writing_plan_path=str(short_plan_path),
+        writing_context_path=str(writing_context_path),
+        visual_plan_path=str(visual_plan_path),
+        resolved_media_assets_path=str(media_assets_path),
+    )
+    document = Path(document_path).read_text(encoding='utf-8')
+
+    assert captured['visual_plan_json'] == '{"instructions": []}'
+    assert 'visual-document-1' in captured['media_assets_json']
+    assert '![购车决策](https://example.com/short-visual.png)' in document
+    assert 'media-placeholder://' not in document
 
 
 def test_markdown_revision_fills_resolved_media_placeholder(monkeypatch, tmp_path):

@@ -14,24 +14,28 @@ _STRUCTURE_ANSWERS: dict[str, WriterStructureRoute] = {
     '分章节展开': 'sectioned',
 }
 
-_CLASSIFIER_PROMPT = '''Classify only the presentation structure for a newly requested article.
-Return one compact JSON object and nothing else:
+_CLASSIFIER_PROMPT = '''Classify the Writer presentation structure after ChatAgent has selected
+the Writer Workflow. Return one compact JSON object and nothing else:
 {"structure_mode":"flat|sectioned|clarify"}
 
 Understand the request semantically in any language. Do not classify by fixed keywords or by
 whether one exact phrase is present. Apply these rules in order:
-1. An explicit final presentation requirement has priority over article length and every other
-   signal. If the user explicitly requests chapters, sections, or subheadings, use sectioned, even
+1. A request to use a supplied outline, revise or rewrite an existing document, or otherwise
+   continue an existing Writer artifact uses sectioned. Those established Writer paths are not
+   new short-article creation and must keep their existing behavior.
+2. An explicit presentation requirement has priority over article length and every other signal
+   for a newly created article. If the user explicitly requests chapters, sections, or subheadings,
+   use sectioned, even
    when the requested article is at or below 1200 Chinese characters/words. If the user explicitly
    requests continuous prose or no chapters, sections, or subheadings, use flat, even when the
    requested article is longer than 1200 Chinese characters/words. A request for an outline is a
    planning requirement, not by itself a final presentation requirement: do not use outline alone
    to force sectioned; honor it in the writing plan and continue with the length/presentation rules.
-2. When there is no explicit presentation requirement, use the requested output length as a
+3. When there is no explicit presentation requirement, use the requested output length as a
    supporting signal: at or below 1200 Chinese characters/words -> flat; above 1200 -> sectioned.
    An unquantified request for a short article -> flat; an unquantified request for a long article
    -> sectioned.
-3. When neither presentation nor length is clear, use clarify. Also use clarify when explicit
+4. When neither presentation nor length is clear, use clarify. Also use clarify when explicit
    presentation requirements contradict one another, such as simultaneously requiring and
    forbidding subheadings.
 

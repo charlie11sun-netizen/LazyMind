@@ -463,23 +463,6 @@ def _resolve_task_profile_with_model(
     )
 
 
-def _is_writer_creation_task(task_profile: Any) -> bool:
-    if task_profile is None:
-        return False
-    outcomes = {
-        task_profile.primary_outcome,
-        *(task_profile.secondary_outcomes or ()),
-    }
-    if 'create' not in outcomes:
-        return False
-    return (
-        task_profile.subject_kind == 'document'
-        or task_profile.outcome_subtype in {'text', 'document'}
-        or 'text' in (task_profile.secondary_subtypes or ())
-        or 'document' in (task_profile.secondary_subtypes or ())
-    )
-
-
 def _resolve_writer_structure_with_model(
     query: str,
     *,
@@ -820,36 +803,16 @@ async def _handle_chat_impl(
 
     writer_structure_route = ''
     if runtime.task_mode:
+        agentic_config['task_mode'] = True
         # The answer comes from the fixed two-choice Ask User card, so it is an
         # authoritative selection rather than a new request to classify. This
-        # also avoids the generic task profiler treating the short answer as a
-        # direct-answer turn and dropping task-mode Writer routing.
+        # avoids invoking the classifier again on the short answer. All other
+        # requests are classified lazily only after ChatAgent selects Writer.
         selected_structure = writer_structure_route_from_ask_answer(query)
         if selected_structure is not None:
             writer_structure_route = selected_structure
-        else:
-            writer_task_profile = task_profile
-            if writer_task_profile is None:
-                writer_task_profile = resolve_task_profile(
-                    language_query,
-                    history=agent_history,
-                    intent=conversation.intent_context,
-                    classifier=None,
-                    enable_llm_fallback=False,
-                    thinking_depth=thinking_depth,
-                    has_attachments=bool(files_map),
-                    explicit_resources=explicit_resource_payload,
-                )
-            if _is_writer_creation_task(writer_task_profile):
-                writer_structure_route = await asyncio.to_thread(
-                    _resolve_writer_structure_with_model,
-                    language_query,
-                    trace_id=(conversation_id or conversation.session_id or '').strip(),
-                    session_id=conversation.session_id,
-                )
         if writer_structure_route:
             agentic_config['writer_structure_route'] = writer_structure_route
-            agentic_config['task_mode'] = True
             LOG.info(
                 f'[ChatServer] [WRITER_STRUCTURE_ROUTE] [sid={conversation.session_id}] '
                 f'route={writer_structure_route} task_mode=true'
@@ -902,6 +865,14 @@ async def _handle_chat_impl(
         disabled_builtin_workflows=list(dict.fromkeys(effective_disabled_builtin_workflows)),
         allowed_workflow_refs=effective_allowed_workflow_refs,
         workflow_activations=workflow.activations,
+        writer_structure_resolver=(
+            lambda request: _resolve_writer_structure_with_model(
+                request,
+                trace_id=(conversation_id or conversation.session_id or '').strip(),
+                session_id=conversation.session_id,
+            )
+            if runtime.task_mode else None
+        ),
     )
     workflow_tools = workflow_contribution.tools
     agentic_config.update(workflow_contribution.agentic_config_patch)

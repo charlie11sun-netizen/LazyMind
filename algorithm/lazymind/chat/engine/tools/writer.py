@@ -1015,10 +1015,11 @@ class WriterToolkitBase:
     ) -> str:
         """Generate one whole-document plan for a flat short article."""
         root = _temp_root()
+        writing_task = _json_loads(writing_task_json, {})
         task_path = _write_input_artifact(
             root,
             'writing_task.json',
-            _json_loads(writing_task_json, {}),
+            writing_task,
             writer_schema('task.WritingTask'),
         )
         context_path = _write_input_artifact(
@@ -1031,6 +1032,10 @@ class WriterToolkitBase:
             llm=AutoModel(model='llm'), artifact_store=str(root),
         ).generate_short_writing_plan(task=task_path, context=context_path)
         plan = ShortWritingPlan.model_validate(_primary_data(result))
+        _ensure_required_visual_plan(
+            {'instructions': plan.visual_needs},
+            required=_requires_input_image_reuse(writing_task),
+        )
         return plan.model_dump_json(exclude_defaults=True)
 
     def stream_short_document(
@@ -1039,6 +1044,8 @@ class WriterToolkitBase:
         short_writing_plan_json: str,
         writing_context_json: str,
         on_delta: Callable[[str], None],
+        visual_plan_json: str = '',
+        media_assets_json: str = '',
     ) -> str:
         """Generate one flat Markdown article while exposing preview deltas."""
         root = _temp_root()
@@ -1060,6 +1067,24 @@ class WriterToolkitBase:
             _json_loads(writing_context_json, {}),
             writer_schema('context.WritingContext'),
         )
+        visual_plan_path = (
+            _write_input_artifact(
+                root,
+                'visual_plan.json',
+                _json_loads(visual_plan_json, {}),
+                writer_schema('multimodal.VisualPlan'),
+            )
+            if visual_plan_json.strip() else None
+        )
+        media_assets_path = (
+            _write_input_artifact(
+                root,
+                'media_assets.json',
+                _json_loads(media_assets_json, {}),
+                writer_schema('multimodal.MediaAssetLibrary'),
+            )
+            if media_assets_json.strip() else None
+        )
         drafting = WriterDraftingTools(
             llm=AutoModel(model='llm'), artifact_store=str(root),
         )
@@ -1067,6 +1092,8 @@ class WriterToolkitBase:
             task=task_path,
             short_writing_plan=plan_path,
             context=context_path,
+            visual_plan=visual_plan_path,
+            media_assets=media_assets_path,
         ) as stream:
             for delta in stream:
                 try:
@@ -1084,6 +1111,8 @@ class WriterToolkitBase:
         writing_task_json: str,
         short_writing_plan_json: str,
         writing_context_json: str,
+        visual_plan_json: str = '',
+        media_assets_json: str = '',
     ) -> str:
         """Generate one flat Markdown article without exposing stream callbacks."""
         return self.stream_short_document(
@@ -1091,6 +1120,8 @@ class WriterToolkitBase:
             short_writing_plan_json=short_writing_plan_json,
             writing_context_json=writing_context_json,
             on_delta=lambda _delta: None,
+            visual_plan_json=visual_plan_json,
+            media_assets_json=media_assets_json,
         )
 
     def generate_draft_section(

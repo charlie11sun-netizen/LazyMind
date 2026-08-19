@@ -224,7 +224,8 @@ steps:
     acceptance_criteria: |
       draft_document and writing_context_after_draft are present. Markdown output is a
       `.md` file or an IR document with ui_editable=true. Flat generation requires
-      short_writing_plan and no outline, section_instructions, or draft_blocks. Sectioned
+      short_writing_plan and visual_plan, with resolved_media_assets when that visual plan
+      is non-empty, and no outline, section_instructions, or draft_blocks. Sectioned
       generation/rewrite requires section_instructions and draft_blocks; IR generation also requires visual_plan and
       resolved_media_assets. A targeted revision requires document_revision_task,
       document_locate_result, document_modify_plan, document_revision_set, and a successful

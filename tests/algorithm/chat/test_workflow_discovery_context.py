@@ -1,5 +1,6 @@
 import inspect
 import json
+from types import SimpleNamespace
 
 import lazyllm
 from lazyllm.tools.agent import ToolManager
@@ -185,6 +186,108 @@ def test_task_writer_clarification_hides_trigger_and_requires_ask_user():
     assert 'Call ask_user now' in contribution.runtime_context
     assert '连续正文（不使用小标题）' in contribution.runtime_context
     assert '分章节展开' in contribution.runtime_context
+
+
+def test_task_writer_trigger_resolves_structure_after_writer_selection(monkeypatch):
+    catalog = [{
+        'workflow_ref': 'builtin:writer-workflow',
+        'workflow_id': 'writer-workflow',
+        'name': 'AI Writer',
+        'description': 'Write a complete document.',
+        'when_to_use': 'Use for writing tasks.',
+        'revision_id': 'rev-writer',
+    }]
+    activation = build_workflow_discovery_context(catalog).activations[0]
+    captured = {}
+
+    class Client:
+        def get_workflow(self, _workflow_id, _revision_id):
+            return SimpleNamespace(result={'revision_id': 'rev-writer'})
+
+    class Toolkit:
+        def __init__(self, *_args, **_kwargs):
+            pass
+
+        def prepare_workflow(self, _workflow_id, **kwargs):
+            captured.update(kwargs)
+            return {'status': 'needs_input'}
+
+    seen = []
+
+    def resolve_structure(query):
+        seen.append(query)
+        return 'flat'
+
+    monkeypatch.setattr(workflow_manager, '_conversation_has_attachments', lambda: True)
+    monkeypatch.setattr(workflow_manager, '_client', lambda: Client())
+    monkeypatch.setattr(workflow_manager, 'HostWorkflowToolkit', Toolkit)
+
+    trigger = workflow_manager._workflow_trigger_tools(
+        [activation],
+        {'builtin:writer-workflow'},
+        current_query=(
+            '写一篇1000字的文章，使用我上传的图片，'
+            '只有文章标题和连续正文，不使用小标题。'
+        ),
+        conversation_id='conversation-1',
+        task_mode=True,
+        writer_structure_resolver=resolve_structure,
+    )[0]
+
+    result = trigger()
+
+    assert seen == [
+        '写一篇1000字的文章，使用我上传的图片，'
+        '只有文章标题和连续正文，不使用小标题。'
+    ]
+    assert captured['workflow_parameters'] == {
+        'task_mode': True,
+        'structure_mode': 'flat',
+    }
+    assert result['outcome'] == 'waiting_for_input'
+
+
+def test_task_writer_trigger_requests_ask_user_before_session_creation(monkeypatch):
+    catalog = [{
+        'workflow_ref': 'builtin:writer-workflow',
+        'workflow_id': 'writer-workflow',
+        'name': 'AI Writer',
+        'description': 'Write a complete document.',
+        'when_to_use': 'Use for writing tasks.',
+        'revision_id': 'rev-writer',
+    }]
+    activation = build_workflow_discovery_context(catalog).activations[0]
+    monkeypatch.setattr(workflow_manager, '_conversation_has_attachments', lambda: False)
+    monkeypatch.setattr(
+        workflow_manager,
+        '_client',
+        lambda: (_ for _ in ()).throw(AssertionError('Workflow must not be created')),
+    )
+
+    trigger = workflow_manager._workflow_trigger_tools(
+        [activation],
+        {'builtin:writer-workflow'},
+        current_query='写一篇关于新能源汽车的文章',
+        conversation_id='conversation-1',
+        task_mode=True,
+        writer_structure_resolver=lambda _query: 'clarify',
+    )[0]
+
+    result = trigger()
+
+    assert result['outcome'] == 'writer_structure_clarification_required'
+    assert 'session_id' not in result
+    assert result['next_action'] == {
+        'tool': 'ask_user',
+        'arguments': {
+            'questions': [{
+                'text': '您希望文章使用哪种结构？',
+                'type': 'single',
+                'choices': ['连续正文（不使用小标题）', '分章节展开'],
+                'allow_other': False,
+            }],
+        },
+    }
 
 
 def test_workflow_toolkit_passes_workflow_parameters_to_preparation():

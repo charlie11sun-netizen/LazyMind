@@ -26,6 +26,7 @@ from lazyllm.tools.writer.data_models import (
     PatchSet,
     StringReplaceSet,
     TargetDocument,
+    VisualPlan,
     WriterDocument,
 )
 from lazyllm.tools.writer.numbering import (
@@ -57,7 +58,7 @@ from lazymind.chat.engine.tools.writer import (
 from lazymind.chat.engine.tools.multimodal import image_generator
 from lazymind.model_config import is_model_role_available
 
-WRITER_IMAGE_ACQUISITION_PROMPT = '''Create one professional visual for a long-form document.
+WRITER_IMAGE_ACQUISITION_PROMPT = '''Create one professional visual for a document.
 
 Visual type: {visual_type}
 The visual must communicate: {purpose}
@@ -346,7 +347,10 @@ def _authoritative_writer_structure_mode() -> Literal['flat', 'sectioned']:
     """Read the ChatAgent's routing decision without reinterpreting user text."""
     ctx = require_context()
     workflow_parameters = (ctx.params or {}).get('workflow_parameters') or {}
-    structure_mode = str(workflow_parameters.get('structure_mode') or 'sectioned')
+    structure_mode = str(workflow_parameters.get('structure_mode') or '')
+    if workflow_parameters.get('task_mode') is True and not structure_mode:
+        raise ValueError('Task-mode Writer requires workflow_parameters.structure_mode.')
+    structure_mode = structure_mode or 'sectioned'
     if structure_mode not in {'flat', 'sectioned'}:
         raise ValueError('workflow_parameters.structure_mode must be flat or sectioned.')
     return structure_mode
@@ -1328,10 +1332,30 @@ def writer_generate_short_writing_plan(
     )
 
 
+def _save_short_visual_plan(short_writing_plan_path: str) -> dict:
+    plan = _read_json_file(short_writing_plan_path)
+    visual_plan = VisualPlan.model_validate({
+        'instructions': list(plan.get('visual_needs') or []),
+    }).model_dump()
+    instructions = visual_plan['instructions']
+    return {
+        'visual_plan': _save_json_artifact(
+            'visual_plan',
+            json.dumps(visual_plan, ensure_ascii=False),
+            writer_schema('multimodal.VisualPlan'),
+            directory=_run_root('short-visual-plan'),
+        ),
+        'visual_need_count': len(instructions),
+        'visual_need_ids': [str(need.get('need_id') or '') for need in instructions],
+    }
+
+
 def writer_generate_short_document(
     writing_task_path: str,
     short_writing_plan_path: str,
     writing_context_path: str,
+    visual_plan_path: str = '',
+    resolved_media_assets_path: str = '',
 ) -> str:
     """Generate and persist one complete flat Markdown article."""
     events = DraftMarkdownStreamEventEmitter(require_context().emit)
@@ -1341,7 +1365,21 @@ def writer_generate_short_document(
             short_writing_plan_json=_read_json_string(short_writing_plan_path),
             writing_context_json=_read_json_string(writing_context_path),
             on_delta=events.feed,
+            visual_plan_json=(
+                _read_json_string(visual_plan_path) if visual_plan_path else ''
+            ),
+            media_assets_json=(
+                _read_json_string(resolved_media_assets_path)
+                if resolved_media_assets_path else ''
+            ),
         )
+        if resolved_media_assets_path:
+            document = _fill_markdown_media_placeholders(
+                document,
+                _read_json_file(resolved_media_assets_path),
+            )
+        if 'media-placeholder://' in document:
+            raise ValueError('Short document contains unresolved media placeholders.')
         path = _save_writer_document(
             'draft_document',
             document,
@@ -2646,11 +2684,37 @@ def writer_draft_workspace() -> dict:
             )
             state['result'] = result
             _persist_draft_workspace_state(state, checkpoint_path)
+        if not result.get('visual_plan'):
+            planning = _save_short_visual_plan(result['short_writing_plan'])
+            result.update({
+                'visual_plan': planning['visual_plan'],
+                'visual_need_count': planning['visual_need_count'],
+            })
+            state['result'] = result
+            _persist_draft_workspace_state(state, checkpoint_path)
+        visual_need_count = int(result.get('visual_need_count') or 0)
+        if visual_need_count > 0 and not resolved_media:
+            if not media_assets_path:
+                raise ValueError('media_assets_path is required when the short draft has visual media.')
+            media = writer_resolve_visual_media(
+                visual_plan_path=result['visual_plan'],
+                media_assets_path=media_assets_path,
+            )
+            resolved_media = media['resolved_media_assets']
+            result['resolved_media_assets'] = resolved_media
+            result['warnings'] = [
+                *(result.get('warnings') or []),
+                *(media.get('warnings') or []),
+            ]
+            state['result'] = result
+            _persist_draft_workspace_state(state, checkpoint_path)
         if not result.get('draft_document'):
             result['draft_document'] = writer_generate_short_document(
                 writing_task_path=writing_task_path,
                 short_writing_plan_path=result['short_writing_plan'],
                 writing_context_path=writing_context_path,
+                visual_plan_path=result['visual_plan'],
+                resolved_media_assets_path=resolved_media,
             )
             result['representation'] = 'markdown'
             state['result'] = result

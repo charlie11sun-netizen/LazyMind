@@ -51,9 +51,11 @@ provider-confirmed IR as the next artifact revision.
 Flat short-document generation mode:
 
 1. skip `outline`;
-2. generate one whole-document `short_writing_plan`;
-3. generate the complete Markdown article in one pass;
-4. save an H1 title followed by continuous body text as `draft_document`.
+2. generate one whole-document `short_writing_plan` and derive its document-root `visual_plan`;
+3. resolve any planned visuals with the shared media pipeline;
+4. generate the complete Markdown article in one pass, using controlled media placeholders;
+5. replace resolved placeholders and save an H1 title followed by continuous body text as
+   `draft_document`.
 
 Sectioned generation/rewrite mode:
 
