@@ -11,7 +11,7 @@ def test_writer_structure_route_accepts_model_decision():
         seen['prompt'] = prompt
         return '{"structure_mode":"flat"}'
 
-    assert resolve_writer_structure_route('写一篇文章', classifier=classifier) == 'flat'
+    assert resolve_writer_structure_route('写一篇 800 字文章', classifier=classifier) == 'flat'
     assert 'Never infer article length from topic complexity' in seen['prompt']
 
 
@@ -22,32 +22,17 @@ def test_writer_structure_route_accepts_direct_json_object():
     ) == 'flat'
 
 
-def test_writer_structure_route_resolves_explicit_short_length_without_llm():
-    called = False
+def test_writer_structure_route_prompt_covers_multilingual_semantic_examples():
+    seen = {}
 
-    def classifier(_prompt):
-        nonlocal called
-        called = True
-        return '{"structure_mode":"clarify"}'
+    def classifier(prompt):
+        seen['prompt'] = prompt
+        return '{"structure_mode":"flat"}'
 
-    assert resolve_writer_structure_route(
-        '写一篇面向普通消费者的文章，1000字', classifier=classifier,
-    ) == 'flat'
-    assert called is False
-
-
-def test_writer_structure_route_keeps_long_request_on_classifier_path():
-    called = False
-
-    def classifier(_prompt):
-        nonlocal called
-        called = True
-        return '{"structure_mode":"sectioned"}'
-
-    assert resolve_writer_structure_route(
-        '写一篇2000字的文章', classifier=classifier,
-    ) == 'sectioned'
-    assert called is True
+    assert resolve_writer_structure_route('请写一篇文章', classifier=classifier) == 'flat'
+    assert '写一篇1000字的文章' in seen['prompt']
+    assert '900-word article without subheadings' in seen['prompt']
+    assert '不用分章节' in seen['prompt']
 
 
 def test_writer_structure_route_uses_clarification_decision():
