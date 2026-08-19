@@ -19,15 +19,28 @@ Return one compact JSON object and nothing else:
 {"structure_mode":"flat|sectioned|clarify"}
 
 Understand the request semantically in any language. Do not classify by fixed keywords or by
-whether one exact phrase is present. The following examples illustrate the intended meaning:
-- "写一篇1000字的文章" or "write a 900-word article without subheadings" -> flat.
-- "不用分章节，写成连续正文" or "do not divide it into chapters" -> flat.
-- "写一篇2000字的报告，分章节展开" or "write a long-form report with sections" -> sectioned.
+whether one exact phrase is present. Apply these rules in order:
+1. An explicit presentation requirement has priority over article length and every other signal.
+   If the user explicitly requests chapters, sections, subheadings, or an outline, use sectioned,
+   even when the requested article is at or below 1200 Chinese characters/words. If the user
+   explicitly requests continuous prose or no chapters, sections, or subheadings, use flat, even
+   when the requested article is longer than 1200 Chinese characters/words.
+2. When there is no explicit presentation requirement, use the requested output length as a
+   supporting signal: at or below 1200 Chinese characters/words -> flat; above 1200 -> sectioned.
+   An unquantified request for a short article -> flat; an unquantified request for a long article
+   -> sectioned.
+3. When neither presentation nor length is clear, use clarify. Also use clarify when explicit
+   presentation requirements contradict one another, such as simultaneously requiring and
+   forbidding subheadings.
+
+The following examples illustrate the intended meaning rather than fixed phrases to match:
+- "写一篇1000字的文章" -> flat.
+- "写一篇1000字的文章，要有小标题" -> sectioned.
+- "写一篇2000字的文章，不要小标题，使用连续正文" -> flat.
+- "write a 900-word article with subheadings" -> sectioned.
+- "write a 2000-word report without sections" -> flat.
 - A request with no clear length or presentation structure -> clarify.
-Use flat for an explicitly short article at or below 1200 Chinese characters/words, continuous
-prose, or no subheadings. Use sectioned for an explicitly long article, chapters, sections,
-subheadings, or an outline. Do not treat a mentioned or quoted length as the requested output
-length, and treat conflicting or negated requirements as clarify.
+Do not treat a merely mentioned or quoted length as the requested output length.
 Never infer article length from topic complexity. When the input contains an original request plus
 a clarification answer, honor the clarification.'''
 

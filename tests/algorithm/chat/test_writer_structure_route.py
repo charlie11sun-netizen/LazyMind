@@ -31,8 +31,26 @@ def test_writer_structure_route_prompt_covers_multilingual_semantic_examples():
 
     assert resolve_writer_structure_route('请写一篇文章', classifier=classifier) == 'flat'
     assert '写一篇1000字的文章' in seen['prompt']
-    assert '900-word article without subheadings' in seen['prompt']
-    assert '不用分章节' in seen['prompt']
+    assert '写一篇1000字的文章，要有小标题' in seen['prompt']
+    assert '写一篇2000字的文章，不要小标题' in seen['prompt']
+    assert 'write a 900-word article with subheadings' in seen['prompt']
+    assert 'write a 2000-word report without sections' in seen['prompt']
+
+
+def test_writer_structure_route_prompt_prioritizes_explicit_structure_over_length():
+    seen = {}
+
+    def classifier(prompt):
+        seen['prompt'] = prompt
+        return {'structure_mode': 'sectioned'}
+
+    assert resolve_writer_structure_route(
+        '写一篇1000字的文章，要有小标题', classifier=classifier,
+    ) == 'sectioned'
+    assert 'An explicit presentation requirement has priority over article length' in seen['prompt']
+    assert 'at or below 1200 Chinese characters/words' in seen['prompt']
+    assert 'above 1200 -> sectioned' in seen['prompt']
+    assert 'presentation requirements contradict one another' in seen['prompt']
 
 
 def test_writer_structure_route_uses_clarification_decision():
