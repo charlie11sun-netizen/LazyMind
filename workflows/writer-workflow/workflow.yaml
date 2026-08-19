@@ -27,10 +27,9 @@ when_to_use: >
   likewise preserve every user-supplied source and destination URL verbatim,
   including URLs supplied through ask_user; a content summary never replaces
   its locator.
-  In new-task mode, the Host resolves presentation structure before this Workflow can be
-  triggered and supplies an immutable `structure_mode`. The Workflow must consume that
-  value and must not classify request text again. Non-task creation keeps the existing
-  sectioned flow. Revisions and supplied outlines are always sectioned.
+  In task mode only, when the Host supplies an immutable `structure_mode`, consume that
+  value and do not classify the request text again. Outside task mode, keep the existing
+  Workflow trigger and execution behavior unchanged.
 
 tool_scripts:
   - path: scripts/tools.py

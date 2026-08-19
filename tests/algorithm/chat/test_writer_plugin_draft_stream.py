@@ -101,10 +101,10 @@ def test_writer_workflow_consumes_task_mode_structure_from_host():
         encoding='utf-8',
     )
 
-    assert 'In new-task mode, the Host resolves presentation structure' in content
+    assert 'In task mode only' in content
     assert 'immutable `structure_mode`' in content
-    assert 'Non-task creation keeps the existing' in content
-    assert 'must not classify request text again' in content
+    assert 'Outside task mode, keep the existing' in content
+    assert 'do not classify the request text again' in content
 
 
 def test_flat_draft_workspace_skips_outline_and_section_generation(monkeypatch, tmp_path):

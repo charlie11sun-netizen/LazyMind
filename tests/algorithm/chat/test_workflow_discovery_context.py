@@ -121,7 +121,7 @@ def test_selected_workflow_expands_trigger_and_execution_tools():
     assert 'Explicit Workflow Selection' in contribution.runtime_context
 
 
-def test_non_task_writer_trigger_keeps_sectioned_flow_without_model_parameter():
+def test_non_task_writer_trigger_keeps_existing_tool_contract():
     catalog = [{
         'workflow_ref': 'builtin:writer-workflow',
         'workflow_id': 'writer-workflow',
@@ -147,7 +147,7 @@ def test_non_task_writer_trigger_keeps_sectioned_flow_without_model_parameter():
 
     assert 'structure_mode' not in inspect.signature(trigger).parameters
     assert 'structure_mode' not in schema['properties']
-    assert 'Host-resolved presentation structure' in (trigger.__doc__ or '')
+    assert 'Host has fixed structure_mode' not in (trigger.__doc__ or '')
 
 
 def test_task_writer_clarification_hides_trigger_and_requires_ask_user():
