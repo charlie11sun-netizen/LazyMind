@@ -22,6 +22,16 @@ def test_writer_structure_route_accepts_direct_json_object():
     ) == 'flat'
 
 
+def test_writer_structure_route_uses_final_json_after_reasoning_wrapper():
+    response = (
+        '<think>Intermediate classification: {"structure_mode":"clarify"}</think>'
+        '{"structure_mode":"flat"}'
+    )
+    assert resolve_writer_structure_route(
+        '请写一篇1000字的文章', classifier=lambda _prompt: response,
+    ) == 'flat'
+
+
 def test_writer_structure_route_prompt_covers_multilingual_semantic_examples():
     seen = {}
 

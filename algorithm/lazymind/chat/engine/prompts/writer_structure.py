@@ -56,13 +56,24 @@ def _extract_json(value: Any) -> dict[str, Any]:
     fenced = re.search(r'```(?:json)?\s*([\s\S]*?)```', text, re.I)
     if fenced:
         text = fenced.group(1).strip()
-    start, end = text.find('{'), text.rfind('}')
-    if start < 0 or end <= start:
+
+    # Some reasoning models wrap their answer in <think>...</think> and may
+    # repeat JSON examples or intermediate decisions before the final object.
+    # Parse every valid JSON object and use the last one, rather than slicing
+    # from the first ``{`` to the last ``}``, which makes the whole response
+    # invalid when reasoning contains braces of its own.
+    decoder = json.JSONDecoder()
+    objects: list[dict[str, Any]] = []
+    for match in re.finditer(r'\{', text):
+        try:
+            raw, _ = decoder.raw_decode(text, match.start())
+        except json.JSONDecodeError:
+            continue
+        if isinstance(raw, dict):
+            objects.append(raw)
+    if not objects:
         raise ValueError('writer structure classifier returned no JSON object')
-    raw = json.loads(text[start:end + 1])
-    if not isinstance(raw, dict):
-        raise ValueError('writer structure classifier JSON must be an object')
-    return raw
+    return objects[-1]
 
 
 def resolve_writer_structure_route(
