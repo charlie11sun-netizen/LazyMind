@@ -20,11 +20,13 @@ Return one compact JSON object and nothing else:
 
 Understand the request semantically in any language. Do not classify by fixed keywords or by
 whether one exact phrase is present. Apply these rules in order:
-1. An explicit presentation requirement has priority over article length and every other signal.
-   If the user explicitly requests chapters, sections, subheadings, or an outline, use sectioned,
-   even when the requested article is at or below 1200 Chinese characters/words. If the user
-   explicitly requests continuous prose or no chapters, sections, or subheadings, use flat, even
-   when the requested article is longer than 1200 Chinese characters/words.
+1. An explicit final presentation requirement has priority over article length and every other
+   signal. If the user explicitly requests chapters, sections, or subheadings, use sectioned, even
+   when the requested article is at or below 1200 Chinese characters/words. If the user explicitly
+   requests continuous prose or no chapters, sections, or subheadings, use flat, even when the
+   requested article is longer than 1200 Chinese characters/words. A request for an outline is a
+   planning requirement, not by itself a final presentation requirement: do not use outline alone
+   to force sectioned; honor it in the writing plan and continue with the length/presentation rules.
 2. When there is no explicit presentation requirement, use the requested output length as a
    supporting signal: at or below 1200 Chinese characters/words -> flat; above 1200 -> sectioned.
    An unquantified request for a short article -> flat; an unquantified request for a long article
@@ -36,8 +38,10 @@ whether one exact phrase is present. Apply these rules in order:
 The following examples illustrate the intended meaning rather than fixed phrases to match:
 - "写一篇1000字的文章" -> flat.
 - "写一篇1000字的文章，要有小标题" -> sectioned.
+- "写一篇1000字的文章，先列大纲再写" -> flat (the outline belongs to the plan).
 - "写一篇2000字的文章，不要小标题，使用连续正文" -> flat.
 - "write a 900-word article with subheadings" -> sectioned.
+- "write a 900-word article and provide an outline first" -> flat (the outline belongs to the plan).
 - "write a 2000-word report without sections" -> flat.
 - A request with no clear length or presentation structure -> clarify.
 Do not treat a merely mentioned or quoted length as the requested output length.
