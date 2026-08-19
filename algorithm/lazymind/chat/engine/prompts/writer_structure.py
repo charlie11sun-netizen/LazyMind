@@ -14,6 +14,18 @@ _STRUCTURE_ANSWERS: dict[str, WriterStructureRoute] = {
     '分章节展开': 'sectioned',
 }
 
+_EXPLICIT_LENGTH_RE = re.compile(
+    r'(?P<prefix>不超过|至多|最多|约|大约|大概)?\s*'
+    r'(?P<value>\d+(?:\.\d+)?)\s*(?P<unit>万|千)?\s*字'
+    r'(?P<suffix>左右|上下|以内|以下|以上)?'
+)
+_FLAT_STRUCTURE_RE = re.compile(
+    r'连续正文|不使用(?:任何)?小标题|不使用(?:任何)?分标题|无小标题|不分章节|不要小标题',
+)
+_SECTIONED_STRUCTURE_RE = re.compile(
+    r'分章节|分节展开|使用小标题|添加小标题|章节标题|章节结构|大纲',
+)
+
 
 _CLASSIFIER_PROMPT = '''Classify only the presentation structure for a newly requested article.
 Return one compact JSON object and nothing else:
@@ -43,12 +55,37 @@ def _extract_json(value: Any) -> dict[str, Any]:
     return raw
 
 
+def _deterministic_writer_structure_route(query: str) -> Optional[WriterStructureRoute]:
+    text = str(query or '').strip()
+    flat_requested = bool(_FLAT_STRUCTURE_RE.search(text))
+    sectioned_requested = bool(_SECTIONED_STRUCTURE_RE.search(text))
+    if flat_requested and sectioned_requested:
+        return None
+    if flat_requested:
+        return 'flat'
+    if sectioned_requested:
+        return None
+
+    match = _EXPLICIT_LENGTH_RE.search(text)
+    if match is None:
+        return None
+    suffix = match.group('suffix') or ''
+    if suffix == '以上':
+        return None
+    multiplier = {'万': 10000, '千': 1000}.get(match.group('unit'), 1)
+    target_chars = int(float(match.group('value')) * multiplier)
+    return 'flat' if target_chars <= 1200 else None
+
+
 def resolve_writer_structure_route(
     query: str,
     *,
     classifier: Callable[[str], Any],
 ) -> WriterStructureRoute:
     """Return one authoritative task-mode route; uncertainty always asks the user."""
+    deterministic_route = _deterministic_writer_structure_route(query)
+    if deterministic_route is not None:
+        return deterministic_route
     try:
         raw = _extract_json(classifier(f'{_CLASSIFIER_PROMPT}\n\nCurrent request:\n{query[:4000]}'))
     except Exception:
