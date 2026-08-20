@@ -1032,11 +1032,64 @@ class WriterToolkitBase:
             llm=AutoModel(model='llm'), artifact_store=str(root),
         ).generate_short_writing_plan(task=task_path, context=context_path)
         plan = ShortWritingPlan.model_validate(_primary_data(result))
-        _ensure_required_visual_plan(
-            {'instructions': plan.visual_needs},
-            required=_requires_input_image_reuse(writing_task),
-        )
         return plan.model_dump_json(exclude_defaults=True)
+
+    def generate_short_visual_plan(
+        self,
+        writing_task_json: str,
+        short_writing_plan_json: str,
+        writing_context_json: str,
+    ) -> str:
+        """Generate a strongly typed visual plan for a flat short article."""
+        root = _temp_root()
+        writing_task = _json_loads(writing_task_json, {})
+        require_input_image_reuse = _requires_input_image_reuse(writing_task)
+        task_path = _write_input_artifact(
+            root,
+            'writing_task.json',
+            writing_task,
+            writer_schema('task.WritingTask'),
+        )
+        short_plan_path = _write_input_artifact(
+            root,
+            'short_writing_plan.json',
+            _json_loads(short_writing_plan_json, {}),
+            writer_schema('planning.ShortWritingPlan'),
+        )
+        context_path = _write_input_artifact(
+            root,
+            'writing_context.json',
+            _json_loads(writing_context_json, {}),
+            writer_schema('context.WritingContext'),
+        )
+        planning = WriterPlanningTools(
+            llm=AutoModel(model='llm'), artifact_store=str(root),
+        )
+        warnings = []
+        visual_plan = VisualPlan().model_dump()
+        if not _markdown_media_is_explicitly_disabled(str(writing_task.get('query') or '')):
+            try:
+                visual_result = planning.generate_short_visual_plan(
+                    task=task_path,
+                    short_writing_plan=short_plan_path,
+                    context=context_path,
+                )
+                visual_plan = _primary_data(visual_result)
+                warnings.extend((visual_result.get('metadata') or {}).get('warnings') or [])
+            except Exception as exc:
+                if require_input_image_reuse:
+                    raise RuntimeError(
+                        f'Required visual planning failed: {type(exc).__name__}: {exc}'
+                    ) from exc
+                warnings.append(f'Visual planning failed: {type(exc).__name__}: {exc}')
+        _ensure_required_visual_plan(
+            visual_plan,
+            required=require_input_image_reuse,
+        )
+        return _json_dumps({
+            'visual_plan': visual_plan,
+            'warnings': warnings,
+        })
 
     def stream_short_document(
         self,
@@ -2284,6 +2337,7 @@ class WriterCreateToolkit(WriterToolkitBase):
         'create_writing_context', 'prepare_outline', 'generate_outline',
         'generate_rewrite_outline', 'generate_rewrite_section_instructions',
         'generate_section_instructions', 'generate_short_writing_plan',
+        'generate_short_visual_plan',
         'generate_short_document', 'generate_draft_section',
         'generate_draft_section_markdown',
         'generate_draft_blocks', 'generate_draft_blocks_markdown',

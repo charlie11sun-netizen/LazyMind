@@ -1332,11 +1332,20 @@ def writer_generate_short_writing_plan(
     )
 
 
-def _save_short_visual_plan(short_writing_plan_path: str) -> dict:
-    plan = _read_json_file(short_writing_plan_path)
-    visual_plan = VisualPlan.model_validate({
-        'instructions': list(plan.get('visual_needs') or []),
-    }).model_dump()
+def writer_generate_short_visual_plan(
+    writing_task_path: str,
+    short_writing_plan_path: str,
+    writing_context_path: str,
+) -> dict:
+    """Generate and persist one strongly typed visual plan for a flat article."""
+    payload = _json_loads(WriterCreateToolkit().generate_short_visual_plan(
+        writing_task_json=_read_json_string(writing_task_path),
+        short_writing_plan_json=_read_json_string(short_writing_plan_path),
+        writing_context_json=_read_json_string(writing_context_path),
+    ), {})
+    visual_plan = VisualPlan.model_validate(
+        payload.get('visual_plan') or {'instructions': []},
+    ).model_dump()
     instructions = visual_plan['instructions']
     return {
         'visual_plan': _save_json_artifact(
@@ -1347,6 +1356,7 @@ def _save_short_visual_plan(short_writing_plan_path: str) -> dict:
         ),
         'visual_need_count': len(instructions),
         'visual_need_ids': [str(need.get('need_id') or '') for need in instructions],
+        'warnings': payload.get('warnings') or [],
     }
 
 
@@ -2685,10 +2695,18 @@ def writer_draft_workspace() -> dict:
             state['result'] = result
             _persist_draft_workspace_state(state, checkpoint_path)
         if not result.get('visual_plan'):
-            planning = _save_short_visual_plan(result['short_writing_plan'])
+            planning = writer_generate_short_visual_plan(
+                writing_task_path=writing_task_path,
+                short_writing_plan_path=result['short_writing_plan'],
+                writing_context_path=writing_context_path,
+            )
             result.update({
                 'visual_plan': planning['visual_plan'],
                 'visual_need_count': planning['visual_need_count'],
+                'warnings': [
+                    *(result.get('warnings') or []),
+                    *(planning.get('warnings') or []),
+                ],
             })
             state['result'] = result
             _persist_draft_workspace_state(state, checkpoint_path)
