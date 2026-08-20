@@ -569,6 +569,50 @@ def test_short_document_fills_resolved_visual_placeholder(monkeypatch, tmp_path)
     assert 'media-placeholder://' not in document
 
 
+def test_short_document_persists_ir_artifact(monkeypatch, tmp_path):
+    tools = _load_tools_module()
+    context = SimpleNamespace(
+        workspace_path=str(tmp_path),
+        params={'step_id': 'write_document'},
+        emit=lambda _event: None,
+    )
+
+    class FakeWriterCreateToolkit:
+        def stream_short_document(self, **_kwargs):
+            return {
+                'document_id': 'draft-document-1',
+                'stage': 'draft',
+                'title': '短文标题',
+                'blocks': [{
+                    'node_id': 'paragraph-1',
+                    'type': 'paragraph',
+                    'content': '短文正文。',
+                    'stage': 'draft',
+                }],
+                'ui_editable': True,
+            }
+
+    monkeypatch.setattr(tools, 'require_context', lambda: context)
+    monkeypatch.setattr(tools, 'WriterCreateToolkit', FakeWriterCreateToolkit)
+    writing_task_path = tmp_path / 'writing_task.json'
+    writing_task_path.write_text('{}', encoding='utf-8')
+    short_plan_path = tmp_path / 'short_writing_plan.json'
+    short_plan_path.write_text('{}', encoding='utf-8')
+    writing_context_path = tmp_path / 'writing_context.json'
+    writing_context_path.write_text('{}', encoding='utf-8')
+
+    document_path = tools.writer_generate_short_document(
+        writing_task_path=str(writing_task_path),
+        short_writing_plan_path=str(short_plan_path),
+        writing_context_path=str(writing_context_path),
+    )
+
+    assert Path(document_path).suffix == '.lmd'
+    document = tools._read_json_file(document_path)
+    assert document['title'] == '短文标题'
+    assert document['blocks'][0]['content'] == '短文正文。'
+
+
 def test_markdown_revision_fills_resolved_media_placeholder(monkeypatch, tmp_path):
     tools = _load_tools_module()
     context = SimpleNamespace(

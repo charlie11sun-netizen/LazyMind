@@ -1099,8 +1099,8 @@ class WriterToolkitBase:
         on_delta: Callable[[str], None],
         visual_plan_json: str = '',
         media_assets_json: str = '',
-    ) -> str:
-        """Generate one flat Markdown article while exposing preview deltas."""
+    ) -> str | dict:
+        """Generate one flat short document while exposing Markdown preview deltas."""
         root = _temp_root()
         task_path = _write_input_artifact(
             root,
@@ -1155,8 +1155,8 @@ class WriterToolkitBase:
                     LOG.warning('[Writer] Short document delta callback failed: %s', exc)
             result = stream.result()
         document = _primary_data(result)
-        if not isinstance(document, str):
-            raise TypeError('Short document stream returned a non-Markdown artifact.')
+        if not isinstance(document, (str, dict)):
+            raise TypeError('Short document stream returned an invalid artifact.')
         return document
 
     def generate_short_document(
@@ -1166,8 +1166,8 @@ class WriterToolkitBase:
         writing_context_json: str,
         visual_plan_json: str = '',
         media_assets_json: str = '',
-    ) -> str:
-        """Generate one flat Markdown article without exposing stream callbacks."""
+    ) -> str | dict:
+        """Generate one flat short document without exposing stream callbacks."""
         return self.stream_short_document(
             writing_task_json=writing_task_json,
             short_writing_plan_json=short_writing_plan_json,

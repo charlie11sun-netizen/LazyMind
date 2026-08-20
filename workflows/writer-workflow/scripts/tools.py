@@ -1367,7 +1367,7 @@ def writer_generate_short_document(
     visual_plan_path: str = '',
     resolved_media_assets_path: str = '',
 ) -> str:
-    """Generate and persist one complete flat Markdown article."""
+    """Generate and persist one complete flat short document."""
     events = DraftMarkdownStreamEventEmitter(require_context().emit)
     try:
         document = WriterCreateToolkit().stream_short_document(
@@ -1383,12 +1383,12 @@ def writer_generate_short_document(
                 if resolved_media_assets_path else ''
             ),
         )
-        if resolved_media_assets_path:
+        if resolved_media_assets_path and isinstance(document, str):
             document = _fill_markdown_media_placeholders(
                 document,
                 _read_json_file(resolved_media_assets_path),
             )
-        if 'media-placeholder://' in document:
+        if isinstance(document, str) and 'media-placeholder://' in document:
             raise ValueError('Short document contains unresolved media placeholders.')
         path = _save_writer_document(
             'draft_document',
@@ -2685,8 +2685,8 @@ def writer_draft_workspace() -> dict:
     if operation == 'generate' and command.structure_mode == 'flat':
         task = _read_json_file(writing_task_path)
         representation = str((task.get('output') or {}).get('representation') or '').strip()
-        if representation != 'markdown':
-            raise ValueError('Flat short-document generation requires Markdown representation.')
+        if representation not in {'markdown', 'ir'}:
+            raise ValueError("Flat short-document generation requires 'markdown' or 'ir' representation.")
         if not result.get('short_writing_plan'):
             result['short_writing_plan'] = writer_generate_short_writing_plan(
                 writing_task_path=writing_task_path,
@@ -2734,7 +2734,7 @@ def writer_draft_workspace() -> dict:
                 visual_plan_path=result['visual_plan'],
                 resolved_media_assets_path=resolved_media,
             )
-            result['representation'] = 'markdown'
+            result['representation'] = representation
             state['result'] = result
             _persist_draft_workspace_state(state, checkpoint_path)
     elif operation in {'generate', 'rewrite'}:
