@@ -58,6 +58,8 @@ func TestWriterProviderSelection(t *testing.T) {
 	}{
 		"bound provider":  {json.RawMessage(`{"provider_binding":{"provider":"notion","document_id":"page-1"}}`), "notion"},
 		"target adapter":  {json.RawMessage(`{"adapter":"notion","uri":"https://notion.so/page"}`), "notion"},
+		"GitHub binding":  {json.RawMessage(`{"provider_binding":{"provider":"github","document_id":"README.md"}}`), "github"},
+		"GitHub target":   {json.RawMessage(`{"adapter":"githubwiki","uri":"githubwiki:/acme/docs/Home?ref=main"}`), "github"},
 		"unbound default": {json.RawMessage(`{"document_id":"local"}`), "feishu"},
 	} {
 		t.Run(name, func(t *testing.T) {

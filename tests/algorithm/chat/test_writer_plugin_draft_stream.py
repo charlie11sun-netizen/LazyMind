@@ -601,6 +601,10 @@ def test_draft_workspace_revise_uses_writing_task_representation(
     revision_set = write_json('revision_set.json', {})
     draft_document = write_json('draft_document.json', {})
     context_after_draft = write_json('context_after_draft.json', {})
+    confirmed_target = write_json('confirmed_target.json', {
+        'adapter': 'github',
+        'meta': {'work_branch': 'lazymind/op-1', 'revision': 'commit-2'},
+    })
     remote_inputs = {
         'writer_command': writer_command,
         'writing_task': writing_task,
@@ -635,7 +639,11 @@ def test_draft_workspace_revise_uses_writing_task_representation(
 
     def replace_document(**_kwargs):
         calls.append('replace_document')
-        return {'publish_result': {'success': True}, 'draft_document': draft_document}
+        return {
+            'publish_result': {'success': True},
+            'draft_document': draft_document,
+            'target_document': confirmed_target,
+        }
 
     monkeypatch.setattr(tools, 'require_context', lambda: context)
     monkeypatch.setattr(
@@ -657,3 +665,5 @@ def test_draft_workspace_revise_uses_writing_task_representation(
 
     assert result['status'] == 'completed'
     assert calls == [expected_writer]
+    if representation == 'markdown':
+        assert state['result']['target_document'] == confirmed_target

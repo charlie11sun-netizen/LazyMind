@@ -743,12 +743,13 @@ def _markdown_filename(title: str) -> str:
 def _save_publish_payload(payload: dict, root: Path) -> dict:
     draft_document = payload.get('draft_document') or {}
     publish_result = payload.get('publish_result') or {}
+    target_document = payload.get('target_document') or {}
     if isinstance(publish_result, dict):
         publish_result = {
             **publish_result,
             'success': bool(publish_result.get('success', draft_document)),
         }
-    return {
+    result = {
         'publish_result': _save_json_artifact(
             'publish_result',
             json.dumps(publish_result, ensure_ascii=False),
@@ -770,6 +771,14 @@ def _save_publish_payload(payload: dict, root: Path) -> dict:
         ),
         'published_link': str(payload.get('published_link') or ''),
     }
+    if target_document:
+        result['target_document'] = _save_json_artifact(
+            'target_document',
+            json.dumps(target_document, ensure_ascii=False),
+            writer_schema('task.TargetDocument'),
+            directory=root,
+        )
+    return result
 
 
 def writer_build_writing_task(query: str, representation: str = 'markdown') -> str:
@@ -829,6 +838,7 @@ def writer_load_document(user_input: str, stage: str = 'final') -> dict:
         WriterResourceToolkit().load_document(user_input=user_input, stage=stage),
         {},
     )
+    input_resources = payload.get('input_resources') or []
     return {
         'source_document': _save_writer_document(
             'source_document',
@@ -843,6 +853,13 @@ def writer_load_document(user_input: str, stage: str = 'final') -> dict:
             directory=root,
         ),
         'representation': str(payload.get('representation') or ''),
+        'input_resources': _save_json_artifact(
+            'provider_input_resources',
+            json.dumps(input_resources, ensure_ascii=False),
+            writer_schema('task.InputResource'),
+            directory=root,
+        ) if input_resources else '',
+        'resource_warnings': list(payload.get('resource_warnings') or []),
     }
 
 
@@ -887,6 +904,7 @@ def writer_profile_resources(
 def writer_collect_available_media(
     writing_task_path: str,
     source_document_path: str = '',
+    input_resources_path: str = '',
 ) -> dict:
     """Collect attached and source-document images into the authoritative media library."""
     ctx = require_context()
@@ -907,6 +925,17 @@ def writer_collect_available_media(
         ),
         [],
     )
+    if input_resources_path:
+        provider_resources = _read_json_file(input_resources_path)
+        if isinstance(provider_resources, list):
+            existing_uris = {
+                str(item.get('uri') or '')
+                for item in resources if isinstance(item, dict)
+            }
+            resources.extend(
+                item for item in provider_resources
+                if isinstance(item, dict) and str(item.get('uri') or '') not in existing_uris
+            )
     writing_task_json = _read_json_string(writing_task_path)
     writing_task_value = _json_loads(writing_task_json, {})
     visual_policy = (writing_task_value.get('constraints') or {}).get('visual_policy') or {}
@@ -1093,6 +1122,8 @@ def writer_prepare_workspace(
 
     source_document = ''
     target_document = ''
+    provider_input_resources = ''
+    provider_warnings: list[str] = []
     representation = 'markdown'
     if operation != 'create':
         if source_kind == 'local':
@@ -1111,6 +1142,8 @@ def writer_prepare_workspace(
             source_document = loaded['source_document']
             target_document = loaded['target_document']
             representation = loaded['representation']
+            provider_input_resources = loaded.get('input_resources') or ''
+            provider_warnings = loaded.get('resource_warnings') or []
 
     writing_task = writer_build_writing_task(
         query=user_input,
@@ -1119,6 +1152,7 @@ def writer_prepare_workspace(
     media_result = writer_collect_available_media(
         writing_task_path=writing_task,
         source_document_path=source_document if operation != 'use_outline' else '',
+        input_resources_path=provider_input_resources,
     )
     resource_profiles = writer_profile_resources(
         writing_task_path=writing_task,
@@ -1142,7 +1176,7 @@ def writer_prepare_workspace(
         'structure_mode': command.structure_mode,
         'next_step': command.next_step,
         'control': {'next_step': command.next_step},
-        'warnings': media_result.get('warnings') or [],
+        'warnings': [*provider_warnings, *(media_result.get('warnings') or [])],
     }
     if source_document:
         result['source_document'] = source_document
@@ -2723,6 +2757,8 @@ def _replace_document_and_read_back(
         'persisted_document': persisted,
         'representation': payload.get('representation'),
         'provider': payload.get('provider'),
+        'write_result': write_result,
+        'target_document': payload.get('target_document'),
     }
 
 
@@ -3315,6 +3351,8 @@ def writer_draft_workspace() -> dict:
             )
             result['document_write_result'] = published['publish_result']
             result['draft_document'] = published['draft_document']
+            if published.get('target_document'):
+                result['target_document'] = published['target_document']
             state['result'] = result
             _persist_draft_workspace_state(state, checkpoint_path)
     else:
@@ -3394,6 +3432,8 @@ def writer_draft_workspace() -> dict:
                 )
             result['document_write_result'] = published['publish_result']
             result['draft_document'] = published['draft_document']
+            if published.get('target_document'):
+                result['target_document'] = published['target_document']
             state['result'] = result
             _persist_draft_workspace_state(state, checkpoint_path)
 

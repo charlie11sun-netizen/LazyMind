@@ -252,6 +252,8 @@ steps:
         required: false
     outputs:
       - material: draft_document
+      - material: target_document
+        required: false
       - material: writing_context_after_draft
       - material: section_instructions
         required: false

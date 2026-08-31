@@ -89,11 +89,11 @@ func writerDocumentProvider(values ...json.RawMessage) string {
 		if json.Unmarshal(document, &identity) != nil {
 			continue
 		}
-		provider := strings.ToLower(strings.TrimSpace(identity.ProviderBinding.Provider))
+		provider := canonicalWriterProvider(identity.ProviderBinding.Provider)
 		if provider == "" {
-			provider = strings.ToLower(strings.TrimSpace(identity.Adapter))
+			provider = canonicalWriterProvider(identity.Adapter)
 		}
-		if provider == "feishu" || provider == "notion" {
+		if provider == "feishu" || provider == "notion" || provider == "github" {
 			return provider
 		}
 	}
@@ -593,6 +593,7 @@ func WriteBackWriterDocument(w http.ResponseWriter, r *http.Request) {
 		WorkflowID: session.WorkflowID, RevisionID: session.WorkflowRevisionID,
 		TreeHash: session.WorkflowTreeHash, UserID: userID,
 	}
+	var targetArtifact *selectedWriterArtifact
 	mediaSlot := "resolved_media_assets"
 	if slot == "flat_draft_document" {
 		mediaSlot = "flat_resolved_media_assets"
@@ -600,6 +601,7 @@ func WriteBackWriterDocument(w http.ResponseWriter, r *http.Request) {
 	if activeDraft.Format == "markdown" {
 		target, targetErr := loadSelectedWriterArtifact(ctx, db, sessionID, "target_document")
 		if targetErr == nil {
+			targetArtifact = target
 			syncRequest.TargetDocument, err = writerArtifactData(target.Value, false)
 			if err != nil {
 				common.ReplyErr(w, "invalid target_document: "+err.Error(), http.StatusConflict)
@@ -688,7 +690,7 @@ func WriteBackWriterDocument(w http.ResponseWriter, r *http.Request) {
 	if provider == "" {
 		provider = boundProvider
 	}
-	if provider != "feishu" && provider != "notion" {
+	if provider != "feishu" && provider != "notion" && provider != "github" {
 		common.ReplyErr(w, "unsupported writer document provider", http.StatusBadRequest)
 		return
 	}
@@ -726,8 +728,65 @@ func WriteBackWriterDocument(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	representation := strings.ToLower(strings.TrimSpace(result.Representation))
+	if representation == "" {
+		if activeDraft.Format == "markdown" {
+			representation = "markdown"
+		} else {
+			representation = "ir"
+		}
+	}
+	confirmedProvider := canonicalWriterProvider(result.Provider)
+	if confirmedProvider == "" {
+		confirmedProvider = provider
+	}
+	schema := "lazyllm.tools.writer.data_models.writer_ir.WriterDocument"
+	if representation == "markdown" {
+		schema = "text/markdown"
+	}
+	if representation == "markdown" && targetArtifact != nil && len(result.TargetDocument) > 0 {
+		targetValue, marshalErr := json.Marshal(map[string]any{
+			"schema":         "lazyllm.tools.writer.data_models.task.TargetDocument",
+			"schema_version": "0.1",
+			"data":           result.TargetDocument,
+			"meta": map[string]any{
+				"created_by": "writer-write-back-api",
+				"created_at": time.Now().UTC().Format(time.RFC3339Nano),
+			},
+		})
+		if marshalErr != nil {
+			common.ReplyErr(w, "marshal target_document artifact failed", http.StatusInternalServerError)
+			return
+		}
+		targetRevision, saveErr := workflow.WriteSlotRevisionWithHumanArtifact(
+			ctx, db, sessionID, targetArtifact.Revision.SlotID, targetArtifact.Revision.Slot,
+			targetArtifact.Revision.StepID, targetArtifact.Revision.Attempt, "single", nil,
+			"json", targetValue, nil,
+		)
+		if saveErr != nil {
+			common.ReplyErrWithData(w, "target artifact save failed", map[string]any{
+				"status": "artifact_save_failed", "provider_synced": true,
+				"artifact_saved": false,
+			}, http.StatusInternalServerError)
+			return
+		}
+		if saveErr = db.WithContext(ctx).Model(&orm.WorkflowSlotRevision{}).
+			Where("id = ?", targetRevision.ID).
+			Update("change_source", "provider_sync").Error; saveErr != nil {
+			common.ReplyErrWithData(w, "target artifact state save failed", map[string]any{
+				"status": "artifact_state_save_failed", "provider_synced": true,
+				"artifact_saved": true,
+			}, http.StatusInternalServerError)
+			return
+		}
+		workflow.NotifyWorkflowArtifactUpdated(
+			ctx, db, sessionID, targetRevision.StepID, targetRevision.SlotID,
+			targetRevision.Slot, targetRevision.Revision, targetRevision.ListIndex,
+			"provider_sync",
+		)
+	}
 	artifact, err := json.Marshal(map[string]any{
-		"schema":         "lazyllm.tools.writer.data_models.writer_ir.WriterDocument",
+		"schema":         schema,
 		"schema_version": "0.1",
 		"data":           result.PersistedDocument,
 		"meta": map[string]any{
@@ -735,7 +794,7 @@ func WriteBackWriterDocument(w http.ResponseWriter, r *http.Request) {
 			"created_at": time.Now().UTC().Format(time.RFC3339Nano),
 			"lazymind_provider_sync": map[string]any{
 				"confirmed": true,
-				"provider":  provider,
+				"provider":  confirmedProvider,
 				"source":    "manual",
 			},
 		},
@@ -773,8 +832,11 @@ func WriteBackWriterDocument(w http.ResponseWriter, r *http.Request) {
 	common.ReplyOK(w, map[string]any{
 		"status": "synced", "revision": revision.Revision,
 		"provider_synced": true, "artifact_saved": true,
-		"patch_result": result.PatchResult,
-		"document":     result.PersistedDocument,
+		"patch_result":   result.PatchResult,
+		"document":       result.PersistedDocument,
+		"provider":       confirmedProvider,
+		"representation": representation,
+		"write_result":   result.WriteResult,
 	})
 }
 
@@ -1206,6 +1268,17 @@ func writerArtifactPathAllowed(path string) bool {
 		}
 	}
 	return false
+}
+
+func canonicalWriterProvider(provider string) string {
+	switch strings.ToLower(strings.TrimSpace(provider)) {
+	case "lark", "feishu":
+		return "feishu"
+	case "github", "githubrepo", "githubwiki":
+		return "github"
+	default:
+		return strings.ToLower(strings.TrimSpace(provider))
+	}
 }
 
 func writerSyncReply(

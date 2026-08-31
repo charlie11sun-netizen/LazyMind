@@ -258,9 +258,10 @@ func TestMergeToolConfigKeepsFeishuAndSearchTool(t *testing.T) {
 	}
 }
 
-func TestCloudToolProvidersIncludeGoogleDrive(t *testing.T) {
+func TestCloudToolProvidersIncludeDocumentProviders(t *testing.T) {
 	want := map[string]bool{
 		"feishu":      true,
+		"github":      true,
 		"googledrive": true,
 		"notion":      true,
 	}

@@ -2388,10 +2388,16 @@ class WriterToolkitBase:
         result = WriterResourceTools(
             llm=None, artifact_store=str(root),
         ).load_document(target)
+        artifact_paths = (result.get('metadata') or {}).get('artifact_paths') or {}
         return _json_dumps({
             'source_document': _primary_data(result),
             'target_document': _result_data(result, 'target_document'),
             'representation': result.get('representation'),
+            'input_resources': (
+                _result_data(result, 'input_resources')
+                if artifact_paths.get('input_resources') else []
+            ),
+            'resource_warnings': (result.get('metadata') or {}).get('warnings') or [],
         })
 
     def create_document(self, title: str, parent_uri: str = '', adapter: str = '') -> str:
@@ -2534,6 +2540,7 @@ class WriterToolkitBase:
             meta={**target.meta, 'stage': 'final'},
         ))
         published_value = _primary_data(refreshed)
+        refreshed_target = _result_data(refreshed, 'target_document')
         if refreshed.get('representation') == 'ir':
             persisted = WriterDocument.model_validate(published_value)
             published = (
@@ -2554,6 +2561,7 @@ class WriterToolkitBase:
             'representation': refreshed.get('representation'),
             'provider': str(target.adapter or ''),
             'published_link': _published_link(target),
+            'target_document': refreshed_target,
         })
 
 
