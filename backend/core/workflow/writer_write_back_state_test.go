@@ -55,19 +55,23 @@ func TestEnrichWriterWriteBackSlots_UsesSourceAndLatestSync(t *testing.T) {
 	}
 }
 
-func TestEnrichWriterWriteBackSlots_MarkdownInitialDelivery(t *testing.T) {
+func TestEnrichWriterWriteBackSlots_GitHubMarkdownInitialDelivery(t *testing.T) {
 	db := newTestDB(t)
 	root := t.TempDir()
 	t.Setenv("LAZYMIND_SUBAGENT_WORKSPACE", root)
 	draftPath := filepath.Join(root, "draft_document.md")
-	mustWriteWriterArtifact(t, draftPath, "# Ready for Feishu\n")
+	targetPath := filepath.Join(root, "target_document.json")
+	mustWriteWriterArtifact(t, draftPath, "# Ready for GitHub\n")
+	mustWriteWriterArtifact(t, targetPath, `{"data":{"doc_id":"acme/docs:main:README.md","adapter":"github","uri":"githubrepo:/acme/docs/README.md?ref=main","meta":{"browser_url":"https://github.com/acme/docs/blob/main/README.md"}}}`)
 	draft := writerRevision("draft", "session", "draft_document", 1, "ai", writerPathValue(draftPath))
+	target := writerRevision("target", "session", "target_document", 1, "ai", writerPathValue(targetPath))
 	mustCreateWriterRecord(t, db.DB.Create(&draft).Error)
+	mustCreateWriterRecord(t, db.DB.Create(&target).Error)
 
-	slots := []slotDTO{toSlotDTO(&draft)}
+	slots := []slotDTO{toSlotDTO(&target), toSlotDTO(&draft)}
 	enrichSlots(context.Background(), db.DB, "session", slots)
-	got := slots[0]
-	if !got.WriteBackReady || !got.WriteBackDirty || got.WriteBackState != writerWriteBackInitialDelivery || got.ProviderDocumentID != "" {
+	got := slots[1]
+	if !got.WriteBackReady || !got.WriteBackDirty || got.WriteBackState != writerWriteBackInitialDelivery || got.Provider != "github" || got.ProviderDocumentID != "acme/docs:main:README.md" || got.WriteBackURL != "https://github.com/acme/docs/blob/main/README.md" {
 		t.Fatalf("unexpected initial delivery state: %+v", got)
 	}
 }

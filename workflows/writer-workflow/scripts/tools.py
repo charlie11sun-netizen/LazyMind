@@ -3461,7 +3461,7 @@ def writer_draft_workspace() -> dict:
             state['result'] = result
             _persist_draft_workspace_state(state, checkpoint_path)
 
-        should_write_back = bool(target_document_path) and (
+        should_write_back = representation == 'ir' and bool(target_document_path) and (
             operation == 'rewrite' or not draft_document_path
         )
         if should_write_back and not result.get('document_write_result'):
@@ -3538,21 +3538,13 @@ def writer_draft_workspace() -> dict:
             result['draft_document'] = applied['draft_document']
             state['result'] = result
             _persist_draft_workspace_state(state, checkpoint_path)
-        if not draft_document_path and target_document_path \
+        if representation == 'ir' and not draft_document_path and target_document_path \
                 and not result.get('document_write_result'):
-            if representation == 'ir':
-                published = writer_publish_revision(
-                    source_document_path=source_document_path,
-                    revision_set_path=result['document_revision_set'],
-                    media_assets_path=resolved_media or media_assets_path,
-                )
-            else:
-                published = writer_replace_document(
-                    content_path=result['draft_document'],
-                    source_document_path=source_document_path,
-                    target_document_path=target_document_path,
-                    media_assets_path=resolved_media or media_assets_path,
-                )
+            published = writer_publish_revision(
+                source_document_path=source_document_path,
+                revision_set_path=result['document_revision_set'],
+                media_assets_path=resolved_media or media_assets_path,
+            )
             result['document_write_result'] = published['publish_result']
             result['draft_document'] = published['draft_document']
             if published.get('target_document'):
