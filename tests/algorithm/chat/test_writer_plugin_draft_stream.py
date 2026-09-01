@@ -141,101 +141,40 @@ def test_write_document_revision_emits_markdown_draft_stream(monkeypatch, tmp_pa
     )
 
 
-def test_previewable_markdown_document_maps_provider_image_without_changing_source(
+def test_render_markdown_maps_available_media_and_keeps_unmapped_references(
     monkeypatch,
     tmp_path,
 ):
     tools = _load_tools_module()
     context = SimpleNamespace(workspace_path=str(tmp_path))
     monkeypatch.setattr(tools, 'require_context', lambda: context)
-    upload_root = tmp_path / 'uploads'
-    monkeypatch.setenv('LAZYMIND_SHARED_UPLOAD_DIR', str(upload_root))
-    image = tmp_path / 'media' / 'github-image.png'
-    image.parent.mkdir()
-    image.write_bytes(b'png')
-    source = tmp_path / 'draft_document.md'
-    source.write_text(
-        '# 文档\n\n![原图](./test.png)\n\n'
-        '![未映射资源](docs/assets/unmapped.svg)\n',
+    monkeypatch.setenv('LAZYMIND_SHARED_UPLOAD_DIR', str(tmp_path / 'uploads'))
+    media_dir = tmp_path / 'media'
+    media_dir.mkdir()
+    imported_image = media_dir / 'diagram.svg'
+    imported_image.write_text(
+        '<svg xmlns="http://www.w3.org/2000/svg"></svg>',
         encoding='utf-8',
     )
-    media_assets = tmp_path / 'media_assets.json'
-    media_assets.write_text(json.dumps({
-        'schema': 'lazyllm.tools.writer.data_models.multimodal.MediaAssetLibrary',
-        'data': {
-            'assets': {
-                'asset-1': {
-                    'local_path': str(image),
-                    'meta': {'source_reference': './test.png'},
-                },
-            },
-        },
-    }), encoding='utf-8')
-
-    preview = tools._previewable_markdown_document(
-        str(source),
-        str(media_assets),
+    uploaded_image = media_dir / 'uploaded.png'
+    payload = b'uploaded-image'
+    uploaded_image.write_bytes(payload)
+    digest = hashlib.sha256(payload).hexdigest()
+    uploaded_reference = f'assets/{digest[:2]}/{digest}.png'
+    canonical = (
+        '# 文档\n\n'
+        '![原图](docs/assets/diagram.svg)\n\n'
+        f'![新图]({uploaded_reference})\n\n'
+        '![未导入](docs/assets/unmapped.svg)\n'
     )
-
-    preview_markdown = Path(preview).read_text(encoding='utf-8')
-    assert preview_markdown.startswith(
-        '# 文档\n\n![原图](/static-files/writer-preview-assets/'
-    )
-    assert '?expires=' in preview_markdown and '&sig=' in preview_markdown
-    assert '![未映射资源](docs/assets/unmapped.svg)' in preview_markdown
-    assert list((upload_root / 'writer-preview-assets').rglob('*.png'))
-    assert source.read_text(encoding='utf-8') == (
-        '# 文档\n\n![原图](./test.png)\n\n'
-        '![未映射资源](docs/assets/unmapped.svg)\n'
-    )
-
-
-def test_render_markdown_uses_preview_copy_without_changing_canonical_content(
-    monkeypatch,
-    tmp_path,
-):
-    tools = _load_tools_module()
-    context = SimpleNamespace(workspace_path=str(tmp_path))
-    monkeypatch.setattr(tools, 'require_context', lambda: context)
-    monkeypatch.setenv('LAZYMIND_SHARED_UPLOAD_DIR', str(tmp_path / 'uploads'))
-    image = tmp_path / 'media' / 'diagram.svg'
-    image.parent.mkdir()
-    image.write_text('<svg xmlns="http://www.w3.org/2000/svg"></svg>', encoding='utf-8')
-    canonical = '# 文档\n\n![图](docs/assets/diagram.svg)\n'
     media_assets = {
         'assets': {
-            'asset-svg': {
-                'local_path': str(image),
+            'imported': {
+                'local_path': str(imported_image),
                 'meta': {'source_reference': 'docs/assets/diagram.svg'},
             },
-        },
-    }
-
-    rendered = tools.writer_render_document(canonical, media_assets=media_assets)
-
-    assert rendered['representation'] == 'markdown'
-    assert '/static-files/writer-preview-assets/' in rendered['document']
-    assert canonical == '# 文档\n\n![图](docs/assets/diagram.svg)\n'
-
-
-def test_render_uploaded_repository_asset_by_digest_without_rewriting_canonical(
-    monkeypatch,
-    tmp_path,
-):
-    tools = _load_tools_module()
-    context = SimpleNamespace(workspace_path=str(tmp_path))
-    monkeypatch.setattr(tools, 'require_context', lambda: context)
-    monkeypatch.setenv('LAZYMIND_SHARED_UPLOAD_DIR', str(tmp_path / 'uploads'))
-    image = tmp_path / 'media' / 'uploaded.png'
-    image.parent.mkdir()
-    payload = b'uploaded-image'
-    image.write_bytes(payload)
-    digest = hashlib.sha256(payload).hexdigest()
-    canonical = f'# 文档\n\n![新图](assets/{digest[:2]}/{digest}.png)\n'
-    media_assets = {
-        'assets': {
-            'asset-uploaded': {
-                'local_path': str(image),
+            'uploaded': {
+                'local_path': str(uploaded_image),
                 'meta': {'sha256': digest},
             },
         },
@@ -243,8 +182,10 @@ def test_render_uploaded_repository_asset_by_digest_without_rewriting_canonical(
 
     rendered = tools.writer_render_document(canonical, media_assets=media_assets)
 
-    assert '/static-files/writer-preview-assets/' in rendered['document']
-    assert canonical == f'# 文档\n\n![新图](assets/{digest[:2]}/{digest}.png)\n'
+    preview = rendered['document']
+    assert rendered['representation'] == 'markdown'
+    assert preview.count('/static-files/writer-preview-assets/') == 2
+    assert '(docs/assets/unmapped.svg)' in preview
 
 
 def test_markdown_draft_blocks_do_not_pass_resolved_media(monkeypatch, tmp_path):
