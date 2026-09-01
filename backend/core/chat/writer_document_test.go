@@ -12,6 +12,7 @@ import (
 	"github.com/gorilla/mux"
 
 	"lazymind/core/algo"
+	"lazymind/core/common"
 	"lazymind/core/common/orm"
 	"lazymind/core/store"
 )
@@ -48,6 +49,27 @@ func TestWriterSyncStatus(t *testing.T) {
 		if got := writerSyncStatus(input); got != want {
 			t.Errorf("writerSyncStatus(%d) = %d, want %d", input, got, want)
 		}
+	}
+}
+
+func TestWorkflowActionRejectsArgument(t *testing.T) {
+	err := &common.HTTPError{
+		StatusCode: http.StatusUnprocessableEntity,
+		Body: json.RawMessage(
+			`{"detail":{"code":"WORKFLOW_ACTION_INVALID","message":"writer_render_document() got an unexpected keyword argument 'media_assets'"}}`,
+		),
+	}
+	if !workflowActionRejectsArgument(err, "media_assets") {
+		t.Fatal("expected legacy media_assets signature rejection to be detected")
+	}
+	if workflowActionRejectsArgument(err, "other_argument") {
+		t.Fatal("unexpected argument name must not match")
+	}
+	if workflowActionRejectsArgument(&common.HTTPError{
+		StatusCode: http.StatusBadGateway,
+		Body:       err.Body,
+	}, "media_assets") {
+		t.Fatal("non-422 errors must not trigger compatibility fallback")
 	}
 }
 

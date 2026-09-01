@@ -9,7 +9,9 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import os
 import re
+import shutil
 import tempfile
 import uuid
 from pathlib import Path
@@ -65,6 +67,7 @@ from lazyllm.tools.tools.search import (
     TavilySearch,
 )
 from lazymind.chat.engine.subagent.context import require_context
+from lazymind.chat.engine.tools.multimodal import image_generator
 from lazymind.chat.engine.tools.writer import (
     DraftMarkdownStreamEventEmitter,
     WriterCreateToolkit,
@@ -74,8 +77,17 @@ from lazymind.chat.engine.tools.writer import (
     sync_writer_documents,
     writer_schema,
 )
-from lazymind.chat.engine.tools.multimodal import image_generator
+from lazymind.chat.service.utils.static_file_url import static_file_url_from_any
 from lazymind.model_config import is_model_role_available
+
+_MARKDOWN_IMAGE_URL_RE = re.compile(
+    r'(?P<prefix>!\[[^\]]*\]\(\s*)(?P<url><[^>]+>|[^\s)]+)(?P<suffix>[^)]*\))',
+)
+_HTML_MEDIA_URL_RE = re.compile(
+    r'(?P<prefix><(?:img|source|video|audio)\b[^>]*?\bsrc=["\'])'
+    r'(?P<url>[^"\']+)(?P<suffix>["\'])',
+    re.IGNORECASE,
+)
 
 WRITER_IMAGE_ACQUISITION_PROMPT = '''Create one professional visual for a document.
 
@@ -2436,10 +2448,11 @@ def writer_export_markdown(content_path: str) -> str:
     return str(output_path)
 
 
-def writer_render_document(artifact: Any) -> dict:
+def writer_render_document(artifact: Any, media_assets: Any = None) -> dict:
     """Render a Writer IR or Markdown artifact with automatic numbering."""
     document = _action_artifact_data(artifact)
     if isinstance(document, str):
+        document = _previewable_markdown_content(document, media_assets)
         document = ensure_markdown_heading_anchors(document)
         view = build_numbering_view_from_markdown(document)
         numbering = compute_numbering(view)
@@ -3074,6 +3087,116 @@ def _modify_plan_needs_media(path: str) -> bool:
     )
 
 
+def _rewrite_document_media_urls(content: str, url_map: Mapping[str, str]) -> str:
+    """Rewrite only explicitly mapped media URLs."""
+    if not content or not url_map:
+        return content
+
+    def replace(match: re.Match) -> str:
+        token = str(match.group('url') or '')
+        value = token.strip('<>')
+        replacement = str(url_map.get(value) or '')
+        if not replacement:
+            return match.group(0)
+        if token.startswith('<') and token.endswith('>'):
+            replacement = f'<{replacement}>'
+        return f"{match.group('prefix')}{replacement}{match.group('suffix')}"
+
+    rewritten = _MARKDOWN_IMAGE_URL_RE.sub(replace, content)
+    return _HTML_MEDIA_URL_RE.sub(replace, rewritten)
+
+
+def _previewable_markdown_content(content: str, media_assets: Any = None) -> str:
+    media_assets = _action_artifact_data(media_assets) if media_assets is not None else {}
+    assets = media_assets.get('assets') if isinstance(media_assets, dict) else None
+    if not isinstance(assets, dict):
+        return content
+    referenced_urls = {
+        str(match.group('url') or '').strip('<>')
+        for pattern in (_MARKDOWN_IMAGE_URL_RE, _HTML_MEDIA_URL_RE)
+        for match in pattern.finditer(content)
+    }
+    url_map: dict[str, str] = {}
+    for asset_id, asset in assets.items():
+        if not isinstance(asset, dict):
+            continue
+        meta = asset.get('meta') if isinstance(asset.get('meta'), dict) else {}
+        source_reference = str(meta.get('source_reference') or '').strip()
+        local_path = str(asset.get('local_path') or '').strip()
+        if not local_path or not Path(local_path).is_file():
+            continue
+        preview_reference = _publish_preview_media(local_path, meta)
+        if not preview_reference:
+            continue
+        url_map[f'asset://{asset_id}'] = preview_reference
+        if source_reference:
+            url_map[source_reference] = preview_reference
+        previous_reference = str(meta.get('preview_reference') or '').strip()
+        if previous_reference:
+            url_map[previous_reference] = preview_reference
+        digest = str(meta.get('sha256') or '').strip().lower()
+        if re.fullmatch(r'[0-9a-f]{64}', digest):
+            for reference in referenced_urls:
+                if digest in reference.lower():
+                    url_map[reference] = preview_reference
+    return _rewrite_document_media_urls(content, url_map)
+
+
+def _previewable_markdown_document(
+    document_path: str,
+    media_assets_path: str = '',
+) -> str:
+    source = Path(str(document_path or ''))
+    if source.suffix.lower() not in {'.md', '.markdown'} or not source.is_file() \
+            or not media_assets_path:
+        return str(document_path)
+    content = source.read_text(encoding='utf-8')
+    preview = _previewable_markdown_content(
+        content,
+        _read_json_file(media_assets_path),
+    )
+    if preview == content:
+        return str(document_path)
+    path = _run_root('preview-document') / source.name
+    path.write_text(preview, encoding='utf-8')
+    return str(path)
+
+
+def _publish_preview_media(local_path: str, meta: Mapping[str, Any]) -> str:
+    source = Path(local_path)
+    signed = static_file_url_from_any(str(source))
+    if signed:
+        return signed
+    upload_root = str(
+        os.environ.get('LAZYMIND_SHARED_UPLOAD_DIR')
+        or os.environ.get('LAZYMIND_UPLOAD_ROOT')
+        or ''
+    ).strip()
+    if not upload_root:
+        return ''
+    digest = str(meta.get('sha256') or '').strip().lower()
+    if not re.fullmatch(r'[0-9a-f]{64}', digest):
+        hasher = hashlib.sha256()
+        with source.open('rb') as fh:
+            for chunk in iter(lambda: fh.read(1024 * 1024), b''):
+                hasher.update(chunk)
+        digest = hasher.hexdigest()
+    suffix = source.suffix.lower()
+    if not re.fullmatch(r'\.[a-z0-9]{1,10}', suffix):
+        suffix = '.bin'
+    destination = Path(upload_root) / 'writer-preview-assets' / digest[:2] / f'{digest}{suffix}'
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    if not destination.is_file():
+        temporary = destination.with_name(f'.{destination.name}.{uuid.uuid4().hex}.tmp')
+        try:
+            shutil.copyfile(source, temporary)
+            temporary.replace(destination)
+        finally:
+            if temporary.exists():
+                temporary.unlink()
+    return static_file_url_from_any(str(destination))
+
+
 def _save_draft_workspace_artifacts(result: Mapping[str, Any]) -> list[str]:
     from lazymind.chat.engine.subagent.tools import save_artifacts
 
@@ -3347,7 +3470,7 @@ def writer_draft_workspace() -> dict:
                 content_path=result['draft_document'],
                 source_document_path=source_document_path,
                 target_document_path=target_document_path,
-                media_assets_path=resolved_media,
+                media_assets_path=resolved_media or media_assets_path,
             )
             result['document_write_result'] = published['publish_result']
             result['draft_document'] = published['draft_document']
@@ -3421,14 +3544,14 @@ def writer_draft_workspace() -> dict:
                 published = writer_publish_revision(
                     source_document_path=source_document_path,
                     revision_set_path=result['document_revision_set'],
-                    media_assets_path=resolved_media,
+                    media_assets_path=resolved_media or media_assets_path,
                 )
             else:
                 published = writer_replace_document(
                     content_path=result['draft_document'],
                     source_document_path=source_document_path,
                     target_document_path=target_document_path,
-                    media_assets_path=resolved_media,
+                    media_assets_path=resolved_media or media_assets_path,
                 )
             result['document_write_result'] = published['publish_result']
             result['draft_document'] = published['draft_document']

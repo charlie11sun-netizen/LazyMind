@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import importlib.util
 import json
 import sys
@@ -138,6 +139,112 @@ def test_write_document_revision_emits_markdown_draft_stream(monkeypatch, tmp_pa
     assert [event['chunk_index'] for event in events] == list(
         range(1, len(events) + 1),
     )
+
+
+def test_previewable_markdown_document_maps_provider_image_without_changing_source(
+    monkeypatch,
+    tmp_path,
+):
+    tools = _load_tools_module()
+    context = SimpleNamespace(workspace_path=str(tmp_path))
+    monkeypatch.setattr(tools, 'require_context', lambda: context)
+    upload_root = tmp_path / 'uploads'
+    monkeypatch.setenv('LAZYMIND_SHARED_UPLOAD_DIR', str(upload_root))
+    image = tmp_path / 'media' / 'github-image.png'
+    image.parent.mkdir()
+    image.write_bytes(b'png')
+    source = tmp_path / 'draft_document.md'
+    source.write_text(
+        '# 文档\n\n![原图](./test.png)\n\n'
+        '![未映射资源](docs/assets/unmapped.svg)\n',
+        encoding='utf-8',
+    )
+    media_assets = tmp_path / 'media_assets.json'
+    media_assets.write_text(json.dumps({
+        'schema': 'lazyllm.tools.writer.data_models.multimodal.MediaAssetLibrary',
+        'data': {
+            'assets': {
+                'asset-1': {
+                    'local_path': str(image),
+                    'meta': {'source_reference': './test.png'},
+                },
+            },
+        },
+    }), encoding='utf-8')
+
+    preview = tools._previewable_markdown_document(
+        str(source),
+        str(media_assets),
+    )
+
+    preview_markdown = Path(preview).read_text(encoding='utf-8')
+    assert preview_markdown.startswith(
+        '# 文档\n\n![原图](/static-files/writer-preview-assets/'
+    )
+    assert '?expires=' in preview_markdown and '&sig=' in preview_markdown
+    assert '![未映射资源](docs/assets/unmapped.svg)' in preview_markdown
+    assert list((upload_root / 'writer-preview-assets').rglob('*.png'))
+    assert source.read_text(encoding='utf-8') == (
+        '# 文档\n\n![原图](./test.png)\n\n'
+        '![未映射资源](docs/assets/unmapped.svg)\n'
+    )
+
+
+def test_render_markdown_uses_preview_copy_without_changing_canonical_content(
+    monkeypatch,
+    tmp_path,
+):
+    tools = _load_tools_module()
+    context = SimpleNamespace(workspace_path=str(tmp_path))
+    monkeypatch.setattr(tools, 'require_context', lambda: context)
+    monkeypatch.setenv('LAZYMIND_SHARED_UPLOAD_DIR', str(tmp_path / 'uploads'))
+    image = tmp_path / 'media' / 'diagram.svg'
+    image.parent.mkdir()
+    image.write_text('<svg xmlns="http://www.w3.org/2000/svg"></svg>', encoding='utf-8')
+    canonical = '# 文档\n\n![图](docs/assets/diagram.svg)\n'
+    media_assets = {
+        'assets': {
+            'asset-svg': {
+                'local_path': str(image),
+                'meta': {'source_reference': 'docs/assets/diagram.svg'},
+            },
+        },
+    }
+
+    rendered = tools.writer_render_document(canonical, media_assets=media_assets)
+
+    assert rendered['representation'] == 'markdown'
+    assert '/static-files/writer-preview-assets/' in rendered['document']
+    assert canonical == '# 文档\n\n![图](docs/assets/diagram.svg)\n'
+
+
+def test_render_uploaded_repository_asset_by_digest_without_rewriting_canonical(
+    monkeypatch,
+    tmp_path,
+):
+    tools = _load_tools_module()
+    context = SimpleNamespace(workspace_path=str(tmp_path))
+    monkeypatch.setattr(tools, 'require_context', lambda: context)
+    monkeypatch.setenv('LAZYMIND_SHARED_UPLOAD_DIR', str(tmp_path / 'uploads'))
+    image = tmp_path / 'media' / 'uploaded.png'
+    image.parent.mkdir()
+    payload = b'uploaded-image'
+    image.write_bytes(payload)
+    digest = hashlib.sha256(payload).hexdigest()
+    canonical = f'# 文档\n\n![新图](assets/{digest[:2]}/{digest}.png)\n'
+    media_assets = {
+        'assets': {
+            'asset-uploaded': {
+                'local_path': str(image),
+                'meta': {'sha256': digest},
+            },
+        },
+    }
+
+    rendered = tools.writer_render_document(canonical, media_assets=media_assets)
+
+    assert '/static-files/writer-preview-assets/' in rendered['document']
+    assert canonical == f'# 文档\n\n![新图](assets/{digest[:2]}/{digest}.png)\n'
 
 
 def test_markdown_draft_blocks_do_not_pass_resolved_media(monkeypatch, tmp_path):
@@ -595,6 +702,7 @@ def test_draft_workspace_revise_uses_writing_task_representation(
         {'output': {'representation': representation}},
     )
     writing_context = write_json('writing_context.json', {})
+    media_assets = write_json('media_assets.json', {'assets': {}})
     source_document = write_json('source_document.json', {})
     target_document = write_json('target_document.json', {})
     modify_plan = write_json('modify_plan.json', {'instructions': []})
@@ -609,6 +717,7 @@ def test_draft_workspace_revise_uses_writing_task_representation(
         'writer_command': writer_command,
         'writing_task': writing_task,
         'writing_context': writing_context,
+        'media_assets': media_assets,
         'source_document': source_document,
         'target_document': target_document,
     }
@@ -632,13 +741,16 @@ def test_draft_workspace_revise_uses_writing_task_representation(
         'completed': False,
     }
     calls = []
+    published_media = []
 
-    def publish_revision(**_kwargs):
+    def publish_revision(**kwargs):
         calls.append('publish_revision')
+        published_media.append(kwargs['media_assets_path'])
         return {'publish_result': {'success': True}, 'draft_document': draft_document}
 
-    def replace_document(**_kwargs):
+    def replace_document(**kwargs):
         calls.append('replace_document')
+        published_media.append(kwargs['media_assets_path'])
         return {
             'publish_result': {'success': True},
             'draft_document': draft_document,
@@ -652,7 +764,11 @@ def test_draft_workspace_revise_uses_writing_task_representation(
         lambda _fingerprint: (state, tmp_path / 'checkpoint.json'),
     )
     monkeypatch.setattr(tools, '_persist_draft_workspace_state', lambda *_args, **_kwargs: None)
-    monkeypatch.setattr(tools, '_save_draft_workspace_artifacts', lambda _result: ['draft_document'])
+    monkeypatch.setattr(
+        tools,
+        '_save_draft_workspace_artifacts',
+        lambda _result, **_kwargs: ['draft_document'],
+    )
     monkeypatch.setattr(
         tools,
         'writer_update_writing_context',
@@ -665,5 +781,6 @@ def test_draft_workspace_revise_uses_writing_task_representation(
 
     assert result['status'] == 'completed'
     assert calls == [expected_writer]
+    assert published_media == [media_assets]
     if representation == 'markdown':
         assert state['result']['target_document'] == confirmed_target
