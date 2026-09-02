@@ -49,7 +49,7 @@ flowchart LR
 | **状态大脑** | 让长任务不跑偏 | 步骤可见、关键点审批、产物可编辑、重试/回退与版本记录 |
 | **AI 成长引擎** | 安全地改进下一次执行 | 可审核的偏好与术语，以及评测、诊断、A/B Test 与回滚 |
 
-## 核心亮点
+## 修改检查
 
 ### 1. 交付结果，而不只是回复消息
 
@@ -57,69 +57,49 @@ flowchart LR
 
 长任务的每一步都保持可见；用户可以在关键节点审批、直接修改 Artifact，或者从失败步骤重新执行，而不必推倒重来。
 
-<table>
-  <tr>
-    <td width="50%" align="center">
-      <a href="docs/assets/artifact-workspace.jpg"><img src="docs/assets/artifact-workspace.jpg" alt="在审批节点查看并编辑有实际内容的 Artifact" width="100%" /></a>
-      <br /><sub>继续执行前，查看并直接编辑 Artifact</sub>
-    </td>
-    <td width="50%" align="center">
-      <a href="docs/assets/artifact-version-diff.jpg"><img src="docs/assets/artifact-version-diff.jpg" alt="通过可编辑 Diff 对比 Artifact 的历史版本" width="100%" /></a>
-      <br /><sub>对比版本 Diff，并恢复需要的结果</sub>
-    </td>
-  </tr>
-</table>
+![在审批节点查看并编辑有实际内容的 Artifact](/static-files/writer-preview-assets/7b/7b999c96674e9c56a007b0da2a6c451c326981c6418abe78b88eb2d552cb6ea3.jpg?expires=1788325440&sig=727eb0afd5f85fcb38c8260798e3c35da13a2789d0f9f4a1e12409cd4661e8e5#writer-media-e39f04f98ffdd5f6)
+
+_继续执行前，查看并直接编辑 Artifact_
+
+![通过可编辑 Diff 对比 Artifact 的历史版本](/static-files/writer-preview-assets/e2/e2584c2b6a8ade487624b1573b28cada9253568554dc81dd9c8a8a3e6b217b08.jpg?expires=1788325440&sig=d92f7b0174780d4724d88ed2a030f9f518f38a058e0ad97313ca1edd5e80e144#writer-media-b45e19d002df7042)
+
+_对比版本 Diff，并恢复需要的结果_
 
 ### 2. 让每次执行都基于可复用知识
 
 本地目录、对象存储、飞书和 Notion 等数据源进入统一知识库；PDFReader、MinerU 或 PaddleOCR-VL 负责解析文档，再通过多路 Embedding、混合检索和重排，让结果建立在相关证据之上。
 
-<table>
-  <tr>
-    <td width="50%" align="center">
-      <a href="docs/assets/knowledge-library.png"><img src="docs/assets/knowledge-library.png" alt="在统一知识库中管理文档并查看解析状态" width="100%" /></a>
-      <br /><sub>统一管理知识文档，并清晰掌握解析状态</sub>
-    </td>
-    <td width="50%" align="center">
-      <a href="docs/assets/knowledge-cited-answer-latest.png"><img src="docs/assets/knowledge-cited-answer-latest.png" alt="题干与答案分别包含行内引用，并共同指向原始文档" width="100%" /></a>
-      <br /><sub>两个 (1) 分别引用题干和答案，并共同指向下方同一份原始文档</sub>
-    </td>
-  </tr>
-</table>
+![在统一知识库中管理文档并查看解析状态](/static-files/writer-preview-assets/2c/2ce1eceba4424fc74d467efbeacf94143573ba9473101243ceb1d449aa15bb36.png?expires=1788325440&sig=8aef9280af5c5d30d081397c89397e0c475fbb5e1be600fecc828b833e43aaff#writer-media-ea87ade4c9024f24)
+
+_统一管理知识文档，并清晰掌握解析状态_
+
+![题干与答案分别包含行内引用，并共同指向原始文档](/static-files/writer-preview-assets/fe/feffb1d2e7a69e8c6dc98247d4ec9c8cc6c0711429a8e2c5a648eb7b38e47758.png?expires=1788325440&sig=874596d46ca1a7ab7e26938dfae5a5cea3a0f7928fa7546637dd415d6c5daf55#writer-media-69e62cf3522141e3)
+
+_两个 (1) 分别引用题干和答案，并共同指向下方同一份原始文档_
 
 ### 3. 把专家经验封装成可复用工作流
 
 调研方法、写作流程与行业标准可以作为 Skill 管理，并转换为可执行 Plugin。团队可以诊断、修复、发布、版本化和回滚，而不必反复从 Prompt 与脚本重新搭建。开发方式见[插件格式规范](docs/plugin-format.md)。
 
-<table>
-  <tr>
-    <td width="50%" align="center">
-      <a href="docs/assets/skill-to-workflow-entry.jpg"><img src="docs/assets/skill-to-workflow-entry.jpg" alt="选择已有 Skill 并将其转换为可执行工作流" width="100%" /></a>
-      <br /><sub>选择已有 Skill，作为新工作流的起点</sub>
-    </td>
-    <td width="50%" align="center">
-      <a href="docs/assets/skill-to-workflow-editor.png"><img src="docs/assets/skill-to-workflow-editor.png" alt="在可视化编辑器中检查和调整转换后的工作流" width="100%" /></a>
-      <br /><sub>检查、调整、发布并版本化生成的工作流</sub>
-    </td>
-  </tr>
-</table>
+![选择已有 Skill 并将其转换为可执行工作流](/static-files/writer-preview-assets/9e/9ee9d59710ce7e7206eda0a17872b48fd201bbb05f58a6a81d3e8adc880bdd17.jpg?expires=1788325440&sig=3009f9c63b0c1af1c713c06ca238b131c212c83f3ecfa891711c3948535cc2fe#writer-media-1c27f208be2296d1)
+
+_选择已有 Skill，作为新工作流的起点_
+
+![在可视化编辑器中检查和调整转换后的工作流](/static-files/writer-preview-assets/e1/e156c21c1513ea291509de952147a12e95b95fad0b0d17adcbe57e9419d23c2a.png?expires=1788325440&sig=a69f9cc91162b449487852cf64d3ed5ee2fa0bcdb83901d0a56c0293bee85fb5#writer-media-803bb9e182550027)
+
+_检查、调整、发布并版本化生成的工作流_
 
 ### 4. 只在证据支持时改进系统
 
 “智积阅累”负责沉淀用户想要什么——偏好、术语、经验与 Skill；`evo` 负责验证系统怎样做得更好——把 badcase 变成评测样例，依次执行基线评测、问题诊断、修复与 A/B Test。
 
-<table>
-  <tr>
-    <td width="50%" align="center">
-      <a href="docs/assets/skill-review.png"><img src="docs/assets/skill-review.png" alt="智积阅累通过 Skill 复盘持续沉淀和改进能力" width="100%" /></a>
-      <br /><sub>智积阅累：复盘 Skill，沉淀偏好、术语与经验</sub>
-    </td>
-    <td width="50%" align="center">
-      <a href="docs/assets/evo-pipeline.png"><img src="docs/assets/evo-pipeline.png" alt="算法跃迁把失败转化为经过评测的改进流水线" width="100%" /></a>
-      <br /><sub>算法跃迁：经过评测验证，再安全发布改进</sub>
-    </td>
-  </tr>
-</table>
+![智积阅累通过 Skill 复盘持续沉淀和改进能力](/static-files/writer-preview-assets/50/5095c23e78f082d1cb9ea06b1e13fc651797569a2bf0c8fec03f28c1cdc12c8c.png?expires=1788325440&sig=40b9061b0cf7a41f0ec706078d29994432a92d19d22f1f7fa831b8ea3108717f#writer-media-4a723540ae1e1cf1)
+
+_智积阅累：复盘 Skill，沉淀偏好、术语与经验_
+
+![算法跃迁把失败转化为经过评测的改进流水线](/static-files/writer-preview-assets/06/06fb0e518913556623b482881c631e39ad437e403d25ea63e8b5c71c9cf7aac5.png?expires=1788325440&sig=64851958b38a8934954767ee6d2c68f0eb4b11bbb4d6573d6e72df33f05c1ff7#writer-media-b5b2b77c0893b969)
+
+_算法跃迁：经过评测验证，再安全发布改进_
 
 ### 5. 从本地开始，在需要协作时扩展
 
@@ -154,18 +134,13 @@ make local-win-up
 - 在**模型供应商**中添加供应商凭证与 API Key，再到**系统默认设置**中选择默认的大模型、向量模型和重排序模型；多模态向量、图文、语音、图片、视频和自进化模型均可按需配置。
 - 在**工具**中按需配置服务凭证，包括用于文档解析的 MinerU 或 PaddleOCR、网页与学术搜索引擎，以及其他集成。使用 MinerU 在线服务时，无需再通过环境变量配置 API Key。
 
-<table>
-  <tr>
-    <td width="50%" align="center">
-      <a href="docs/assets/settings-models.png"><img src="docs/assets/settings-models.png" alt="在前端设置中选择各项系统默认模型" width="100%" /></a>
-      <br /><sub>为不同系统能力选择默认模型</sub>
-    </td>
-    <td width="50%" align="center">
-      <a href="docs/assets/settings-tools.png"><img src="docs/assets/settings-tools.png" alt="在前端设置中配置文档解析与搜索服务" width="100%" /></a>
-      <br /><sub>配置文档解析、搜索与其他工具凭证</sub>
-    </td>
-  </tr>
-</table>
+![在前端设置中选择各项系统默认模型](/static-files/writer-preview-assets/0f/0f8f4f04e5e18ef534f45c307076ce5b93f2da81d8286ffe6c5c0c7c69bad752.png?expires=1788325440&sig=a675589faafc953cb41ed9e119d0f512274538f9af362dea4638c9f6dc9e7aeb#writer-media-6e044af52e795472)
+
+_为不同系统能力选择默认模型_
+
+![在前端设置中配置文档解析与搜索服务](/static-files/writer-preview-assets/86/86e0292c989bb195b30181e0f578ddb301f0a4de63bfb499165e7c0e8ebfbd35.png?expires=1788325440&sig=0d89d812af30c89f1dc69d52c42155c7eebe51aa596a62008bbfc85d1870df2f#writer-media-499da818e97e8789)
+
+_配置文档解析、搜索与其他工具凭证_
 
 停止本地运行：
 
