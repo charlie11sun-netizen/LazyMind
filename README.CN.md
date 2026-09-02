@@ -1,34 +1,49 @@
 # LazyMind
 
-**[English](README.md)** | **中文**
+[English](README.md) | **中文**
 
 > **让 AI 按照你的资料、标准和偏好，稳定完成真实任务。**
 
-[![GitHub stars](https://img.shields.io/github/stars/LazyAGI/LazyMind?style=flat-square)](https://github.com/LazyAGI/LazyMind/stargazers)
-[![License](https://img.shields.io/github/license/LazyAGI/LazyMind?style=flat-square)](LICENSE)
-[![macOS](https://img.shields.io/badge/macOS-arm64-111827?style=flat-square&logo=apple)](desktop/README.md)
-[![Windows](https://img.shields.io/badge/Windows-x64-0078D4?style=flat-square&logo=windows)](desktop/README.md)
-[![本地优先](https://img.shields.io/badge/部署-本地优先-16a34a?style=flat-square)](docs/quick_start.CN.md)
+<a id="block-user-5b46d63c-afb7-4c7d-bb75-2cde86b62d15"></a>
+![图1 GitHub stars](https://img.shields.io/github/stars/LazyAGI/LazyMind?style=flat-square)
+<a id="block-user-f79137e5-c238-4df0-af8a-5c0d054a396d"></a>
+![图2 License](https://img.shields.io/github/license/LazyAGI/LazyMind?style=flat-square)
+<a id="block-user-ca2d6d25-5053-4967-bc1e-1224fb6631c5"></a>
+![图3 macOS](https://img.shields.io/badge/macOS-arm64-111827?style=flat-square\&logo=apple)
+<a id="block-user-d640528b-01c1-4334-8809-e565f020b27a"></a>
+![图4 Windows](https://img.shields.io/badge/Windows-x64-0078D4?style=flat-square\&logo=windows)
+<a id="block-user-f9b709e6-fb79-4dbc-be43-7abef235f7b5"></a>
+![图5 本地优先](https://img.shields.io/badge/部署-本地优先-16a34a?style=flat-square)
 
 LazyMind 是面向知识密集型工作的 **AI Skill Runtime**。它在同一个工作台里连接可复用知识、可执行 Skill、可观测工作流、可编辑产物与评测驱动的持续改进。
 
 你不必反复上传资料、调 Prompt 或全程盯着 Agent：选择一次知识与工作流，LazyMind 会继续规划、执行、展示中间结果，并把经过确认的反馈带到下一次任务中。既可以通过 **Desktop Mode** 在本机使用，也可以部署为团队共享的企业服务。
 
-**[快速开始](#快速开始)** · **[产品架构](docs/architecture.md)** · **[构建工作流](docs/plugin-format.md)** · **[桌面模式](desktop/README.md)**
+[快速开始](#快速开始) · [产品架构](docs/architecture.md) · [构建工作流](docs/plugin-format.md) · [桌面模式](desktop/README.md)
 
----
+***
 
+<a id="block-user-91675aaf-bde0-4301-90db-69e0e4fa4eec"></a>
 ## 它能交付什么？
 
-| 场景 | LazyMind 执行 | 你获得 |
-|------|---------------|--------|
-| **调研与评审** | 搜索资料 → 检索证据 → 对比 → 综合 → 审阅 | 基于内部资料与外部来源、过程可追溯的报告 |
-| **AI Writer** | 整理素材 → 生成大纲 → 分章节写作 → 修改 → 终审 | 可编辑、有版本记录的文档，而不是一次性回答 |
-| **AI Image** | 理解需求 → 收集参考 → 优化 Prompt → 生成/编辑 | 保留生成过程的图片与动态表情 |
-| **知识助手** | 接入资料 → 解析/OCR → 混合检索 → 重排 → 回答 | 可回溯到组织知识的答案 |
-| **质量改进** | 收集 badcase → 评测 → 诊断 → A/B Test → 部署 | 经过验证的策略优化，而不是未经检查的 Prompt 改动 |
+表1
 
+表1
+
+| 场景            | LazyMind 执行                          | 你获得                          |
+| ------------- | ------------------------------------ | ---------------------------- |
+| **调研与评审**     | 搜索资料 → 检索证据 → 对比 → 综合 → 审阅           | 基于内部资料与外部来源、过程可追溯的报告         |
+| **AI Writer** | 整理素材 → 生成大纲 → 分章节写作 → 修改 → 终审        | 可编辑、有版本记录的文档，而不是一次性回答        |
+| **AI Image**  | 理解需求 → 收集参考 → 优化 Prompt → 生成/编辑      | 保留生成过程的图片与动态表情               |
+| **知识助手**      | 接入资料 → 解析/OCR → 混合检索 → 重排 → 回答       | 可回溯到组织知识的答案                  |
+| **质量改进**      | 收集 badcase → 评测 → 诊断 → A/B Test → 部署 | 经过验证的策略优化，而不是未经检查的 Prompt 改动 |
+
+<a id="block-user-e1e67e2a-ceea-4de1-8c8d-4976c970e6e5"></a>
 ## LazyMind 如何工作
+
+代码1
+
+代码1
 
 ```mermaid
 flowchart LR
@@ -43,95 +58,99 @@ flowchart LR
 
 这个闭环由三个相互连接的系统组成：
 
-| 系统 | 负责什么 | 产品行为 |
-|------|----------|----------|
-| **知识底座** | 给 AI 正确的上下文 | 多源接入、OCR、混合检索、重排与原文追溯 |
-| **状态大脑** | 让长任务不跑偏 | 步骤可见、关键点审批、产物可编辑、重试/回退与版本记录 |
-| **AI 成长引擎** | 安全地改进下一次执行 | 可审核的偏好与术语，以及评测、诊断、A/B Test 与回滚 |
+表2
 
-## 核心亮点
+表2
 
-### 1. 交付结果，而不只是回复消息
+| 系统          | 负责什么        | 产品行为                           |
+| ----------- | ----------- | ------------------------------ |
+| **知识底座**    | 给 AI 正确的上下文 | 多源接入、OCR、混合检索、重排与原文追溯          |
+| **状态大脑**    | 让长任务不跑偏     | 步骤可见、关键点审批、产物可编辑、重试/回退与版本记录    |
+| **AI 成长引擎** | 安全地改进下一次执行  | 可审核的偏好与术语，以及评测、诊断、A/B Test 与回滚 |
+
+<a id="block-user-8aeb6ec2-2935-47af-8d29-b28a76b9b46c"></a>
+## 修改检查
+
+<a id="block-user-2242e455-4191-4d92-a149-bad232c227d0"></a>
+### 交付结果，而不只是回复消息
 
 选择知识与 Skill 后，LazyMind 会从资料整理继续推进到规划、生成、审阅与交付。Plugin 用状态机定义步骤、工具、输入输出和流转条件，Artifact 则保留可编辑结果与版本历史。
 
 长任务的每一步都保持可见；用户可以在关键节点审批、直接修改 Artifact，或者从失败步骤重新执行，而不必推倒重来。
 
-<table>
-  <tr>
-    <td width="50%" align="center">
-      <a href="docs/assets/artifact-workspace.jpg"><img src="docs/assets/artifact-workspace.jpg" alt="在审批节点查看并编辑有实际内容的 Artifact" width="100%" /></a>
-      <br /><sub>继续执行前，查看并直接编辑 Artifact</sub>
-    </td>
-    <td width="50%" align="center">
-      <a href="docs/assets/artifact-version-diff.jpg"><img src="docs/assets/artifact-version-diff.jpg" alt="通过可编辑 Diff 对比 Artifact 的历史版本" width="100%" /></a>
-      <br /><sub>对比版本 Diff，并恢复需要的结果</sub>
-    </td>
-  </tr>
-</table>
+<a id="block-user-919aa0c1-30e6-44fa-b0ff-2c3ff5cd098d"></a>
+![图6 在审批节点查看并编辑有实际内容的 Artifact](docs/assets/artifact-workspace.jpg)
 
-### 2. 让每次执行都基于可复用知识
+*继续执行前，查看并直接编辑 Artifact*
+
+<a id="block-user-d1fd9a68-4d67-4065-a426-a1a4d745e822"></a>
+![图7 通过可编辑 Diff 对比 Artifact 的历史版本](docs/assets/artifact-version-diff.jpg)
+
+*对比版本 Diff，并恢复需要的结果*
+
+<a id="block-user-08dc713c-c05c-4156-b318-6ef8f4900fc1"></a>
+### 让每次执行都基于可复用知识
 
 本地目录、对象存储、飞书和 Notion 等数据源进入统一知识库；PDFReader、MinerU 或 PaddleOCR-VL 负责解析文档，再通过多路 Embedding、混合检索和重排，让结果建立在相关证据之上。
 
-<table>
-  <tr>
-    <td width="50%" align="center">
-      <a href="docs/assets/knowledge-library.png"><img src="docs/assets/knowledge-library.png" alt="在统一知识库中管理文档并查看解析状态" width="100%" /></a>
-      <br /><sub>统一管理知识文档，并清晰掌握解析状态</sub>
-    </td>
-    <td width="50%" align="center">
-      <a href="docs/assets/knowledge-cited-answer-latest.png"><img src="docs/assets/knowledge-cited-answer-latest.png" alt="题干与答案分别包含行内引用，并共同指向原始文档" width="100%" /></a>
-      <br /><sub>两个 (1) 分别引用题干和答案，并共同指向下方同一份原始文档</sub>
-    </td>
-  </tr>
-</table>
+<a id="block-user-d78c64a6-edac-454e-ace4-142f17ba0e6d"></a>
+![图8 在统一知识库中管理文档并查看解析状态](docs/assets/knowledge-library.png)
 
-### 3. 把专家经验封装成可复用工作流
+*统一管理知识文档，并清晰掌握解析状态*
+
+<a id="block-user-eda351a7-f1c5-4715-9722-804882e18912"></a>
+![图9 题干与答案分别包含行内引用，并共同指向原始文档](docs/assets/knowledge-cited-answer-latest.png)
+
+*两个 (1) 分别引用题干和答案，并共同指向下方同一份原始文档*
+
+<a id="block-user-78f601e3-e63b-4fd2-a528-eaa844ce38ef"></a>
+### 把专家经验封装成可复用工作流
 
 调研方法、写作流程与行业标准可以作为 Skill 管理，并转换为可执行 Plugin。团队可以诊断、修复、发布、版本化和回滚，而不必反复从 Prompt 与脚本重新搭建。开发方式见[插件格式规范](docs/plugin-format.md)。
 
-<table>
-  <tr>
-    <td width="50%" align="center">
-      <a href="docs/assets/skill-to-workflow-entry.jpg"><img src="docs/assets/skill-to-workflow-entry.jpg" alt="选择已有 Skill 并将其转换为可执行工作流" width="100%" /></a>
-      <br /><sub>选择已有 Skill，作为新工作流的起点</sub>
-    </td>
-    <td width="50%" align="center">
-      <a href="docs/assets/skill-to-workflow-editor.png"><img src="docs/assets/skill-to-workflow-editor.png" alt="在可视化编辑器中检查和调整转换后的工作流" width="100%" /></a>
-      <br /><sub>检查、调整、发布并版本化生成的工作流</sub>
-    </td>
-  </tr>
-</table>
+<a id="block-user-42001237-6d7d-4c7b-a395-c28167a82d25"></a>
+![图10 选择已有 Skill 并将其转换为可执行工作流](docs/assets/skill-to-workflow-entry.jpg)
 
-### 4. 只在证据支持时改进系统
+*选择已有 Skill，作为新工作流的起点*
+
+<a id="block-user-80730021-2642-4404-9bfd-4cede5ebdeb6"></a>
+![图11 在可视化编辑器中检查和调整转换后的工作流](docs/assets/skill-to-workflow-editor.png)
+
+*检查、调整、发布并版本化生成的工作流*
+
+<a id="block-user-91cf861f-16cb-472e-a0aa-610ff83ce883"></a>
+### 只在证据支持时改进系统
 
 “智积阅累”负责沉淀用户想要什么——偏好、术语、经验与 Skill；`evo` 负责验证系统怎样做得更好——把 badcase 变成评测样例，依次执行基线评测、问题诊断、修复与 A/B Test。
 
-<table>
-  <tr>
-    <td width="50%" align="center">
-      <a href="docs/assets/skill-review.png"><img src="docs/assets/skill-review.png" alt="智积阅累通过 Skill 复盘持续沉淀和改进能力" width="100%" /></a>
-      <br /><sub>智积阅累：复盘 Skill，沉淀偏好、术语与经验</sub>
-    </td>
-    <td width="50%" align="center">
-      <a href="docs/assets/evo-pipeline.png"><img src="docs/assets/evo-pipeline.png" alt="算法跃迁把失败转化为经过评测的改进流水线" width="100%" /></a>
-      <br /><sub>算法跃迁：经过评测验证，再安全发布改进</sub>
-    </td>
-  </tr>
-</table>
+<a id="block-user-79142b19-cd29-40fb-916b-6b446e7c9912"></a>
+![图12 智积阅累通过 Skill 复盘持续沉淀和改进能力](docs/assets/skill-review.png)
 
-### 5. 从本地开始，在需要协作时扩展
+*智积阅累：复盘 Skill，沉淀偏好、术语与经验*
+
+<a id="block-user-e929bcd0-917b-4582-966d-b4de815e52f0"></a>
+![图13 算法跃迁把失败转化为经过评测的改进流水线](docs/assets/evo-pipeline.png)
+
+*算法跃迁：经过评测验证，再安全发布改进*
+
+<a id="block-user-d3065cc6-78a6-4b3d-972f-d3185b882db4"></a>
+### 从本地开始，在需要协作时扩展
 
 Desktop Mode 使用原生进程、SQLite 和 Milvus Lite，并遵循平台规范管理数据目录；团队部署可以进一步接入 Kong、JWT/RBAC、Core ACL、外部 Milvus/OpenSearch 与私有化 OCR。两种模式保持一致的工作方式。
 
----
+***
 
+<a id="block-user-f77a39a5-ee95-413e-9947-c69fb864eb85"></a>
 ## 快速开始
 
+<a id="block-user-4b53b705-7c0b-4921-b587-b0a728f673a9"></a>
 ### 本机运行
 
 前置条件：Go、Python 3、uv、pnpm 和 Node.js。
+
+代码2
+
+代码2
 
 ```bash
 make local-up
@@ -139,35 +158,40 @@ make local-up
 
 Windows PowerShell 使用：
 
+代码3
+
+代码3
+
 ```powershell
 make local-win-up
 ```
 
 启动后访问：
 
-- LazyMind：http://localhost:8090
-- API 文档：http://localhost:8090/docs.html
-- 默认账号：`admin` / `admin`
+* LazyMind：http://localhost:8090
+* API 文档：http://localhost:8090/docs.html
+* 默认账号：`admin` / `admin`
 
 登录后进入前端的**设置**页面：
 
-- 在**模型供应商**中添加供应商凭证与 API Key，再到**系统默认设置**中选择默认的大模型、向量模型和重排序模型；多模态向量、图文、语音、图片、视频和自进化模型均可按需配置。
-- 在**工具**中按需配置服务凭证，包括用于文档解析的 MinerU 或 PaddleOCR、网页与学术搜索引擎，以及其他集成。使用 MinerU 在线服务时，无需再通过环境变量配置 API Key。
+* 在**模型供应商**中添加供应商凭证与 API Key，再到**系统默认设置**中选择默认的大模型、向量模型和重排序模型；多模态向量、图文、语音、图片、视频和自进化模型均可按需配置。
+* 在**工具**中按需配置服务凭证，包括用于文档解析的 MinerU 或 PaddleOCR、网页与学术搜索引擎，以及其他集成。使用 MinerU 在线服务时，无需再通过环境变量配置 API Key。
 
-<table>
-  <tr>
-    <td width="50%" align="center">
-      <a href="docs/assets/settings-models.png"><img src="docs/assets/settings-models.png" alt="在前端设置中选择各项系统默认模型" width="100%" /></a>
-      <br /><sub>为不同系统能力选择默认模型</sub>
-    </td>
-    <td width="50%" align="center">
-      <a href="docs/assets/settings-tools.png"><img src="docs/assets/settings-tools.png" alt="在前端设置中配置文档解析与搜索服务" width="100%" /></a>
-      <br /><sub>配置文档解析、搜索与其他工具凭证</sub>
-    </td>
-  </tr>
-</table>
+<a id="block-user-374934b6-d5e7-4e71-8b5a-b0ee426c32d1"></a>
+![图14 在前端设置中选择各项系统默认模型](docs/assets/settings-models.png)
+
+*为不同系统能力选择默认模型*
+
+<a id="block-user-0d341afe-f0a4-4132-b261-4271c3a64b6b"></a>
+![图15 在前端设置中配置文档解析与搜索服务](docs/assets/settings-tools.png)
+
+*配置文档解析、搜索与其他工具凭证*
 
 停止本地运行：
+
+代码4
+
+代码4
 
 ```bash
 make local-down
@@ -175,81 +199,110 @@ make local-down
 
 Windows 使用 `make local-win-down`。完整配置见 [快速开始](docs/quick_start.CN.md)。
 
+<a id="block-user-8dcd0ff5-654a-4483-9672-408ee842f47a"></a>
 ### 构建桌面应用
 
-| 平台 | 命令 | 产物 |
-|------|------|------|
-| macOS arm64 | `make desktop-darwin-arm64` | macOS 桌面应用 |
-| Windows x64 | `make desktop-windows-x64` | 便携 ZIP |
-| Windows x64 | `make desktop-windows-x64-installer` | 安装程序 |
+表3
 
+表3
+
+| 平台          | 命令                                   | 产物         |
+| ----------- | ------------------------------------ | ---------- |
+| macOS arm64 | `make desktop-darwin-arm64`          | macOS 桌面应用 |
+| Windows x64 | `make desktop-windows-x64`           | 便携 ZIP     |
+| Windows x64 | `make desktop-windows-x64-installer` | 安装程序       |
+
+<a id="block-user-1839ceab-ca93-49fa-83f7-aed1868d8f76"></a>
 ### 容器部署
+
+代码5
+
+代码5
 
 ```bash
 make up
 ```
 
+<a id="block-user-7d4c2da2-a535-4f3c-93a9-bce5957e55f8"></a>
 ### 启动命令速查
 
-| 场景 | 命令 |
-|------|------|
-| 构建镜像并启动 | `make up-build` |
-| 私有化 MinerU OCR | `make up LAZYMIND_DEPLOY_MINERU=1` |
-| 私有化 PaddleOCR | `make up LAZYMIND_DEPLOY_PADDLEOCR=1` |
+表4
+
+表4
+
+| 场景                   | 命令                                                                                                          |
+| -------------------- | ----------------------------------------------------------------------------------------------------------- |
+| 构建镜像并启动              | `make up-build`                                                                                             |
+| 私有化 MinerU OCR       | `make up LAZYMIND_DEPLOY_MINERU=1`                                                                          |
+| 私有化 PaddleOCR        | `make up LAZYMIND_DEPLOY_PADDLEOCR=1`                                                                       |
 | 外接 Milvus/OpenSearch | `make up LAZYMIND_MILVUS_URI=http://your-milvus:19530 LAZYMIND_OPENSEARCH_URI=https://your-opensearch:9200` |
 
 Docker/Colima 配置见 [Colima 配置说明](docs/quick_start.CN.md#macos使用-colima-替代-docker-desktop)或完整的[快速开始](docs/quick_start.CN.md)，服务依赖、环境变量和鉴权链路见[架构文档](docs/architecture.md)。
 
----
+***
 
+<a id="block-user-d5a8648d-1e4e-4c0e-9ba6-efefbc032089"></a>
 ## 当前已具备的能力
 
-| 领域 | 当前能力 |
-|------|----------|
-| 知识库 | 多数据源、OCR、向量化、混合检索、重排、同步管理 |
-| Agent | RAG 对话、工具调用、子任务、Artifact、任务中心 |
-| Plugin | 状态机、动态路由、自动验收、重试/回退、可视化执行、版本化产物 |
-| Skill | 安装、组织、审核、版本、回滚、Skill → Plugin |
-| 自进化 | 评测集、评测、badcase 分析、修复、部署、A/B Test |
-| 本地体验 | macOS/Windows 本地运行时、Desktop 构建、平台规范数据目录 |
-| 企业能力 | Kong、JWT/RBAC、ACL、OAuth 数据源、可选外部存储 |
+表5
+
+表5
+
+| 领域     | 当前能力                                    |
+| ------ | --------------------------------------- |
+| 知识库    | 多数据源、OCR、向量化、混合检索、重排、同步管理               |
+| Agent  | RAG 对话、工具调用、子任务、Artifact、任务中心           |
+| Plugin | 状态机、动态路由、自动验收、重试/回退、可视化执行、版本化产物         |
+| Skill  | 安装、组织、审核、版本、回滚、Skill → Plugin           |
+| 自进化    | 评测集、评测、badcase 分析、修复、部署、A/B Test        |
+| 本地体验   | macOS/Windows 本地运行时、Desktop 构建、平台规范数据目录 |
+| 企业能力   | Kong、JWT/RBAC、ACL、OAuth 数据源、可选外部存储      |
 
 这份列表描述的是仓库中已经实现的能力，不是未来 Roadmap。具体模块的设计与实现状态见 [docs](docs/)。
 
----
+***
 
+<a id="block-user-c6cd70d5-e018-4adf-9e9a-bf69bccb91ff"></a>
 ## Roadmap
 
 LazyMind 接下来的重点不是继续堆叠孤立功能，而是让知识库、Skill、Plugin 和自进化能力在真实任务中形成完整闭环。
 
+<a id="block-user-c5ba1974-70a3-4fd3-abb1-7297fdd01f50"></a>
 ### 近期：打磨可直接体验的旗舰场景
 
-- **知识到交付物**：围绕客户解决方案、产品手册和产品调研，提供从知识检索、结构规划、分段生成到审阅交付的完整流程。
-- **更好的局部修改**：支持选区改写、基于知识库补充、Diff、接受/拒绝修改，以及从受影响步骤局部重跑。
-- **结果交付**：完善 Markdown、DOCX、PDF 导出和可分享结果页，优先支持飞书、Notion 等内容发布目标。
-- **开箱即用的 Demo**：提供示例知识包、任务模板和完成结果，让新用户无需准备私有数据即可体验完整工作流。
-- **Desktop 体验**：继续降低安装、模型配置、数据导入和本地运行时诊断成本。
+* **知识到交付物**：围绕客户解决方案、产品手册和产品调研，提供从知识检索、结构规划、分段生成到审阅交付的完整流程。
+* **更好的局部修改**：支持选区改写、基于知识库补充、Diff、接受/拒绝修改，以及从受影响步骤局部重跑。
+* **结果交付**：完善 Markdown、DOCX、PDF 导出和可分享结果页，优先支持飞书、Notion 等内容发布目标。
+* **开箱即用的 Demo**：提供示例知识包、任务模板和完成结果，让新用户无需准备私有数据即可体验完整工作流。
+* **Desktop 体验**：继续降低安装、模型配置、数据导入和本地运行时诊断成本。
 
+<a id="block-user-1730707a-4039-484c-b5f2-7c372e2a80b3"></a>
 ### 中期：建设知识与能力分发网络
 
-- **知识库与 Skill/Plugin 广场**：支持精选内容发现、一键安装、版本更新、依赖检查和可信来源展示。
-- **可复用场景模板**：将流程、知识包、审阅规则和输出格式组合成可安装的行业方案。
-- **外部 Agent 接入**：通过 MCP、CLI、OpenAPI 和 SDK，让 Codex、Cursor、Hermes Agent、OpenClaw 等使用 LazyMind 的知识与工作流能力。
-- **更多数据连接器**：围绕周报、调研和内容生产，逐步接入协作、邮件、日历、代码和任务系统。
-- **团队协作**：增强工作流分享、审批、权限、运行记录和组织级模板治理。
+* **知识库与 Skill/Plugin 广场**：支持精选内容发现、一键安装、版本更新、依赖检查和可信来源展示。
+* **可复用场景模板**：将流程、知识包、审阅规则和输出格式组合成可安装的行业方案。
+* **外部 Agent 接入**：通过 MCP、CLI、OpenAPI 和 SDK，让 Codex、Cursor、Hermes Agent、OpenClaw 等使用 LazyMind 的知识与工作流能力。
+* **更多数据连接器**：围绕周报、调研和内容生产，逐步接入协作、邮件、日历、代码和任务系统。
+* **团队协作**：增强工作流分享、审批、权限、运行记录和组织级模板治理。
 
+<a id="block-user-1c2c53b9-3aa2-46d7-b92a-8e80a3cc79b7"></a>
 ### 长期：从执行工作流走向自进化工作系统
 
-- 根据用户修改、步骤重跑、知识引用和最终采纳结果，自动发现流程与知识缺口。
-- 对检索策略、Prompt、模型、工具和 Plugin 版本进行持续评测与 A/B Test。
-- 将成功经验沉淀为可复用的 Skill、模板和组织记忆，并保留完整来源与版本记录。
-- 通过“横向任务模板 + 纵向行业知识包”覆盖更多行业，而不是为每个行业重复开发产品。
+* 根据用户修改、步骤重跑、知识引用和最终采纳结果，自动发现流程与知识缺口。
+* 对检索策略、Prompt、模型、工具和 Plugin 版本进行持续评测与 A/B Test。
+* 将成功经验沉淀为可复用的 Skill、模板和组织记忆，并保留完整来源与版本记录。
+* 通过“横向任务模板 + 纵向行业知识包”覆盖更多行业，而不是为每个行业重复开发产品。
 
 Roadmap 会根据真实场景的完成率、结果质量、人工干预次数、执行时间和成本持续调整；具体版本内容以仓库 Issue、里程碑和发布说明为准。
 
----
+***
 
+<a id="block-user-51907f5c-2597-4169-99a1-af902cdb9437"></a>
 ## 项目结构
+
+代码6
+
+代码6
 
 ```text
 LazyMind/
@@ -270,9 +323,14 @@ LazyMind/
 └── tests/                      # 跨服务测试
 ```
 
----
+***
 
+<a id="block-user-8229d219-6ac7-4c95-b6ea-2da93890382f"></a>
 ## 开发与测试
+
+代码7
+
+代码7
 
 ```bash
 make lint              # Python + Go + 文档等静态检查
@@ -281,13 +339,14 @@ make test              # 使用宿主机环境运行测试
 make test-hermetic     # 使用项目管理的隔离环境运行同范围测试
 ```
 
-- Python 3.11+
-- Go 1.24.0
-- Node.js 20
-- OpenAPI 规范集中维护在 `api/`
+* Python 3.11+
+* Go 1.24.0
+* Node.js 20
+* OpenAPI 规范集中维护在 `api/`
 
----
+***
 
+<a id="block-user-3f74b026-c795-418a-9f43-e2461cc98da2"></a>
 ## License
 
 见 [LICENSE](LICENSE)。
