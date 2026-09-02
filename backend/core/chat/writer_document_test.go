@@ -493,6 +493,34 @@ func TestLoadWriterWriteBackBaseline_PrefersLatestSyncedDraft(t *testing.T) {
 	}
 }
 
+func TestLoadSelectedWriterArtifactFallback_PrefersResolvedThenImportedMedia(t *testing.T) {
+	db := orm.MigrateTestDB(t, &orm.WorkflowSlotRevision{})
+	imported := json.RawMessage(`{"data":{"assets":{"imported":{"kind":"image"}}}}`)
+	resolved := json.RawMessage(`{"data":{"assets":{"resolved":{"kind":"image"}}}}`)
+	seedWriterRevision(t, db, "media-imported", "media_assets", 1, true, "ai", imported)
+
+	artifact, slot, err := loadSelectedWriterArtifactFallback(
+		context.Background(), db.DB, "session", "resolved_media_assets", "media_assets",
+	)
+	if err != nil {
+		t.Fatalf("load imported media fallback: %v", err)
+	}
+	if slot != "media_assets" || string(artifact.Value) != string(imported) {
+		t.Fatalf("fallback = %q %s, want media_assets %s", slot, artifact.Value, imported)
+	}
+
+	seedWriterRevision(t, db, "media-resolved", "resolved_media_assets", 1, true, "ai", resolved)
+	artifact, slot, err = loadSelectedWriterArtifactFallback(
+		context.Background(), db.DB, "session", "resolved_media_assets", "media_assets",
+	)
+	if err != nil {
+		t.Fatalf("load resolved media: %v", err)
+	}
+	if slot != "resolved_media_assets" || string(artifact.Value) != string(resolved) {
+		t.Fatalf("preferred = %q %s, want resolved_media_assets %s", slot, artifact.Value, resolved)
+	}
+}
+
 func seedWriterRevision(
 	t *testing.T,
 	db *orm.DB,

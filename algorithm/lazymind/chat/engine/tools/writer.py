@@ -2417,6 +2417,17 @@ class WriterToolkitBase:
         )
         return _json_dumps(_primary_data(result))
 
+    def plan_document(self, parent_uri: str, adapter: str) -> str:
+        """Validate a future provider document without creating remote content."""
+        root = _temp_root()
+        result = WriterResourceTools(
+            llm=None, artifact_store=str(root),
+        ).plan_document(
+            parent_uri=parent_uri.strip(),
+            adapter=adapter.strip(),
+        )
+        return _json_dumps(_primary_data(result))
+
     def publish_revision(
         self,
         source_document_json: str,
@@ -2606,6 +2617,6 @@ class WriterResourceToolkit(WriterToolkitBase):
     """Load and persist WriterDocuments through provider-neutral resource tools."""
 
     __public_apis__ = [
-        'load_document', 'create_document', 'publish_revision',
+        'load_document', 'create_document', 'plan_document', 'publish_revision',
         'replace_document', 'append_document',
     ]
