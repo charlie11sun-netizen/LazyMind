@@ -2481,11 +2481,10 @@ def writer_export_markdown(content_path: str) -> str:
     return str(output_path)
 
 
-def writer_render_document(artifact: Any, media_assets: Any = None) -> dict:
+def writer_render_document(artifact: Any) -> dict:
     """Render a Writer IR or Markdown artifact with automatic numbering."""
     document = _action_artifact_data(artifact)
     if isinstance(document, str):
-        document = _previewable_markdown_content(document, media_assets)
         document = ensure_markdown_heading_anchors(document)
         view = build_numbering_view_from_markdown(document)
         numbering = compute_numbering(view)
@@ -3323,14 +3322,31 @@ def _save_draft_workspace_artifacts(result: Mapping[str, Any]) -> list[str]:
         target = {}
     if isinstance(target, dict) and str(target.get('adapter') or '').lower() == 'github':
         try:
-            preview_document, preview_media_assets = (
-                _previewable_markdown_workspace_artifacts(
-                    str(save_result.get('source_document') or ''),
-                    str(save_result.get('media_assets') or ''),
-                )
+            preview_pairs = (
+                ('flat_draft_document', 'flat_resolved_media_assets'),
+                ('draft_document', 'resolved_media_assets'),
+                ('source_document', 'media_assets'),
             )
-            save_result['source_document'] = preview_document
-            save_result['media_assets'] = preview_media_assets
+            for document_key, preferred_media_key in preview_pairs:
+                if allowed and document_key not in allowed:
+                    continue
+                document_path = str(save_result.get(document_key) or '')
+                media_key = (
+                    preferred_media_key
+                    if save_result.get(preferred_media_key)
+                    else 'media_assets'
+                )
+                media_assets_path = str(save_result.get(media_key) or '')
+                if not document_path or not media_assets_path:
+                    continue
+                preview_document, preview_media_assets = (
+                    _previewable_markdown_workspace_artifacts(
+                        document_path,
+                        media_assets_path,
+                    )
+                )
+                save_result[document_key] = preview_document
+                save_result[media_key] = preview_media_assets
         except (OSError, TypeError, ValueError, json.JSONDecodeError) as exc:
             LOG.warning('Unable to publish GitHub Markdown preview assets: %s', exc)
     entries: list[dict[str, Any]] = []
@@ -3683,6 +3699,8 @@ def writer_draft_workspace() -> dict:
             state['result'] = result
             _persist_draft_workspace_state(state, checkpoint_path)
 
+    if representation == 'markdown' and target_document_path:
+        result.setdefault('target_document', target_document_path)
     if representation == 'markdown' and target_document_path \
             and result.get('draft_document') \
             and not result.get('github_code_fences_prepared'):
@@ -3848,6 +3866,8 @@ def writer_flat_draft_workspace() -> dict:
         state['result'] = result
         _persist_draft_workspace_state(state, checkpoint_path)
 
+    if representation == 'markdown' and target_document_path:
+        result.setdefault('target_document', target_document_path)
     if representation == 'markdown' and target_document_path \
             and not result.get('github_code_fences_prepared'):
         prepared_draft, updated_target = _prepare_github_markdown_code_fences(

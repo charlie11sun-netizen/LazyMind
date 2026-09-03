@@ -319,31 +319,7 @@ func RenderWriterDocument(w http.ResponseWriter, r *http.Request) {
 		common.ReplyErr(w, "active "+slot+" not found", http.StatusNotFound)
 		return
 	}
-	arguments := map[string]any{}
-	mediaSlots := []string{"media_assets"}
-	if slot == "draft_document" {
-		mediaSlots = []string{"resolved_media_assets", "media_assets"}
-	} else if slot == "flat_draft_document" {
-		mediaSlots = []string{"flat_resolved_media_assets", "media_assets"}
-	}
-	for _, mediaSlot := range mediaSlots {
-		mediaAssets, mediaErr := loadSelectedWriterArtifact(ctx, db, sessionID, mediaSlot)
-		if errors.Is(mediaErr, gorm.ErrRecordNotFound) {
-			continue
-		}
-		if mediaErr != nil {
-			common.ReplyErr(w, "load "+mediaSlot+" failed", http.StatusInternalServerError)
-			return
-		}
-		mediaData, mediaErr := writerArtifactData(mediaAssets.Value, false)
-		if mediaErr != nil {
-			common.ReplyErr(w, "invalid "+mediaSlot, http.StatusConflict)
-			return
-		}
-		arguments["media_assets"] = mediaData
-		break
-	}
-	request := algo.WorkflowActionInvokeRequest{
+	response, status, err := algo.InvokeWorkflowAction(ctx, algo.WorkflowActionInvokeRequest{
 		WorkflowID: session.WorkflowID,
 		RevisionID: session.WorkflowRevisionID,
 		TreeHash:   session.WorkflowTreeHash,
@@ -352,17 +328,8 @@ func RenderWriterDocument(w http.ResponseWriter, r *http.Request) {
 		Phase:      "execute",
 		Slot:       slot,
 		Artifact:   draft.Value,
-		Arguments:  arguments,
-	}
-	response, status, err := algo.InvokeWorkflowAction(ctx, request)
-	// Workflow sessions pin immutable revisions. Revisions published before
-	// media-aware rendering do not accept the new optional argument, so keep
-	// those historical sessions renderable while new sessions receive media.
-	if err != nil && len(arguments) > 0 &&
-		workflowActionRejectsArgument(err, "media_assets") {
-		request.Arguments = map[string]any{}
-		response, status, err = algo.InvokeWorkflowAction(ctx, request)
-	}
+		Arguments:  map[string]any{},
+	})
 	if err != nil {
 		if status < 400 || status > 599 {
 			status = http.StatusBadGateway
@@ -378,19 +345,6 @@ func RenderWriterDocument(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	common.ReplyOK(w, result)
-}
-
-func workflowActionRejectsArgument(err error, argument string) bool {
-	var httpErr *common.HTTPError
-	if !errors.As(err, &httpErr) || httpErr.StatusCode != http.StatusUnprocessableEntity {
-		return false
-	}
-	message := strings.ToLower(string(httpErr.Body))
-	argument = strings.ToLower(strings.TrimSpace(argument))
-	return argument != "" && strings.Contains(
-		message,
-		fmt.Sprintf("unexpected keyword argument '%s'", argument),
-	)
 }
 
 // SaveWriterDocument persists an IR or Markdown edit as a mutable draft or a

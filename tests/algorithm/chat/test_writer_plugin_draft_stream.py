@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import hashlib
 import importlib.util
 import json
 import sys
@@ -141,12 +140,17 @@ def test_write_document_revision_emits_markdown_draft_stream(monkeypatch, tmp_pa
     )
 
 
-def test_render_markdown_maps_available_media_and_keeps_unmapped_references(
+def test_github_preview_artifact_maps_media_before_standard_render(
     monkeypatch,
     tmp_path,
 ):
+    from lazymind.chat.engine.subagent import tools as subagent_tools
+
     tools = _load_tools_module()
-    context = SimpleNamespace(workspace_path=str(tmp_path))
+    context = SimpleNamespace(
+        workspace_path=str(tmp_path),
+        output_slots=['draft_document', 'resolved_media_assets'],
+    )
     monkeypatch.setattr(tools, 'require_context', lambda: context)
     monkeypatch.setattr(
         tools,
@@ -160,37 +164,54 @@ def test_render_markdown_maps_available_media_and_keeps_unmapped_references(
         '<svg xmlns="http://www.w3.org/2000/svg"></svg>',
         encoding='utf-8',
     )
-    uploaded_image = media_dir / 'uploaded.png'
-    payload = b'uploaded-image'
-    uploaded_image.write_bytes(payload)
-    digest = hashlib.sha256(payload).hexdigest()
-    uploaded_reference = f'assets/{digest[:2]}/{digest}.png'
-    canonical = (
+    canonical_path = tmp_path / 'document.md'
+    canonical_path.write_text(
         '# 文档\n\n'
         '![原图](docs/assets/diagram.svg)\n\n'
-        f'![新图]({uploaded_reference})\n\n'
-        '![未导入](docs/assets/unmapped.svg)\n'
+        '![未导入](docs/assets/unmapped.svg)\n',
+        encoding='utf-8',
     )
-    media_assets = {
+    media_assets_path = tmp_path / 'media_assets.json'
+    media_assets_path.write_text(json.dumps({
         'assets': {
             'imported': {
                 'local_path': str(imported_image),
                 'meta': {'source_reference': 'docs/assets/diagram.svg'},
             },
-            'uploaded': {
-                'local_path': str(uploaded_image),
-                'meta': {'sha256': digest},
-            },
         },
-    }
+    }), encoding='utf-8')
+    target_path = tmp_path / 'target_document.json'
+    target_path.write_text(json.dumps({
+        'adapter': 'github',
+        'uri': 'githubrepo:/acme/docs/README.md?ref=main',
+    }), encoding='utf-8')
+    saved_entries = []
 
-    rendered = tools.writer_render_document(canonical, media_assets=media_assets)
+    def save_artifacts(entries):
+        saved_entries.extend(entries)
+        return {'status': 'ok'}
 
+    monkeypatch.setattr(subagent_tools, 'save_artifacts', save_artifacts)
+
+    saved_keys = tools._save_draft_workspace_artifacts({
+        'draft_document': str(canonical_path),
+        'resolved_media_assets': str(media_assets_path),
+        'target_document': str(target_path),
+    })
+    saved = {entry['key']: entry['value'] for entry in saved_entries}
+    preview_path = saved['draft_document']
+    preview_media_path = saved['resolved_media_assets']
+    rendered = tools.writer_render_document(preview_path)
+
+    assert saved_keys == ['draft_document', 'resolved_media_assets']
     preview = rendered['document']
     assert rendered['representation'] == 'markdown'
-    assert '![原图](/preview/diagram.svg)' in preview
-    assert '![新图](/preview/uploaded.png)' in preview
+    assert '![原图](/preview/diagram.svg#writer-media-' in preview
     assert '(docs/assets/unmapped.svg)' in preview
+    preview_media = tools._read_json_file(preview_media_path)
+    assert preview_media['assets']['imported']['meta']['source_reference'] == (
+        'docs/assets/diagram.svg'
+    )
 
 
 def test_markdown_draft_blocks_do_not_pass_resolved_media(monkeypatch, tmp_path):
