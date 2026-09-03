@@ -235,7 +235,10 @@ export interface WriteBackWriterDocumentResult {
   provider_synced: boolean;
   artifact_saved: boolean;
   patch_result: SyncWriterDocumentPatchResult;
-  document: Record<string, unknown>;
+  document: RenderedWriterDocument;
+  representation: WriterDocumentRepresentation;
+  provider?: string;
+  write_result?: Record<string, unknown>;
 }
 
 export interface WriteBackWriterDocumentRequest {

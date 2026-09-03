@@ -9,7 +9,9 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import os
 import re
+import shutil
 import tempfile
 import uuid
 from pathlib import Path
@@ -46,6 +48,7 @@ from lazyllm.tools.writer.numbering import (
     materialize_markdown,
 )
 from lazyllm.tools.writer.provider import match_writer_provider
+from lazyllm.tools.writer.provider.github import GitHubWriterProvider
 from lazyllm.tools.writer.tools import (
     WriterDraftingTools,
     WriterPlanningTools,
@@ -65,6 +68,7 @@ from lazyllm.tools.tools.search import (
     TavilySearch,
 )
 from lazymind.chat.engine.subagent.context import require_context
+from lazymind.chat.engine.tools.multimodal import image_generator
 from lazymind.chat.engine.tools.writer import (
     DraftMarkdownStreamEventEmitter,
     WriterCreateToolkit,
@@ -74,8 +78,17 @@ from lazymind.chat.engine.tools.writer import (
     sync_writer_documents,
     writer_schema,
 )
-from lazymind.chat.engine.tools.multimodal import image_generator
+from lazymind.chat.service.utils.static_file_url import static_file_url_from_any
 from lazymind.model_config import is_model_role_available
+
+_MARKDOWN_IMAGE_URL_RE = re.compile(
+    r'(?P<prefix>!\[[^\]]*\]\(\s*)(?P<url><[^>]+>|[^\s)]+)(?P<suffix>[^)]*\))',
+)
+_HTML_MEDIA_URL_RE = re.compile(
+    r'(?P<prefix><(?:img|source|video|audio)\b[^>]*?\bsrc=["\'])'
+    r'(?P<url>[^"\']+)(?P<suffix>["\'])',
+    re.IGNORECASE,
+)
 
 WRITER_IMAGE_ACQUISITION_PROMPT = '''Create one professional visual for a document.
 
@@ -400,6 +413,11 @@ _PROVIDER_DOCUMENT_LOCATOR = re.compile(
     r"(?:https?://|[a-z][a-z0-9+.-]*:(?://)?)[^\s<>\"'，。；！？、（）【】《》「」『』]+",
     re.IGNORECASE,
 )
+_GITHUB_CREATE_PARENT = re.compile(
+    r'^https?://(?:www\.)?github\.com/[^/\s]+/[^/\s]+'
+    r'(?:/tree/[^?#\s]+)?/?(?:[?#].*)?$',
+    re.IGNORECASE,
+)
 _LOCAL_WRITER_DOCUMENT_SUFFIXES = {'.md', '.markdown', '.txt', '.lmd'}
 _CHINESE_CHAR_LIMIT_RE = re.compile(
     r'(?P<prefix>不超过|至多|最多|约|大约|大概)?\s*'
@@ -430,6 +448,14 @@ def _provider_document_locator(value: str) -> str:
         except ValueError:
             continue
         return locator
+    return ''
+
+
+def _github_create_target_locator(value: str) -> str:
+    for match in _PROVIDER_DOCUMENT_LOCATOR.finditer(value or ''):
+        locator = match.group(0).rstrip(').,;!?]}，。；！？】》」』')
+        if _GITHUB_CREATE_PARENT.fullmatch(locator):
+            return locator
     return ''
 
 
@@ -743,12 +769,13 @@ def _markdown_filename(title: str) -> str:
 def _save_publish_payload(payload: dict, root: Path) -> dict:
     draft_document = payload.get('draft_document') or {}
     publish_result = payload.get('publish_result') or {}
+    target_document = payload.get('target_document') or {}
     if isinstance(publish_result, dict):
         publish_result = {
             **publish_result,
             'success': bool(publish_result.get('success', draft_document)),
         }
-    return {
+    result = {
         'publish_result': _save_json_artifact(
             'publish_result',
             json.dumps(publish_result, ensure_ascii=False),
@@ -770,6 +797,14 @@ def _save_publish_payload(payload: dict, root: Path) -> dict:
         ),
         'published_link': str(payload.get('published_link') or ''),
     }
+    if target_document:
+        result['target_document'] = _save_json_artifact(
+            'target_document',
+            json.dumps(target_document, ensure_ascii=False),
+            writer_schema('task.TargetDocument'),
+            directory=root,
+        )
+    return result
 
 
 def writer_build_writing_task(query: str, representation: str = 'markdown') -> str:
@@ -829,6 +864,7 @@ def writer_load_document(user_input: str, stage: str = 'final') -> dict:
         WriterResourceToolkit().load_document(user_input=user_input, stage=stage),
         {},
     )
+    input_resources = payload.get('input_resources') or []
     return {
         'source_document': _save_writer_document(
             'source_document',
@@ -843,7 +879,29 @@ def writer_load_document(user_input: str, stage: str = 'final') -> dict:
             directory=root,
         ),
         'representation': str(payload.get('representation') or ''),
+        'input_resources': _save_json_artifact(
+            'provider_input_resources',
+            json.dumps(input_resources, ensure_ascii=False),
+            writer_schema('task.InputResource'),
+            directory=root,
+        ) if input_resources else '',
+        'resource_warnings': list(payload.get('resource_warnings') or []),
     }
+
+
+def writer_plan_document(parent_uri: str, adapter: str) -> str:
+    """Save a validated future provider target without writing remote content."""
+    root = _run_root('plan-document')
+    payload = _json_loads(
+        WriterResourceToolkit().plan_document(parent_uri=parent_uri, adapter=adapter),
+        {},
+    )
+    return _save_json_artifact(
+        'target_document',
+        json.dumps(payload, ensure_ascii=False),
+        writer_schema('task.TargetDocument'),
+        directory=root,
+    )
 
 
 def writer_profile_resources(
@@ -887,6 +945,7 @@ def writer_profile_resources(
 def writer_collect_available_media(
     writing_task_path: str,
     source_document_path: str = '',
+    input_resources_path: str = '',
 ) -> dict:
     """Collect attached and source-document images into the authoritative media library."""
     ctx = require_context()
@@ -907,6 +966,17 @@ def writer_collect_available_media(
         ),
         [],
     )
+    if input_resources_path:
+        provider_resources = _read_json_file(input_resources_path)
+        if isinstance(provider_resources, list):
+            existing_uris = {
+                str(item.get('uri') or '')
+                for item in resources if isinstance(item, dict)
+            }
+            resources.extend(
+                item for item in provider_resources
+                if isinstance(item, dict) and str(item.get('uri') or '') not in existing_uris
+            )
     writing_task_json = _read_json_string(writing_task_path)
     writing_task_value = _json_loads(writing_task_json, {})
     visual_policy = (writing_task_value.get('constraints') or {}).get('visual_policy') or {}
@@ -1021,6 +1091,7 @@ def writer_prepare_workspace(
     source_filename = str(source_filename or '').strip()
     cloud_source_locator = _provider_document_locator(user_input or '')
     has_cloud_source = bool(cloud_source_locator)
+    create_target_locator = _github_create_target_locator(user_input or '')
 
     # Models occasionally copy a provider locator into both fields.
     # Treat that as one cloud source, never as a local filename override.
@@ -1088,12 +1159,17 @@ def writer_prepare_workspace(
         source_role=source_role,
         target_stage=target_stage,
         source_ref=source_ref,
+        target_ref=create_target_locator if operation == 'create' else '',
     )
     command = _load_writer_command(writer_command)
 
     source_document = ''
     target_document = ''
+    provider_input_resources = ''
+    provider_warnings: list[str] = []
     representation = 'markdown'
+    if operation == 'create' and command.target_ref:
+        target_document = writer_plan_document(command.target_ref, 'github')
     if operation != 'create':
         if source_kind == 'local':
             source_document = writer_load_local_document(source_filename)
@@ -1111,6 +1187,8 @@ def writer_prepare_workspace(
             source_document = loaded['source_document']
             target_document = loaded['target_document']
             representation = loaded['representation']
+            provider_input_resources = loaded.get('input_resources') or ''
+            provider_warnings = loaded.get('resource_warnings') or []
 
     writing_task = writer_build_writing_task(
         query=user_input,
@@ -1119,6 +1197,7 @@ def writer_prepare_workspace(
     media_result = writer_collect_available_media(
         writing_task_path=writing_task,
         source_document_path=source_document if operation != 'use_outline' else '',
+        input_resources_path=provider_input_resources,
     )
     resource_profiles = writer_profile_resources(
         writing_task_path=writing_task,
@@ -1142,7 +1221,7 @@ def writer_prepare_workspace(
         'structure_mode': command.structure_mode,
         'next_step': command.next_step,
         'control': {'next_step': command.next_step},
-        'warnings': media_result.get('warnings') or [],
+        'warnings': [*provider_warnings, *(media_result.get('warnings') or [])],
     }
     if source_document:
         result['source_document'] = source_document
@@ -2647,10 +2726,14 @@ def _sync_markdown_document(
         raise ValueError('Markdown draft is empty.')
     heading = re.search(r'^#\s+(.+?)\s*$', markdown, flags=re.MULTILINE)
     document_title = (heading.group(1).strip() if heading else title.strip()) or '未命名文档'
+    resolved_target = dict(target_document or {})
+    target_meta = resolved_target.get('meta')
+    if isinstance(target_meta, Mapping) and target_meta.get('create_pending'):
+        resolved_target['title'] = str(resolved_target.get('title') or document_title)
     return _replace_document_and_read_back(
         markdown_content,
         title=document_title,
-        target_document=target_document,
+        target_document=resolved_target or None,
         media_assets=media_assets,
         artifact_store=artifact_store,
         source_format='markdown',
@@ -2706,6 +2789,18 @@ def _replace_document_and_read_back(
         persisted_document = WriterDocument.model_validate(persisted)
         persisted_document.ui_editable = True
         persisted = persisted_document.model_dump()
+    display_document = None
+    if (
+        str(payload.get('provider') or adapter).strip().lower() == 'github'
+        and isinstance(persisted, str)
+        and media_library is not None
+    ):
+        preview = _previewable_markdown_content(
+            persisted,
+            media_library.model_dump(),
+        )
+        if preview != persisted:
+            display_document = preview
     result = PatchResult(
         success=True,
         message='Document written to provider and read back successfully.',
@@ -2715,7 +2810,7 @@ def _replace_document_and_read_back(
             'write_result': write_result,
         },
     )
-    return {
+    response = {
         'success': True,
         'changed': True,
         'provider_synced': True,
@@ -2723,7 +2818,12 @@ def _replace_document_and_read_back(
         'persisted_document': persisted,
         'representation': payload.get('representation'),
         'provider': payload.get('provider'),
+        'write_result': write_result,
+        'target_document': payload.get('target_document'),
     }
+    if display_document is not None:
+        response['display_document'] = display_document
+    return response
 
 
 def _action_result_path(result: dict, key: str | None = None) -> str:
@@ -3038,14 +3138,241 @@ def _modify_plan_needs_media(path: str) -> bool:
     )
 
 
+def _rewrite_document_media_urls(content: str, url_map: Mapping[str, str]) -> str:
+    """Rewrite only explicitly mapped media URLs."""
+    if not content or not url_map:
+        return content
+
+    def replace(match: re.Match) -> str:
+        token = str(match.group('url') or '')
+        value = token.strip('<>')
+        replacement = str(url_map.get(value) or '')
+        if not replacement:
+            return match.group(0)
+        if token.startswith('<') and token.endswith('>'):
+            replacement = f'<{replacement}>'
+        return f"{match.group('prefix')}{replacement}{match.group('suffix')}"
+
+    rewritten = _MARKDOWN_IMAGE_URL_RE.sub(replace, content)
+    return _HTML_MEDIA_URL_RE.sub(replace, rewritten)
+
+
+def _previewable_markdown_content(
+    content: str,
+    media_assets: Any = None,
+    *,
+    remember_preview_references: bool = False,
+) -> str:
+    media_assets = _action_artifact_data(media_assets) if media_assets is not None else {}
+    assets = media_assets.get('assets') if isinstance(media_assets, dict) else None
+    if not isinstance(assets, dict):
+        return content
+    referenced_urls = {
+        str(match.group('url') or '').strip('<>')
+        for pattern in (_MARKDOWN_IMAGE_URL_RE, _HTML_MEDIA_URL_RE)
+        for match in pattern.finditer(content)
+    }
+    url_map: dict[str, str] = {}
+    for asset_id, asset in assets.items():
+        if not isinstance(asset, dict):
+            continue
+        meta = asset.get('meta') if isinstance(asset.get('meta'), dict) else {}
+        if remember_preview_references and not isinstance(asset.get('meta'), dict):
+            asset['meta'] = meta
+        source_reference = str(meta.get('source_reference') or '').strip()
+        local_path = str(asset.get('local_path') or '').strip()
+        if not local_path or not Path(local_path).is_file():
+            continue
+        previous_reference = str(meta.get('preview_reference') or '').strip()
+        preview_reference = _publish_preview_media(local_path, meta)
+        if not preview_reference:
+            continue
+        if remember_preview_references:
+            preview_reference = (
+                f'{preview_reference.split("#", 1)[0]}'
+                f'#writer-media-{hashlib.sha256(str(asset_id).encode()).hexdigest()[:16]}'
+            )
+            meta['preview_reference'] = preview_reference
+        url_map[f'asset://{asset_id}'] = preview_reference
+        if source_reference:
+            url_map[source_reference] = preview_reference
+        if previous_reference:
+            url_map[previous_reference] = preview_reference
+        digest = str(meta.get('sha256') or '').strip().lower()
+        if re.fullmatch(r'[0-9a-f]{64}', digest):
+            for reference in referenced_urls:
+                if digest in reference.lower():
+                    url_map[reference] = preview_reference
+    return _rewrite_document_media_urls(content, url_map)
+
+
+def _previewable_markdown_document(
+    document_path: str,
+    media_assets_path: str = '',
+) -> str:
+    source = Path(str(document_path or ''))
+    if source.suffix.lower() not in {'.md', '.markdown'} or not source.is_file() \
+            or not media_assets_path:
+        return str(document_path)
+    content = source.read_text(encoding='utf-8')
+    preview = _previewable_markdown_content(
+        content,
+        _read_json_file(media_assets_path),
+    )
+    if preview == content:
+        return str(document_path)
+    path = _run_root('preview-document') / source.name
+    path.write_text(preview, encoding='utf-8')
+    return str(path)
+
+
+def _previewable_markdown_workspace_artifacts(
+    document_path: str,
+    media_assets_path: str,
+) -> tuple[str, str]:
+    """Create linked preview copies while keeping the imported files canonical."""
+    source = Path(str(document_path or ''))
+    if source.suffix.lower() not in {'.md', '.markdown'} or not source.is_file() \
+            or not media_assets_path:
+        return str(document_path), str(media_assets_path)
+    media_assets = _read_json_file(media_assets_path)
+    if not isinstance(media_assets, dict):
+        return str(document_path), str(media_assets_path)
+    content = source.read_text(encoding='utf-8')
+    preview = _previewable_markdown_content(
+        content,
+        media_assets,
+        remember_preview_references=True,
+    )
+    if preview == content:
+        return str(document_path), str(media_assets_path)
+    root = _run_root('preview-workspace')
+    preview_document = root / source.name
+    preview_document.write_text(preview, encoding='utf-8')
+    preview_media_assets = _save_json_artifact(
+        'media_assets',
+        json.dumps(media_assets, ensure_ascii=False),
+        writer_schema('multimodal.MediaAssetLibrary'),
+        directory=root,
+    )
+    return str(preview_document), preview_media_assets
+
+
+def _prepare_github_markdown_code_fences(
+    document_path: str,
+    target_document_path: str,
+) -> tuple[str, str]:
+    """Create GitHub-only editor copies and return an updated target when needed."""
+    source = Path(str(document_path or ''))
+    if source.suffix.lower() not in {'.md', '.markdown'} or not source.is_file() \
+            or not target_document_path:
+        return str(document_path), ''
+    target = TargetDocument.model_validate(_read_json_file(target_document_path))
+    if not str(target.adapter or '').lower().startswith('github'):
+        return str(document_path), ''
+    markdown = source.read_text(encoding='utf-8')
+    target_before = target.model_dump()
+    normalized = GitHubWriterProvider.normalize_code_fences_for_writer(
+        markdown, target,
+    )
+    if normalized == markdown and target.model_dump() == target_before:
+        return str(document_path), ''
+    root = _run_root('github-code-fences')
+    normalized_path = root / source.name
+    normalized_path.write_text(normalized, encoding='utf-8')
+    updated_target_path = _save_json_artifact(
+        'target_document',
+        json.dumps(target.model_dump(), ensure_ascii=False),
+        writer_schema('task.TargetDocument'),
+        directory=root,
+    )
+    return str(normalized_path), updated_target_path
+
+
+def _publish_preview_media(local_path: str, meta: Mapping[str, Any]) -> str:
+    source = Path(local_path)
+    signed = static_file_url_from_any(str(source))
+    if signed:
+        return signed
+    upload_root = str(
+        os.environ.get('LAZYMIND_SHARED_UPLOAD_DIR')
+        or os.environ.get('LAZYMIND_UPLOAD_ROOT')
+        or ''
+    ).strip()
+    if not upload_root:
+        return ''
+    digest = str(meta.get('sha256') or '').strip().lower()
+    if not re.fullmatch(r'[0-9a-f]{64}', digest):
+        hasher = hashlib.sha256()
+        with source.open('rb') as fh:
+            for chunk in iter(lambda: fh.read(1024 * 1024), b''):
+                hasher.update(chunk)
+        digest = hasher.hexdigest()
+    suffix = source.suffix.lower()
+    if not re.fullmatch(r'\.[a-z0-9]{1,10}', suffix):
+        suffix = '.bin'
+    destination = Path(upload_root) / 'writer-preview-assets' / digest[:2] / f'{digest}{suffix}'
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    if not destination.is_file():
+        temporary = destination.with_name(f'.{destination.name}.{uuid.uuid4().hex}.tmp')
+        try:
+            shutil.copyfile(source, temporary)
+            temporary.replace(destination)
+        finally:
+            if temporary.exists():
+                temporary.unlink()
+    return static_file_url_from_any(str(destination))
+
+
+def _writer_target_adapter(target_document: Any) -> str:
+    try:
+        target = _action_artifact_data(target_document) if target_document else {}
+    except (OSError, TypeError, ValueError, json.JSONDecodeError):
+        return ''
+    return (
+        str(target.get('adapter') or '').strip().lower()
+        if isinstance(target, dict) else ''
+    )
+
+
 def _save_draft_workspace_artifacts(result: Mapping[str, Any]) -> list[str]:
     from lazymind.chat.engine.subagent.tools import save_artifacts
 
     ctx = require_context()
     allowed = set(ctx.output_slots or [])
+    save_result = dict(result)
+    if _writer_target_adapter(save_result.get('target_document')) == 'github':
+        try:
+            preview_pairs = (
+                ('flat_draft_document', 'flat_resolved_media_assets'),
+                ('draft_document', 'resolved_media_assets'),
+                ('source_document', 'media_assets'),
+            )
+            for document_key, preferred_media_key in preview_pairs:
+                if allowed and document_key not in allowed:
+                    continue
+                document_path = str(save_result.get(document_key) or '')
+                media_key = (
+                    preferred_media_key
+                    if save_result.get(preferred_media_key)
+                    else 'media_assets'
+                )
+                media_assets_path = str(save_result.get(media_key) or '')
+                if not document_path or not media_assets_path:
+                    continue
+                preview_document, preview_media_assets = (
+                    _previewable_markdown_workspace_artifacts(
+                        document_path,
+                        media_assets_path,
+                    )
+                )
+                save_result[document_key] = preview_document
+                save_result[media_key] = preview_media_assets
+        except (OSError, TypeError, ValueError, json.JSONDecodeError) as exc:
+            LOG.warning('Unable to publish GitHub Markdown preview assets: %s', exc)
     entries: list[dict[str, Any]] = []
     saved_keys: list[str] = []
-    for key, value in result.items():
+    for key, value in save_result.items():
         if allowed and key not in allowed:
             continue
         if key == 'draft_blocks' and isinstance(value, list):
@@ -3302,7 +3629,7 @@ def writer_draft_workspace() -> dict:
             state['result'] = result
             _persist_draft_workspace_state(state, checkpoint_path)
 
-        should_write_back = bool(target_document_path) and (
+        should_write_back = representation == 'ir' and bool(target_document_path) and (
             operation == 'rewrite' or not draft_document_path
         )
         if should_write_back and not result.get('document_write_result'):
@@ -3311,10 +3638,12 @@ def writer_draft_workspace() -> dict:
                 content_path=result['draft_document'],
                 source_document_path=source_document_path,
                 target_document_path=target_document_path,
-                media_assets_path=resolved_media,
+                media_assets_path=resolved_media or media_assets_path,
             )
             result['document_write_result'] = published['publish_result']
             result['draft_document'] = published['draft_document']
+            if published.get('target_document'):
+                result['target_document'] = published['target_document']
             state['result'] = result
             _persist_draft_workspace_state(state, checkpoint_path)
     else:
@@ -3377,25 +3706,37 @@ def writer_draft_workspace() -> dict:
             result['draft_document'] = applied['draft_document']
             state['result'] = result
             _persist_draft_workspace_state(state, checkpoint_path)
-        if not draft_document_path and target_document_path \
+        if representation == 'ir' and not draft_document_path and target_document_path \
                 and not result.get('document_write_result'):
-            if representation == 'ir':
-                published = writer_publish_revision(
-                    source_document_path=source_document_path,
-                    revision_set_path=result['document_revision_set'],
-                    media_assets_path=resolved_media,
-                )
-            else:
-                published = writer_replace_document(
-                    content_path=result['draft_document'],
-                    source_document_path=source_document_path,
-                    target_document_path=target_document_path,
-                    media_assets_path=resolved_media,
-                )
+            published = writer_publish_revision(
+                source_document_path=source_document_path,
+                revision_set_path=result['document_revision_set'],
+                media_assets_path=resolved_media or media_assets_path,
+            )
             result['document_write_result'] = published['publish_result']
             result['draft_document'] = published['draft_document']
+            if published.get('target_document'):
+                result['target_document'] = published['target_document']
             state['result'] = result
             _persist_draft_workspace_state(state, checkpoint_path)
+
+    if representation == 'markdown' and target_document_path:
+        result.setdefault('target_document', target_document_path)
+        if _writer_target_adapter(target_document_path) == 'github' \
+                and media_assets_path and not result.get('resolved_media_assets'):
+            result['resolved_media_assets'] = resolved_media or media_assets_path
+    if representation == 'markdown' and target_document_path \
+            and result.get('draft_document') \
+            and not result.get('github_code_fences_prepared'):
+        prepared_draft, updated_target = _prepare_github_markdown_code_fences(
+            str(result['draft_document']), target_document_path,
+        )
+        result['draft_document'] = prepared_draft
+        if updated_target:
+            result['target_document'] = updated_target
+        result['github_code_fences_prepared'] = True
+        state['result'] = result
+        _persist_draft_workspace_state(state, checkpoint_path)
 
     if not result.get('writing_context_after_draft'):
         _emit_writer_progress('正在更新成稿上下文')
@@ -3445,6 +3786,7 @@ def writer_flat_draft_workspace() -> dict:
         'writing_context', require_workflow_binding=True,
     )
     media_assets_path = _authoritative_writer_input_path('media_assets')
+    target_document_path = _authoritative_writer_input_path('target_document')
     command = _load_writer_command(writer_command_path)
     if command.structure_mode != 'flat':
         raise ValueError(
@@ -3469,7 +3811,7 @@ def writer_flat_draft_workspace() -> dict:
         '',
         '',
         '',
-        '',
+        target_document_path,
     )
     state, checkpoint_path = _draft_workspace_state(fingerprint)
     result: dict[str, Any] = dict(state.get('result') or {})
@@ -3545,6 +3887,23 @@ def writer_flat_draft_workspace() -> dict:
             resolved_media_assets_path=resolved_media,
         )
         result['representation'] = representation
+        state['result'] = result
+        _persist_draft_workspace_state(state, checkpoint_path)
+
+    if representation == 'markdown' and target_document_path:
+        result.setdefault('target_document', target_document_path)
+        if _writer_target_adapter(target_document_path) == 'github' \
+                and media_assets_path and not result.get('resolved_media_assets'):
+            result['resolved_media_assets'] = resolved_media or media_assets_path
+    if representation == 'markdown' and target_document_path \
+            and not result.get('github_code_fences_prepared'):
+        prepared_draft, updated_target = _prepare_github_markdown_code_fences(
+            str(result['draft_document']), target_document_path,
+        )
+        result['draft_document'] = prepared_draft
+        if updated_target:
+            result['target_document'] = updated_target
+        result['github_code_fences_prepared'] = True
         state['result'] = result
         _persist_draft_workspace_state(state, checkpoint_path)
 

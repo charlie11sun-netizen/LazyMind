@@ -18,7 +18,12 @@ from services.cloud_oauth_provider import (
     CloudProviderError,
     CloudTokenPayload,
 )
-from services.providers import FeishuOAuthProvider, GoogleDriveOAuthProvider, NotionOAuthProvider
+from services.providers import (
+    FeishuOAuthProvider,
+    GitHubOAuthProvider,
+    GoogleDriveOAuthProvider,
+    NotionOAuthProvider,
+)
 
 
 _AUTH_MODES = {'tenant', 'oauth_user', 'service_account'}
@@ -100,10 +105,12 @@ class CloudOAuthService:
         feishu = FeishuOAuthProvider()
         google_drive = GoogleDriveOAuthProvider()
         notion = NotionOAuthProvider()
+        github = GitHubOAuthProvider()
         self._providers: dict[str, CloudOAuthProvider] = {
             feishu.provider_name(): feishu,
             google_drive.provider_name(): google_drive,
             notion.provider_name(): notion,
+            github.provider_name(): github,
         }
         self._cache_lock = threading.Lock()
         self._token_cache: dict[str, _TokenCacheItem] = {}
@@ -802,6 +809,11 @@ class CloudOAuthService:
         scope_value = (scope or '').strip()
         if not scope_value and hasattr(provider_impl, 'default_scope'):
             scope_value = provider_impl.default_scope()
+        if provider_impl.provider_name() == 'github':
+            provider_options = dict(provider_options or {})
+            if 'chat_enabled' not in provider_options and 'chatEnabled' not in provider_options:
+                provider_options['chat_enabled'] = True
+                provider_options['chatEnabled'] = True
         oauth_state = (state or '').strip() or secrets.token_urlsafe(18)
         oauth_state_expires = _utcnow() + timedelta(minutes=_OAUTH_STATE_TTL_MINUTES)
         authorize_url = provider_impl.build_authorize_url(
@@ -876,6 +888,7 @@ class CloudOAuthService:
                     )
                     credential['client_id'] = normalized_client_id
                     credential['client_secret'] = normalized_client_secret
+                    credential['provider_options'] = provider_options or {}
                     reused.credential_ciphertext = self._encrypt_payload(
                         credential, field_name='credential'
                     )

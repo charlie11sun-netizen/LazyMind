@@ -140,6 +140,136 @@ def test_write_document_revision_emits_markdown_draft_stream(monkeypatch, tmp_pa
     )
 
 
+def test_github_preview_artifact_maps_media_before_standard_render(
+    monkeypatch,
+    tmp_path,
+):
+    from lazymind.chat.engine.subagent import tools as subagent_tools
+
+    tools = _load_tools_module()
+    context = SimpleNamespace(
+        workspace_path=str(tmp_path),
+        output_slots=['draft_document', 'resolved_media_assets'],
+    )
+    monkeypatch.setattr(tools, 'require_context', lambda: context)
+    monkeypatch.setattr(
+        tools,
+        '_publish_preview_media',
+        lambda local_path, _meta: f'/preview/{Path(local_path).name}',
+    )
+    media_dir = tmp_path / 'media'
+    media_dir.mkdir()
+    imported_image = media_dir / 'diagram.svg'
+    imported_image.write_text(
+        '<svg xmlns="http://www.w3.org/2000/svg"></svg>',
+        encoding='utf-8',
+    )
+    canonical_path = tmp_path / 'document.md'
+    canonical_path.write_text(
+        '# 文档\n\n'
+        '![原图](docs/assets/diagram.svg)\n\n'
+        '![未导入](docs/assets/unmapped.svg)\n',
+        encoding='utf-8',
+    )
+    media_assets_path = tmp_path / 'media_assets.json'
+    media_assets_path.write_text(json.dumps({
+        'assets': {
+            'imported': {
+                'local_path': str(imported_image),
+                'meta': {'source_reference': 'docs/assets/diagram.svg'},
+            },
+        },
+    }), encoding='utf-8')
+    target_path = tmp_path / 'target_document.json'
+    target_path.write_text(json.dumps({
+        'adapter': 'github',
+        'uri': 'githubrepo:/acme/docs/README.md?ref=main',
+    }), encoding='utf-8')
+    saved_entries = []
+
+    def save_artifacts(entries):
+        saved_entries.extend(entries)
+        return {'status': 'ok'}
+
+    monkeypatch.setattr(subagent_tools, 'save_artifacts', save_artifacts)
+
+    saved_keys = tools._save_draft_workspace_artifacts({
+        'draft_document': str(canonical_path),
+        'resolved_media_assets': str(media_assets_path),
+        'target_document': str(target_path),
+    })
+    saved = {entry['key']: entry['value'] for entry in saved_entries}
+    preview_path = saved['draft_document']
+    preview_media_path = saved['resolved_media_assets']
+    rendered = tools.writer_render_document(preview_path)
+
+    assert saved_keys == ['draft_document', 'resolved_media_assets']
+    preview = rendered['document']
+    assert rendered['representation'] == 'markdown'
+    assert '![原图](/preview/diagram.svg#writer-media-' in preview
+    assert '(docs/assets/unmapped.svg)' in preview
+    preview_media = tools._read_json_file(preview_media_path)
+    assert preview_media['assets']['imported']['meta']['source_reference'] == (
+        'docs/assets/diagram.svg'
+    )
+
+
+def test_github_sync_keeps_persisted_paths_and_returns_preview(monkeypatch, tmp_path):
+    tools = _load_tools_module()
+    image = tmp_path / 'image.jpg'
+    image.write_bytes(b'image')
+    digest = 'a' * 64
+    media_assets = {
+        'library_id': 'library-1',
+        'assets': {
+            'generated': {
+                'media_asset_id': 'generated',
+                'asset_type': 'generated_image',
+                'source_type': 'image_generation',
+                'local_path': str(image),
+                'meta': {'sha256': digest},
+            },
+        },
+    }
+    persisted = f'# Document\n\n![image](assets/aa/{digest}.jpg)\n'
+    monkeypatch.setattr(
+        tools,
+        '_publish_preview_media',
+        lambda _local_path, _meta: '/static-files/image.jpg',
+    )
+
+    class FakeWriterResourceToolkit:
+        def replace_document(self, **_kwargs):
+            return json.dumps({
+                'publish_result': {'success': True},
+                'draft_document': persisted,
+                'representation': 'markdown',
+                'provider': 'github',
+                'target_document': {
+                    'adapter': 'github',
+                    'uri': 'githubrepo:/acme/docs/document.md?ref=branch',
+                },
+            })
+
+    monkeypatch.setattr(tools, 'WriterResourceToolkit', FakeWriterResourceToolkit)
+
+    result = tools._replace_document_and_read_back(
+        '# Document\n',
+        title='Document',
+        artifact_store=str(tmp_path),
+        source_format='markdown',
+        target_document={
+            'adapter': 'github',
+            'uri': 'githubrepo:/acme/docs/document.md?ref=main',
+        },
+        media_assets=media_assets,
+        adapter='github',
+    )
+
+    assert result['persisted_document'] == persisted
+    assert '![image](/static-files/image.jpg)' in result['display_document']
+
+
 def test_markdown_draft_blocks_do_not_pass_resolved_media(monkeypatch, tmp_path):
     tools = _load_tools_module()
     context = SimpleNamespace(
@@ -564,9 +694,76 @@ def test_load_local_lmd_removes_cloud_binding(monkeypatch, tmp_path):
     assert not loaded['blocks'][0].get('provider_binding')
 
 
+def test_prepare_new_document_plans_github_target_without_writing(
+    monkeypatch,
+    tmp_path,
+):
+    tools = _load_tools_module()
+    destination = 'https://github.com/acme/docs/tree/main/articles'
+    request = f'写一篇关于可复用工作流的文章，保存到 {destination}'
+    context = SimpleNamespace(
+        workspace_path=str(tmp_path),
+        params={
+            'step_id': 'prepare',
+            'session_id': 'session-1',
+            'user_input': request,
+            'history_files_per_turn': {},
+        },
+        output_slots=[],
+        emit=lambda _event: None,
+    )
+    planned_calls = []
+
+    def write_json(name, payload):
+        path = tmp_path / name
+        path.write_text(json.dumps(payload), encoding='utf-8')
+        return str(path)
+
+    target_path = write_json('target_document.json', {
+        'adapter': 'github',
+        'uri': destination,
+        'meta': {'create_pending': True, 'base_ref': 'main'},
+    })
+    writing_task = write_json('writing_task.json', {})
+    media_assets = write_json('media_assets.json', {'assets': {}})
+    profile_inputs = write_json('profile_input_resources.json', [])
+    resource_profiles = write_json('resource_profiles.json', [])
+    writing_context = write_json('writing_context.json', {})
+
+    monkeypatch.setattr(tools, 'require_context', lambda: context)
+    monkeypatch.setattr(tools, 'writer_classify_structure', lambda _query: 'flat')
+    monkeypatch.setattr(
+        tools,
+        'writer_plan_document',
+        lambda parent_uri, adapter: planned_calls.append((parent_uri, adapter)) or target_path,
+    )
+    monkeypatch.setattr(tools, 'writer_build_writing_task', lambda **_kwargs: writing_task)
+    monkeypatch.setattr(
+        tools,
+        'writer_collect_available_media',
+        lambda **_kwargs: {
+            'media_assets': media_assets,
+            'profile_input_resources': profile_inputs,
+            'warnings': [],
+        },
+    )
+    monkeypatch.setattr(tools, 'writer_profile_resources', lambda **_kwargs: resource_profiles)
+    monkeypatch.setattr(tools, 'writer_create_writing_context', lambda **_kwargs: writing_context)
+    monkeypatch.setattr(tools, '_save_draft_workspace_artifacts', lambda _result: [])
+
+    result = tools.writer_prepare_workspace(operation='create')
+
+    command = tools._load_writer_command(result['writer_command'])
+    assert tools._provider_document_locator(destination) == ''
+    assert command.source_ref is None
+    assert command.target_ref == destination
+    assert result['target_document'] == target_path
+    assert planned_calls == [(destination, 'github')]
+
+
 @pytest.mark.parametrize(
     ('representation', 'expected_writer'),
-    [('ir', 'publish_revision'), ('markdown', 'replace_document')],
+    [('ir', 'publish_revision'), ('markdown', None)],
 )
 def test_draft_workspace_revise_uses_writing_task_representation(
     monkeypatch,
@@ -596,7 +793,14 @@ def test_draft_workspace_revise_uses_writing_task_representation(
     )
     writing_context = write_json('writing_context.json', {})
     source_document = write_json('source_document.json', {})
-    target_document = write_json('target_document.json', {})
+    target_document = write_json(
+        'target_document.json',
+        {
+            'adapter': 'github',
+            'uri': 'githubrepo:/acme/docs/README.md?ref=main',
+        } if representation == 'markdown' else {},
+    )
+    media_assets = write_json('media_assets.json', {'assets': {}})
     modify_plan = write_json('modify_plan.json', {'instructions': []})
     revision_set = write_json('revision_set.json', {})
     draft_document = write_json('draft_document.json', {})
@@ -607,6 +811,7 @@ def test_draft_workspace_revise_uses_writing_task_representation(
         'writing_context': writing_context,
         'source_document': source_document,
         'target_document': target_document,
+        'media_assets': media_assets,
     }
     context = SimpleNamespace(
         workspace_path=str(tmp_path),
@@ -656,4 +861,6 @@ def test_draft_workspace_revise_uses_writing_task_representation(
     result = tools.writer_draft_workspace()
 
     assert result['status'] == 'completed'
-    assert calls == [expected_writer]
+    assert calls == ([expected_writer] if expected_writer else [])
+    if representation == 'markdown':
+        assert state['result']['resolved_media_assets'] == media_assets

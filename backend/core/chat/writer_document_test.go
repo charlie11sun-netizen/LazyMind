@@ -36,6 +36,22 @@ func TestWriterSyncReplyUsesProviderSynced(t *testing.T) {
 	}
 }
 
+func TestWriterSyncDisplayDocumentUsesOptionalDisplayVersion(t *testing.T) {
+	persisted := json.RawMessage(`"![image](assets/image.png)"`)
+	display := json.RawMessage(`"![image](/static-files/image.png)"`)
+	result := &algo.WriterDocumentSyncResponse{
+		PersistedDocument: persisted,
+		DisplayDocument:   display,
+	}
+	if got := writerSyncDisplayDocument(result); string(got) != string(display) {
+		t.Fatalf("display document = %s, want %s", got, display)
+	}
+	result.DisplayDocument = nil
+	if got := writerSyncDisplayDocument(result); string(got) != string(persisted) {
+		t.Fatalf("fallback document = %s, want %s", got, persisted)
+	}
+}
+
 func TestWriterSyncStatus(t *testing.T) {
 	for input, want := range map[int]int{
 		http.StatusBadRequest:          http.StatusBadRequest,
@@ -72,6 +88,19 @@ func TestWriterProviderSelection(t *testing.T) {
 	}, "notion")
 	if !ok || len(config) != 1 || config["notion"] != "notion-token" {
 		t.Fatalf("unexpected provider config: %#v, %v", config, ok)
+	}
+}
+
+func TestWriterProviderSelectionSupportsGitHubTarget(t *testing.T) {
+	target := json.RawMessage(
+		`{"adapter":"github","uri":"githubrepo:/acme/docs/README.md?ref=main"}`,
+	)
+	if got := writerDocumentProvider(target); got != "github" {
+		t.Fatalf("provider = %q, want github", got)
+	}
+	config, ok := writerProviderToolConfig(map[string]any{"github": "token"}, "github")
+	if !ok || config["github"] != "token" {
+		t.Fatalf("unexpected GitHub provider config: %#v", config)
 	}
 }
 
@@ -138,6 +167,47 @@ func TestWriteBackWriterDocumentRequiresFeishuConfiguration(t *testing.T) {
 	}
 	if revisionCount != 1 {
 		t.Fatalf("revision count = %d, want 1", revisionCount)
+	}
+}
+
+func TestWriteBackWriterDocumentUsesBoundGitHubProvider(t *testing.T) {
+	authService := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"data":{"items":[]}}`))
+	}))
+	t.Cleanup(authService.Close)
+	t.Setenv("LAZYMIND_AUTH_SERVICE_URL", authService.URL)
+
+	db := orm.MigrateTestDB(t,
+		&orm.WorkflowSession{}, &orm.WorkflowSlotRevision{},
+		&orm.UserModelProvider{}, &orm.UserModelProviderGroup{},
+		&orm.UserSelectedProvider{},
+	)
+	store.Init(db.DB, db.DB, nil)
+	t.Cleanup(func() { store.Init(nil, nil, nil) })
+	now := time.Now().UTC()
+	if err := db.Create(&orm.WorkflowSession{
+		ID: "session", ConversationID: "conversation", WorkflowID: "writer-workflow",
+		Status: "completed", CreateUserID: "user-1", CreatedAt: now, UpdatedAt: now,
+	}).Error; err != nil {
+		t.Fatalf("seed writer session: %v", err)
+	}
+	seedWriterRevision(t, db, "github-draft", "draft_document", 1, true, "ai",
+		json.RawMessage(`{"schema":"text/markdown","data":"# Draft"}`))
+	seedWriterRevision(t, db, "github-target", "target_document", 1, true, "ai",
+		json.RawMessage(`{"schema":"target","data":{"adapter":"github","uri":"githubrepo:/acme/docs/README.md?ref=main"}}`))
+
+	req := httptest.NewRequest(http.MethodPost,
+		"/api/core/workflow-sessions/session/writer-document:write-back",
+		strings.NewReader(`{"base_revision":1}`))
+	req.Header.Set("X-User-Id", "user-1")
+	req = mux.SetURLVars(req, map[string]string{"session_id": "session"})
+	recorder := httptest.NewRecorder()
+	WriteBackWriterDocument(recorder, req)
+
+	if recorder.Code != http.StatusBadRequest ||
+		!strings.Contains(recorder.Body.String(), "github_configuration_required") {
+		t.Fatalf("unexpected GitHub credential response: %d %s", recorder.Code, recorder.Body.String())
 	}
 }
 
