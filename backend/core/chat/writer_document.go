@@ -613,21 +613,15 @@ func WriteBackWriterDocument(w http.ResponseWriter, r *http.Request) {
 		}
 		syncRequest.MarkdownContent = activeDraft.Markdown
 		syncRequest.Title = activeDraft.Title
-		mediaSlots := []string{mediaSlot}
-		if mediaSlot != "media_assets" {
-			mediaSlots = append(mediaSlots, "media_assets")
-		}
-		mediaAssets, selectedMediaSlot, mediaErr := loadSelectedWriterArtifactFallback(
-			ctx, db, sessionID, mediaSlots...,
-		)
+		mediaAssets, mediaErr := loadSelectedWriterArtifact(ctx, db, sessionID, mediaSlot)
 		if mediaErr == nil {
 			syncRequest.MediaAssets, mediaErr = writerArtifactData(mediaAssets.Value, false)
 			if mediaErr != nil {
-				common.ReplyErr(w, "invalid "+selectedMediaSlot, http.StatusConflict)
+				common.ReplyErr(w, "invalid resolved_media_assets", http.StatusConflict)
 				return
 			}
 		} else if !errors.Is(mediaErr, gorm.ErrRecordNotFound) {
-			common.ReplyErr(w, "load "+selectedMediaSlot+" failed", http.StatusInternalServerError)
+			common.ReplyErr(w, "load resolved_media_assets failed", http.StatusInternalServerError)
 			return
 		}
 	} else {
@@ -860,22 +854,6 @@ func loadSelectedWriterArtifact(
 		return nil, err
 	}
 	return loadWriterArtifactRevision(ctx, db, revision)
-}
-
-func loadSelectedWriterArtifactFallback(
-	ctx context.Context,
-	db *gorm.DB,
-	sessionID string,
-	slotIDs ...string,
-) (*selectedWriterArtifact, string, error) {
-	for _, slotID := range slotIDs {
-		artifact, err := loadSelectedWriterArtifact(ctx, db, sessionID, slotID)
-		if errors.Is(err, gorm.ErrRecordNotFound) {
-			continue
-		}
-		return artifact, slotID, err
-	}
-	return nil, "", gorm.ErrRecordNotFound
 }
 
 func loadWriterArtifactRevision(

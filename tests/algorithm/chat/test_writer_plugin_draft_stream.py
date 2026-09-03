@@ -737,7 +737,14 @@ def test_draft_workspace_revise_uses_writing_task_representation(
     )
     writing_context = write_json('writing_context.json', {})
     source_document = write_json('source_document.json', {})
-    target_document = write_json('target_document.json', {})
+    target_document = write_json(
+        'target_document.json',
+        {
+            'adapter': 'github',
+            'uri': 'githubrepo:/acme/docs/README.md?ref=main',
+        } if representation == 'markdown' else {},
+    )
+    media_assets = write_json('media_assets.json', {'assets': {}})
     modify_plan = write_json('modify_plan.json', {'instructions': []})
     revision_set = write_json('revision_set.json', {})
     draft_document = write_json('draft_document.json', {})
@@ -748,6 +755,7 @@ def test_draft_workspace_revise_uses_writing_task_representation(
         'writing_context': writing_context,
         'source_document': source_document,
         'target_document': target_document,
+        'media_assets': media_assets,
     }
     context = SimpleNamespace(
         workspace_path=str(tmp_path),
@@ -798,3 +806,5 @@ def test_draft_workspace_revise_uses_writing_task_representation(
 
     assert result['status'] == 'completed'
     assert calls == ([expected_writer] if expected_writer else [])
+    if representation == 'markdown':
+        assert state['result']['resolved_media_assets'] == media_assets

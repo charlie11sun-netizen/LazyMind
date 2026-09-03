@@ -3309,18 +3309,24 @@ def _publish_preview_media(local_path: str, meta: Mapping[str, Any]) -> str:
     return static_file_url_from_any(str(destination))
 
 
+def _writer_target_adapter(target_document: Any) -> str:
+    try:
+        target = _action_artifact_data(target_document) if target_document else {}
+    except (OSError, TypeError, ValueError, json.JSONDecodeError):
+        return ''
+    return (
+        str(target.get('adapter') or '').strip().lower()
+        if isinstance(target, dict) else ''
+    )
+
+
 def _save_draft_workspace_artifacts(result: Mapping[str, Any]) -> list[str]:
     from lazymind.chat.engine.subagent.tools import save_artifacts
 
     ctx = require_context()
     allowed = set(ctx.output_slots or [])
     save_result = dict(result)
-    target_document = save_result.get('target_document')
-    try:
-        target = _action_artifact_data(target_document) if target_document else {}
-    except (OSError, TypeError, ValueError, json.JSONDecodeError):
-        target = {}
-    if isinstance(target, dict) and str(target.get('adapter') or '').lower() == 'github':
+    if _writer_target_adapter(save_result.get('target_document')) == 'github':
         try:
             preview_pairs = (
                 ('flat_draft_document', 'flat_resolved_media_assets'),
@@ -3701,6 +3707,9 @@ def writer_draft_workspace() -> dict:
 
     if representation == 'markdown' and target_document_path:
         result.setdefault('target_document', target_document_path)
+        if _writer_target_adapter(target_document_path) == 'github' \
+                and media_assets_path and not result.get('resolved_media_assets'):
+            result['resolved_media_assets'] = resolved_media or media_assets_path
     if representation == 'markdown' and target_document_path \
             and result.get('draft_document') \
             and not result.get('github_code_fences_prepared'):
@@ -3868,6 +3877,9 @@ def writer_flat_draft_workspace() -> dict:
 
     if representation == 'markdown' and target_document_path:
         result.setdefault('target_document', target_document_path)
+        if _writer_target_adapter(target_document_path) == 'github' \
+                and media_assets_path and not result.get('resolved_media_assets'):
+            result['resolved_media_assets'] = resolved_media or media_assets_path
     if representation == 'markdown' and target_document_path \
             and not result.get('github_code_fences_prepared'):
         prepared_draft, updated_target = _prepare_github_markdown_code_fences(
