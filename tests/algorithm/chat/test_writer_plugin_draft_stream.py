@@ -214,6 +214,62 @@ def test_github_preview_artifact_maps_media_before_standard_render(
     )
 
 
+def test_github_sync_keeps_persisted_paths_and_returns_preview(monkeypatch, tmp_path):
+    tools = _load_tools_module()
+    image = tmp_path / 'image.jpg'
+    image.write_bytes(b'image')
+    digest = 'a' * 64
+    media_assets = {
+        'library_id': 'library-1',
+        'assets': {
+            'generated': {
+                'media_asset_id': 'generated',
+                'asset_type': 'generated_image',
+                'source_type': 'image_generation',
+                'local_path': str(image),
+                'meta': {'sha256': digest},
+            },
+        },
+    }
+    persisted = f'# Document\n\n![image](assets/aa/{digest}.jpg)\n'
+    monkeypatch.setattr(
+        tools,
+        '_publish_preview_media',
+        lambda _local_path, _meta: '/static-files/image.jpg',
+    )
+
+    class FakeWriterResourceToolkit:
+        def replace_document(self, **_kwargs):
+            return json.dumps({
+                'publish_result': {'success': True},
+                'draft_document': persisted,
+                'representation': 'markdown',
+                'provider': 'github',
+                'target_document': {
+                    'adapter': 'github',
+                    'uri': 'githubrepo:/acme/docs/document.md?ref=branch',
+                },
+            })
+
+    monkeypatch.setattr(tools, 'WriterResourceToolkit', FakeWriterResourceToolkit)
+
+    result = tools._replace_document_and_read_back(
+        '# Document\n',
+        title='Document',
+        artifact_store=str(tmp_path),
+        source_format='markdown',
+        target_document={
+            'adapter': 'github',
+            'uri': 'githubrepo:/acme/docs/document.md?ref=main',
+        },
+        media_assets=media_assets,
+        adapter='github',
+    )
+
+    assert result['persisted_document'] == persisted
+    assert '![image](/static-files/image.jpg)' in result['display_document']
+
+
 def test_markdown_draft_blocks_do_not_pass_resolved_media(monkeypatch, tmp_path):
     tools = _load_tools_module()
     context = SimpleNamespace(

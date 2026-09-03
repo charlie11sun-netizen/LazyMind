@@ -727,6 +727,7 @@ func WriteBackWriterDocument(w http.ResponseWriter, r *http.Request) {
 		common.ReplyErr(w, "writer document write-back failed", http.StatusBadGateway)
 		return
 	}
+	displayDocument := writerSyncDisplayDocument(result)
 
 	representation := strings.ToLower(strings.TrimSpace(result.Representation))
 	if representation == "" {
@@ -788,7 +789,7 @@ func WriteBackWriterDocument(w http.ResponseWriter, r *http.Request) {
 	artifact, err := json.Marshal(map[string]any{
 		"schema":         schema,
 		"schema_version": "0.1",
-		"data":           result.PersistedDocument,
+		"data":           displayDocument,
 		"meta": map[string]any{
 			"created_by": "writer-write-back-api",
 			"created_at": time.Now().UTC().Format(time.RFC3339Nano),
@@ -833,7 +834,7 @@ func WriteBackWriterDocument(w http.ResponseWriter, r *http.Request) {
 		"status": "synced", "revision": revision.Revision,
 		"provider_synced": true, "artifact_saved": true,
 		"patch_result":   result.PatchResult,
-		"document":       result.PersistedDocument,
+		"document":       displayDocument,
 		"provider":       confirmedProvider,
 		"representation": representation,
 		"write_result":   result.WriteResult,
@@ -1293,6 +1294,17 @@ func writerSyncReply(
 		"artifact_saved": artifactSaved, "patch_result": result.PatchResult,
 		"document": result.PersistedDocument,
 	})
+}
+
+func writerSyncDisplayDocument(result *algo.WriterDocumentSyncResponse) json.RawMessage {
+	if result != nil && len(result.DisplayDocument) > 0 &&
+		strings.TrimSpace(string(result.DisplayDocument)) != "null" {
+		return result.DisplayDocument
+	}
+	if result == nil {
+		return nil
+	}
+	return result.PersistedDocument
 }
 
 func writerSyncStatus(status int) int {

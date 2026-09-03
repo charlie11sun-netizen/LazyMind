@@ -2789,6 +2789,18 @@ def _replace_document_and_read_back(
         persisted_document = WriterDocument.model_validate(persisted)
         persisted_document.ui_editable = True
         persisted = persisted_document.model_dump()
+    display_document = None
+    if (
+        str(payload.get('provider') or adapter).strip().lower() == 'github'
+        and isinstance(persisted, str)
+        and media_library is not None
+    ):
+        preview = _previewable_markdown_content(
+            persisted,
+            media_library.model_dump(),
+        )
+        if preview != persisted:
+            display_document = preview
     result = PatchResult(
         success=True,
         message='Document written to provider and read back successfully.',
@@ -2798,7 +2810,7 @@ def _replace_document_and_read_back(
             'write_result': write_result,
         },
     )
-    return {
+    response = {
         'success': True,
         'changed': True,
         'provider_synced': True,
@@ -2809,6 +2821,9 @@ def _replace_document_and_read_back(
         'write_result': write_result,
         'target_document': payload.get('target_document'),
     }
+    if display_document is not None:
+        response['display_document'] = display_document
+    return response
 
 
 def _action_result_path(result: dict, key: str | None = None) -> str:

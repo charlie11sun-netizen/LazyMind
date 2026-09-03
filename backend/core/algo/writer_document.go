@@ -27,6 +27,7 @@ type WriterDocumentSyncResponse struct {
 	ProviderSynced    bool            `json:"provider_synced"`
 	PatchResult       json.RawMessage `json:"patch_result"`
 	PersistedDocument json.RawMessage `json:"persisted_document"`
+	DisplayDocument   json.RawMessage `json:"display_document,omitempty"`
 	Representation    string          `json:"representation"`
 	Provider          string          `json:"provider"`
 	WriteResult       json.RawMessage `json:"write_result"`

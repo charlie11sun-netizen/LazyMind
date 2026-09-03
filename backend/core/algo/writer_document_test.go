@@ -37,7 +37,8 @@ func TestWriterDocumentSyncResponseKeepsProviderWriteResult(t *testing.T) {
 	if err := json.Unmarshal([]byte(`{
 		"success":true,
 		"provider_synced":true,
-		"persisted_document":"# Updated",
+		"persisted_document":"# Updated\n\n![image](assets/image.png)",
+		"display_document":"# Updated\n\n![image](/static-files/image.png)",
 		"representation":"markdown",
 		"provider":"github",
 		"write_result":{"commit_sha":"commit-1","pull_request_url":"https://github.com/acme/docs/pull/1"},
@@ -47,6 +48,9 @@ func TestWriterDocumentSyncResponseKeepsProviderWriteResult(t *testing.T) {
 	}
 	if response.Provider != "github" || response.Representation != "markdown" {
 		t.Fatalf("unexpected provider response: %+v", response)
+	}
+	if !strings.Contains(string(response.DisplayDocument), `/static-files/image.png`) {
+		t.Fatalf("display document was not preserved: %s", response.DisplayDocument)
 	}
 	if !strings.Contains(string(response.WriteResult), `"commit_sha":"commit-1"`) {
 		t.Fatalf("write result was not preserved: %s", response.WriteResult)

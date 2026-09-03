@@ -36,6 +36,22 @@ func TestWriterSyncReplyUsesProviderSynced(t *testing.T) {
 	}
 }
 
+func TestWriterSyncDisplayDocumentUsesOptionalDisplayVersion(t *testing.T) {
+	persisted := json.RawMessage(`"![image](assets/image.png)"`)
+	display := json.RawMessage(`"![image](/static-files/image.png)"`)
+	result := &algo.WriterDocumentSyncResponse{
+		PersistedDocument: persisted,
+		DisplayDocument:   display,
+	}
+	if got := writerSyncDisplayDocument(result); string(got) != string(display) {
+		t.Fatalf("display document = %s, want %s", got, display)
+	}
+	result.DisplayDocument = nil
+	if got := writerSyncDisplayDocument(result); string(got) != string(persisted) {
+		t.Fatalf("fallback document = %s, want %s", got, persisted)
+	}
+}
+
 func TestWriterSyncStatus(t *testing.T) {
 	for input, want := range map[int]int{
 		http.StatusBadRequest:          http.StatusBadRequest,
