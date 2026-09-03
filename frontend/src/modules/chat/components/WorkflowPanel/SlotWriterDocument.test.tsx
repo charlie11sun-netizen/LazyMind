@@ -47,12 +47,8 @@ vi.mock('./WriterDownloadFormat', () => ({
   writerMarkdownTitle: () => '',
 }));
 
-import {
-  resolveSnapshotDiffText,
-  SlotRenderer,
-  SlotVersionPopover,
-  WriterProviderChoice,
-} from './SlotComponents';
+import { resolveSnapshotDiffText, SlotRenderer, SlotVersionPopover } from './SlotComponents';
+import { WriterProviderChoice } from './SlotComponents';
 
 function deferred<T>() {
   let resolve!: (value: T) => void;
@@ -140,7 +136,6 @@ describe('SlotWriterDocument render refresh', () => {
           representation: 'markdown',
           document: '# Edited draft',
           revision: 3,
-          numbering: { ordered_style: 'hierarchical', entries: {} },
         },
       },
     });
@@ -163,7 +158,6 @@ describe('SlotWriterDocument render refresh', () => {
         '# Edited draft',
         'draft_document',
         'draft',
-        undefined,
         { silentError: true },
       );
     });
@@ -184,7 +178,6 @@ describe('SlotWriterDocument render refresh', () => {
           representation: 'markdown',
           document: '# Edited draft',
           revision: 3,
-          numbering: { ordered_style: 'hierarchical', entries: {} },
         },
       },
     });
@@ -240,7 +233,6 @@ describe('SlotWriterDocument render refresh', () => {
         '# Edited draft',
         'draft_document',
         'draft',
-        undefined,
         { silentError: true },
       );
     });

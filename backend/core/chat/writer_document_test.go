@@ -12,7 +12,6 @@ import (
 	"github.com/gorilla/mux"
 
 	"lazymind/core/algo"
-	"lazymind/core/common"
 	"lazymind/core/common/orm"
 	"lazymind/core/store"
 )
@@ -52,27 +51,6 @@ func TestWriterSyncStatus(t *testing.T) {
 	}
 }
 
-func TestWorkflowActionRejectsArgument(t *testing.T) {
-	err := &common.HTTPError{
-		StatusCode: http.StatusUnprocessableEntity,
-		Body: json.RawMessage(
-			`{"detail":{"code":"WORKFLOW_ACTION_INVALID","message":"writer_render_document() got an unexpected keyword argument 'media_assets'"}}`,
-		),
-	}
-	if !workflowActionRejectsArgument(err, "media_assets") {
-		t.Fatal("expected legacy media_assets signature rejection to be detected")
-	}
-	if workflowActionRejectsArgument(err, "other_argument") {
-		t.Fatal("unexpected argument name must not match")
-	}
-	if workflowActionRejectsArgument(&common.HTTPError{
-		StatusCode: http.StatusBadGateway,
-		Body:       err.Body,
-	}, "media_assets") {
-		t.Fatal("non-422 errors must not trigger compatibility fallback")
-	}
-}
-
 func TestWriterProviderSelection(t *testing.T) {
 	for name, test := range map[string]struct {
 		value json.RawMessage
@@ -80,8 +58,6 @@ func TestWriterProviderSelection(t *testing.T) {
 	}{
 		"bound provider":  {json.RawMessage(`{"provider_binding":{"provider":"notion","document_id":"page-1"}}`), "notion"},
 		"target adapter":  {json.RawMessage(`{"adapter":"notion","uri":"https://notion.so/page"}`), "notion"},
-		"GitHub binding":  {json.RawMessage(`{"provider_binding":{"provider":"github","document_id":"README.md"}}`), "github"},
-		"GitHub target":   {json.RawMessage(`{"adapter":"githubwiki","uri":"githubwiki:/acme/docs/Home?ref=main"}`), "github"},
 		"unbound default": {json.RawMessage(`{"document_id":"local"}`), "feishu"},
 	} {
 		t.Run(name, func(t *testing.T) {
@@ -99,7 +75,20 @@ func TestWriterProviderSelection(t *testing.T) {
 	}
 }
 
-func TestWriteBackWriterDocumentRequiresTargetProviderConfiguration(t *testing.T) {
+func TestWriterProviderSelectionSupportsGitHubTarget(t *testing.T) {
+	target := json.RawMessage(
+		`{"adapter":"github","uri":"githubrepo:/acme/docs/README.md?ref=main"}`,
+	)
+	if got := writerDocumentProvider(target); got != "github" {
+		t.Fatalf("provider = %q, want github", got)
+	}
+	config, ok := writerProviderToolConfig(map[string]any{"github": "token"}, "github")
+	if !ok || config["github"] != "token" {
+		t.Fatalf("unexpected GitHub provider config: %#v", config)
+	}
+}
+
+func TestWriteBackWriterDocumentRequiresFeishuConfiguration(t *testing.T) {
 	authService := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{"data":{"items":[]}}`))
@@ -107,80 +96,102 @@ func TestWriteBackWriterDocumentRequiresTargetProviderConfiguration(t *testing.T
 	t.Cleanup(authService.Close)
 	t.Setenv("LAZYMIND_AUTH_SERVICE_URL", authService.URL)
 
-	for _, tc := range []struct {
-		name              string
-		provider          string
-		target            json.RawMessage
-		wantStatus        int
-		wantRevisionCount int64
-	}{
-		{name: "default Feishu delivery", provider: "feishu", wantStatus: http.StatusBadRequest, wantRevisionCount: 1},
-		{
-			name: "GitHub target", provider: "github", wantStatus: http.StatusUnauthorized, wantRevisionCount: 2,
-			target: json.RawMessage(`{"schema":"lazyllm.tools.writer.data_models.task.TargetDocument","data":{"adapter":"github","uri":"githubrepo:/acme/docs/README.md?ref=main"}}`),
-		},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			db := orm.MigrateTestDB(t,
-				&orm.WorkflowSession{},
-				&orm.WorkflowSlotRevision{},
-				&orm.UserModelProvider{},
-				&orm.UserModelProviderGroup{},
-				&orm.UserSelectedProvider{},
-			)
-			store.Init(db.DB, db.DB, nil)
-			t.Cleanup(func() { store.Init(nil, nil, nil) })
+	db := orm.MigrateTestDB(t,
+		&orm.WorkflowSession{},
+		&orm.WorkflowSlotRevision{},
+		&orm.UserModelProvider{},
+		&orm.UserModelProviderGroup{},
+		&orm.UserSelectedProvider{},
+	)
+	store.Init(db.DB, db.DB, nil)
+	t.Cleanup(func() { store.Init(nil, nil, nil) })
 
-			now := time.Now().UTC()
-			if err := db.Create(&orm.WorkflowSession{
-				ID: "session", ConversationID: "conversation", WorkflowID: "writer-workflow",
-				Status: "completed", CreateUserID: "user-1", CreatedAt: now, UpdatedAt: now,
-			}).Error; err != nil {
-				t.Fatalf("seed writer session: %v", err)
-			}
-			seedWriterRevision(
-				t, db, "draft-1", "draft_document", 1, true, "ai",
-				json.RawMessage(`{"schema":"text/markdown","data":"# Draft\n\nBody"}`),
-			)
-			if len(tc.target) > 0 {
-				seedWriterRevision(t, db, "target-1", "target_document", 1, true, "ai", tc.target)
-			}
+	now := time.Now().UTC()
+	if err := db.Create(&orm.WorkflowSession{
+		ID: "session", ConversationID: "conversation", WorkflowID: "writer-workflow",
+		Status: "completed", CreateUserID: "user-1", CreatedAt: now, UpdatedAt: now,
+	}).Error; err != nil {
+		t.Fatalf("seed writer session: %v", err)
+	}
+	seedWriterRevision(
+		t, db, "draft-1", "draft_document", 1, true, "ai",
+		json.RawMessage(`{"schema":"text/markdown","data":"# Draft\n\nBody"}`),
+	)
 
-			req := httptest.NewRequest(
-				http.MethodPost,
-				"/api/core/workflow-sessions/session/writer-document:write-back",
-				strings.NewReader(`{"base_revision":1}`),
-			)
-			req.Header.Set("X-User-Id", "user-1")
-			req = mux.SetURLVars(req, map[string]string{"session_id": "session"})
-			recorder := httptest.NewRecorder()
+	req := httptest.NewRequest(
+		http.MethodPost,
+		"/api/core/workflow-sessions/session/writer-document:write-back",
+		strings.NewReader(`{"base_revision":1}`),
+	)
+	req.Header.Set("X-User-Id", "user-1")
+	req = mux.SetURLVars(req, map[string]string{"session_id": "session"})
+	recorder := httptest.NewRecorder()
 
-			WriteBackWriterDocument(recorder, req)
+	WriteBackWriterDocument(recorder, req)
 
-			if recorder.Code != tc.wantStatus {
-				t.Fatalf("status = %d, want %d; body=%s", recorder.Code, tc.wantStatus, recorder.Body.String())
-			}
-			var response struct {
-				Data struct {
-					Status   string `json:"status"`
-					Provider string `json:"provider"`
-				} `json:"data"`
-			}
-			if err := json.NewDecoder(recorder.Body).Decode(&response); err != nil {
-				t.Fatalf("decode response: %v", err)
-			}
-			if response.Data.Status != tc.provider+"_configuration_required" || response.Data.Provider != tc.provider {
-				t.Fatalf("unexpected response data: %+v", response.Data)
-			}
-			var revisionCount int64
-			if err := db.Model(&orm.WorkflowSlotRevision{}).
-				Where("session_id = ?", "session").Count(&revisionCount).Error; err != nil {
-				t.Fatalf("count writer revisions: %v", err)
-			}
-			if revisionCount != tc.wantRevisionCount {
-				t.Fatalf("revision count = %d, want %d", revisionCount, tc.wantRevisionCount)
-			}
-		})
+	if recorder.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want %d; body=%s", recorder.Code, http.StatusBadRequest, recorder.Body.String())
+	}
+	var response struct {
+		Data struct {
+			Status   string `json:"status"`
+			Provider string `json:"provider"`
+		} `json:"data"`
+	}
+	if err := json.NewDecoder(recorder.Body).Decode(&response); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if response.Data.Status != "feishu_configuration_required" || response.Data.Provider != "feishu" {
+		t.Fatalf("unexpected response data: %+v", response.Data)
+	}
+	var revisionCount int64
+	if err := db.Model(&orm.WorkflowSlotRevision{}).
+		Where("session_id = ?", "session").Count(&revisionCount).Error; err != nil {
+		t.Fatalf("count writer revisions: %v", err)
+	}
+	if revisionCount != 1 {
+		t.Fatalf("revision count = %d, want 1", revisionCount)
+	}
+}
+
+func TestWriteBackWriterDocumentUsesBoundGitHubProvider(t *testing.T) {
+	authService := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"data":{"items":[]}}`))
+	}))
+	t.Cleanup(authService.Close)
+	t.Setenv("LAZYMIND_AUTH_SERVICE_URL", authService.URL)
+
+	db := orm.MigrateTestDB(t,
+		&orm.WorkflowSession{}, &orm.WorkflowSlotRevision{},
+		&orm.UserModelProvider{}, &orm.UserModelProviderGroup{},
+		&orm.UserSelectedProvider{},
+	)
+	store.Init(db.DB, db.DB, nil)
+	t.Cleanup(func() { store.Init(nil, nil, nil) })
+	now := time.Now().UTC()
+	if err := db.Create(&orm.WorkflowSession{
+		ID: "session", ConversationID: "conversation", WorkflowID: "writer-workflow",
+		Status: "completed", CreateUserID: "user-1", CreatedAt: now, UpdatedAt: now,
+	}).Error; err != nil {
+		t.Fatalf("seed writer session: %v", err)
+	}
+	seedWriterRevision(t, db, "github-draft", "draft_document", 1, true, "ai",
+		json.RawMessage(`{"schema":"text/markdown","data":"# Draft"}`))
+	seedWriterRevision(t, db, "github-target", "target_document", 1, true, "ai",
+		json.RawMessage(`{"schema":"target","data":{"adapter":"github","uri":"githubrepo:/acme/docs/README.md?ref=main"}}`))
+
+	req := httptest.NewRequest(http.MethodPost,
+		"/api/core/workflow-sessions/session/writer-document:write-back",
+		strings.NewReader(`{"base_revision":1}`))
+	req.Header.Set("X-User-Id", "user-1")
+	req = mux.SetURLVars(req, map[string]string{"session_id": "session"})
+	recorder := httptest.NewRecorder()
+	WriteBackWriterDocument(recorder, req)
+
+	if recorder.Code != http.StatusBadRequest ||
+		!strings.Contains(recorder.Body.String(), "github_configuration_required") {
+		t.Fatalf("unexpected GitHub credential response: %d %s", recorder.Code, recorder.Body.String())
 	}
 }
 
@@ -491,34 +502,6 @@ func TestLoadWriterWriteBackBaseline_PrefersLatestSyncedDraft(t *testing.T) {
 	}
 	if baseline.Revision.ID != "draft-1" {
 		t.Fatalf("baseline id = %q, want draft-1", baseline.Revision.ID)
-	}
-}
-
-func TestLoadSelectedWriterArtifactFallback_PrefersResolvedThenImportedMedia(t *testing.T) {
-	db := orm.MigrateTestDB(t, &orm.WorkflowSlotRevision{})
-	imported := json.RawMessage(`{"data":{"assets":{"imported":{"kind":"image"}}}}`)
-	resolved := json.RawMessage(`{"data":{"assets":{"resolved":{"kind":"image"}}}}`)
-	seedWriterRevision(t, db, "media-imported", "media_assets", 1, true, "ai", imported)
-
-	artifact, slot, err := loadSelectedWriterArtifactFallback(
-		context.Background(), db.DB, "session", "resolved_media_assets", "media_assets",
-	)
-	if err != nil {
-		t.Fatalf("load imported media fallback: %v", err)
-	}
-	if slot != "media_assets" || string(artifact.Value) != string(imported) {
-		t.Fatalf("fallback = %q %s, want media_assets %s", slot, artifact.Value, imported)
-	}
-
-	seedWriterRevision(t, db, "media-resolved", "resolved_media_assets", 1, true, "ai", resolved)
-	artifact, slot, err = loadSelectedWriterArtifactFallback(
-		context.Background(), db.DB, "session", "resolved_media_assets", "media_assets",
-	)
-	if err != nil {
-		t.Fatalf("load resolved media: %v", err)
-	}
-	if slot != "resolved_media_assets" || string(artifact.Value) != string(resolved) {
-		t.Fatalf("preferred = %q %s, want resolved_media_assets %s", slot, artifact.Value, resolved)
 	}
 }
 

@@ -258,10 +258,9 @@ func TestMergeToolConfigKeepsFeishuAndSearchTool(t *testing.T) {
 	}
 }
 
-func TestCloudToolProvidersIncludeDocumentProviders(t *testing.T) {
+func TestCloudToolProvidersIncludeGoogleDrive(t *testing.T) {
 	want := map[string]bool{
 		"feishu":      true,
-		"github":      true,
 		"googledrive": true,
 		"notion":      true,
 	}
@@ -271,6 +270,15 @@ func TestCloudToolProvidersIncludeDocumentProviders(t *testing.T) {
 	if len(want) != 0 {
 		t.Fatalf("missing cloud tool providers: %#v", want)
 	}
+}
+
+func TestCloudToolProvidersIncludeGitHub(t *testing.T) {
+	for _, provider := range _cloudToolProviders {
+		if provider == "github" {
+			return
+		}
+	}
+	t.Fatal("github is missing from cloud tool providers")
 }
 
 func TestAcademicSearchToolConfigEntrySplitsMultiKeyCredential(t *testing.T) {
