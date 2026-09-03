@@ -272,15 +272,6 @@ func TestCloudToolProvidersIncludeGoogleDrive(t *testing.T) {
 	}
 }
 
-func TestCloudToolProvidersIncludeGitHub(t *testing.T) {
-	for _, provider := range _cloudToolProviders {
-		if provider == "github" {
-			return
-		}
-	}
-	t.Fatal("github is missing from cloud tool providers")
-}
-
 func TestAcademicSearchToolConfigEntrySplitsMultiKeyCredential(t *testing.T) {
 	db := setupToolConfigTestDB(t)
 	seedSelectedToolProvider(

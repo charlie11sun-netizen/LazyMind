@@ -11,7 +11,7 @@ import (
 
 const _feishuProvider = "feishu"
 
-var _cloudToolProviders = []string{"feishu", "github", "googledrive", "notion"}
+var _cloudToolProviders = []string{"feishu", "googledrive", "notion"}
 
 func authServiceInternalHeaders() map[string]string {
 	headers := map[string]string{}
