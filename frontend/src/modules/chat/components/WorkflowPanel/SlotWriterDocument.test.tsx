@@ -47,7 +47,12 @@ vi.mock('./WriterDownloadFormat', () => ({
   writerMarkdownTitle: () => '',
 }));
 
-import { resolveSnapshotDiffText, SlotRenderer, SlotVersionPopover } from './SlotComponents';
+import {
+  resolveSnapshotDiffText,
+  SlotRenderer,
+  SlotVersionPopover,
+  WriterProviderChoice,
+} from './SlotComponents';
 
 function deferred<T>() {
   let resolve!: (value: T) => void;
@@ -88,6 +93,34 @@ function renderedMarkdown(document: string) {
   };
 }
 
+describe('Writer write-back provider choice', () => {
+  it('selects GitHub only after the conversation binds a target', () => {
+    const onChange = vi.fn();
+    const { container, rerender } = render(
+      <WriterProviderChoice
+        initialProvider='feishu'
+        githubEnabled={false}
+        onChange={onChange}
+      />,
+    );
+
+    expect(container.querySelector<HTMLInputElement>('input[value="github"]')).toBeDisabled();
+
+    rerender(
+      <WriterProviderChoice
+        initialProvider='feishu'
+        githubEnabled
+        onChange={onChange}
+      />,
+    );
+    const github = container.querySelector<HTMLInputElement>('input[value="github"]')!;
+    expect(github).toBeEnabled();
+
+    fireEvent.click(github);
+    expect(onChange).toHaveBeenCalledWith('github');
+  });
+});
+
 describe('SlotWriterDocument render refresh', () => {
   beforeEach(() => {
     workflowApi.getSlots.mockReset();
@@ -107,6 +140,7 @@ describe('SlotWriterDocument render refresh', () => {
           representation: 'markdown',
           document: '# Edited draft',
           revision: 3,
+          numbering: { ordered_style: 'hierarchical', entries: {} },
         },
       },
     });
@@ -129,6 +163,7 @@ describe('SlotWriterDocument render refresh', () => {
         '# Edited draft',
         'draft_document',
         'draft',
+        undefined,
         { silentError: true },
       );
     });
@@ -149,6 +184,7 @@ describe('SlotWriterDocument render refresh', () => {
           representation: 'markdown',
           document: '# Edited draft',
           revision: 3,
+          numbering: { ordered_style: 'hierarchical', entries: {} },
         },
       },
     });
@@ -204,6 +240,7 @@ describe('SlotWriterDocument render refresh', () => {
         '# Edited draft',
         'draft_document',
         'draft',
+        undefined,
         { silentError: true },
       );
     });
