@@ -3,6 +3,8 @@ const EDITOR_SYSTEM_ANCHOR_RE = /<a\s+id=(["'])(block-[^"']+)\1((?:\s+[^>]*?)?)\
 const SYSTEM_ANCHOR_LINE_RE = /^<a\s+id=(["'])(block-[^"']+)\1((?:\s+[^>]*?)?)\s*(?:\/>|>\s*<\/a>)$/i;
 const HEADING_NUMBERING_CONFIG_LINE_RE = /^\s*<!--\s*heading-numbering:[^\r\n]*-->\s*$/i;
 const OUTLINE_INSTRUCTION_LINE_RE = /^\s*<!--\s*writer:outline\s+(\{.*\})\s*-->\s*$/;
+const SOURCE_PAGE_MARKER_RE = /^([ \t]*)<!--[ \t]*第[ \t]*(\d+)[ \t]*页[ \t]*-->[ \t]*$/i;
+const EDITOR_PAGE_MARKER_RE = /^([ \t]*)<a\s+id=(["'])writer-page-marker-(\d+)\2\s*(?:\/>|>\s*<\/a>)[ \t]*$/i;
 
 export interface WriterMarkdownOutlineInstruction {
   node_id: string;
@@ -18,6 +20,44 @@ export interface WriterMarkdownOutlineInstruction {
     question: string;
     status: 'pending' | 'running' | 'completed' | 'retrying' | 'failed';
   }>;
+}
+
+function mapMarkdownLinesOutsideFences(
+  markdown: string,
+  mapLine: (line: string) => string,
+): string {
+  let fenceCharacter = '';
+  let fenceLength = 0;
+
+  return markdown.split(/\r?\n/).map((line) => {
+    const fence = line.match(/^\s*(`{3,}|~{3,})/);
+    if (fence) {
+      const marker = fence[1];
+      if (!fenceCharacter) {
+        fenceCharacter = marker[0];
+        fenceLength = marker.length;
+      } else if (marker[0] === fenceCharacter && marker.length >= fenceLength) {
+        fenceCharacter = '';
+        fenceLength = 0;
+      }
+      return line;
+    }
+    return fenceCharacter ? line : mapLine(line);
+  }).join('\n');
+}
+
+function pageMarkersForEditor(markdown: string): string {
+  return mapMarkdownLinesOutsideFences(markdown, (line) => line.replace(
+    SOURCE_PAGE_MARKER_RE,
+    (_match, indent: string, page: string) => `${indent}<a id="writer-page-marker-${page}" />`,
+  ));
+}
+
+function pageMarkersForSave(markdown: string): string {
+  return mapMarkdownLinesOutsideFences(markdown, (line) => line.replace(
+    EDITOR_PAGE_MARKER_RE,
+    (_match, indent: string, _quote: string, page: string) => `${indent}<!-- 第 ${page} 页 -->`,
+  ));
 }
 
 export interface WriterMarkdownReferenceTarget {
@@ -335,7 +375,7 @@ export const protectWriterMarkdownHeadingAnchors = protectWriterMarkdownAnchors;
 
 /** MDXEditor preserves empty anchors as JSX, whose canonical form is self-closing. */
 export function writerMarkdownForEditor(markdown: string): string {
-  return markdown.replace(
+  return pageMarkersForEditor(markdown).replace(
     MATERIALIZED_SYSTEM_ANCHOR_RE,
     (_match, _quote: string, anchorId: string, attributes = '') => {
       const suffix = attributes.trim();
@@ -354,15 +394,13 @@ export function writerMarkdownForEditing(markdown: string): string {
   const bindings = writerMarkdownTargetBindings(editorMarkdown);
   const anchorLines = new Set(
     bindings
-      .filter((heading) => heading.type === 'heading')
-      .map((heading) => heading.anchorLineIndex)
+      .map((target) => target.anchorLineIndex)
       .filter((lineIndex): lineIndex is number => lineIndex !== undefined),
   );
   const anchoredTargetLines = new Set(
     bindings
-      .filter((heading) => heading.type === 'heading')
-      .filter((heading) => heading.anchorLineIndex !== undefined)
-      .map((heading) => heading.lineIndex),
+      .filter((target) => target.anchorLineIndex !== undefined)
+      .map((target) => target.lineIndex),
   );
   const hasConfig = editorMarkdown.split(/\r?\n/).some(
     (line) => HEADING_NUMBERING_CONFIG_LINE_RE.test(line),
@@ -473,13 +511,13 @@ export function writerMarkdownPersistenceIdentity(markdown: string): string {
 
 /** The Writer numbering service consumes paired system anchors. */
 export function writerMarkdownForSave(markdown: string): string {
-  return markdown.replace(
+  return pageMarkersForSave(markdown.replace(
     EDITOR_SYSTEM_ANCHOR_RE,
     (_match, _quote: string, anchorId: string, attributes = '') => {
       const suffix = attributes.trim();
       return `<a id="${anchorId}"${suffix ? ` ${suffix}` : ''}></a>`;
     },
-  );
+  ));
 }
 
 /** Collect the document title plus anchored headings used by the Writer table of contents. */
@@ -726,7 +764,27 @@ export function removeWriterMarkdownInternalReference(
   paragraphText: string,
   startOffset: number,
   selectedText: string,
+  selectedReference?: { anchorId: string; occurrence: number },
 ): string {
+  if (
+    selectedReference?.anchorId.startsWith('block-')
+    && selectedReference.occurrence >= 0
+  ) {
+    let occurrence = 0;
+    const referencePattern = /\[((?:\\.|[^\\\]])*)\]\(#(block-[^)]+)\)/g;
+    for (const match of markdown.matchAll(referencePattern)) {
+      if (match[2] !== selectedReference.anchorId) continue;
+      if (occurrence !== selectedReference.occurrence) {
+        occurrence += 1;
+        continue;
+      }
+      const sourceStart = match.index ?? -1;
+      if (sourceStart < 0) return markdown;
+      return `${markdown.slice(0, sourceStart)}${match[1]}${markdown.slice(sourceStart + match[0].length)}`;
+    }
+    return markdown;
+  }
+
   if (!paragraphText || !selectedText || startOffset < 0) return markdown;
   const selectionEnd = startOffset + selectedText.length;
   if (paragraphText.slice(startOffset, selectionEnd) !== selectedText) return markdown;

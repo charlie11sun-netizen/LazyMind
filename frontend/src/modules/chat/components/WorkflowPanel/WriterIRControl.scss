@@ -1209,7 +1209,8 @@
   user-select: none;
 }
 
-.writer-ir__document--editable [contenteditable='false'] {
+/* Numbering markers are immutable sidecars, not disabled document content. */
+.writer-ir__document--editable [contenteditable='false']:not(.writer-ir__numbering-marker) {
   border-radius: 4px;
   background: #f8fafc;
   color: #64748b;

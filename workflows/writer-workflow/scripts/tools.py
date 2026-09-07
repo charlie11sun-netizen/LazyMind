@@ -2422,11 +2422,12 @@ def writer_render_document(artifact: Any) -> dict:
     source = WriterDocument.model_validate(document)
     view = build_numbering_view_from_ir(source)
     numbering = compute_numbering(view)
-    materialized = materialize_ir(source, numbering)
     return {
         'title': source.title,
         'representation': 'ir',
-        'document': materialized.model_dump(exclude_defaults=True),
+        # Match the Markdown editor contract: editable content stays canonical
+        # and generated labels are rendered exclusively from the sidecar.
+        'document': source.model_dump(exclude_defaults=True),
         'numbering': _numbering_payload(view, numbering),
     }
 
@@ -2466,12 +2467,11 @@ def writer_save_document(
         clean = apply_numbering_update_ir(clean, numbering_update)
     view = build_numbering_view_from_ir(clean)
     numbering = compute_numbering(view)
-    materialized = materialize_ir(clean, numbering)
     return {
         'source_document': clean.model_dump(exclude_defaults=True),
         'title': clean.title,
         'representation': 'ir',
-        'document': materialized.model_dump(exclude_defaults=True),
+        'document': clean.model_dump(exclude_defaults=True),
         'numbering': _numbering_payload(view, numbering),
     }
 
@@ -2683,12 +2683,25 @@ def _replace_document_and_read_back(
     media_library = (
         MediaAssetLibrary.model_validate(media_assets) if media_assets else None
     )
-    publish_content = content.model_copy(deep=True) \
-        if isinstance(content, WriterDocument) else content
-    serialized_content = (
-        json.dumps(publish_content.model_dump(), ensure_ascii=False)
-        if isinstance(publish_content, WriterDocument)
-        else publish_content
+    if isinstance(content, WriterDocument):
+        publish_document = content.model_copy(deep=True)
+    else:
+        publish_document = parse_document_markdown(
+            content,
+            document_id=f'writer-document-{uuid.uuid4()}',
+            stage='final',
+            media_assets=media_library,
+        )
+        if media_library is not None:
+            for block in publish_document.iter_blocks():
+                if block.type != 'image':
+                    continue
+                for reference in block.references:
+                    asset = media_library.assets.get(reference.get('id'))
+                    if asset is not None and asset.uri:
+                        reference.setdefault('path', asset.uri)
+    serialized_content = json.dumps(
+        publish_document.model_dump(), ensure_ascii=False,
     )
 
     payload = _json_loads(WriterResourceToolkit().replace_document(

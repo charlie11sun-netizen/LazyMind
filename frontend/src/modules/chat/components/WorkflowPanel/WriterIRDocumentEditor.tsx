@@ -231,26 +231,6 @@ function headingLevel(block: WriterBlock): number {
   return Number.isFinite(level) ? Math.min(6, Math.max(1, Math.trunc(level))) : 2;
 }
 
-function headingWithoutMaterializedLabel(
-  block: WriterBlock,
-  label: string | undefined,
-): WriterBlock {
-  const prefix = label ? `${label} ` : '';
-  const content = block.content ?? '';
-  if (!prefix || !content.startsWith(prefix)) return block;
-  const spans = block.spans?.length
-    && block.spans.map((span) => span.text).join('') === content
-    ? block.spans.map((span, index) => index === 0
-      ? { ...span, text: span.text.slice(prefix.length) }
-      : span)
-    : block.spans;
-  return {
-    ...block,
-    content: content.slice(prefix.length),
-    spans,
-  };
-}
-
 function headingSectionEndIndex(blocks: WriterBlock[], headingIndex: number): number {
   const heading = blocks[headingIndex];
   if (!heading || heading.type !== 'heading') return headingIndex + 1;
@@ -625,9 +605,7 @@ function renderBlock(
     const entry = numbering?.entries[block.node_id];
     const label = entry?.label;
     const numberingMode = entry?.mode ?? 'ordered';
-    const headingText = renderEditableBlockText(
-      headingWithoutMaterializedLabel(block, label),
-    );
+    const headingText = renderEditableBlockText(block);
     const marker = label
       ? `<span class="writer-ir__numbering-marker" data-writer-numbering-marker="${escapeHtmlAttribute(block.node_id)}" contenteditable="false" role="button" tabindex="-1">${escapeHtml(label)}</span>`
       : '';

@@ -280,7 +280,7 @@ func SyncWriterDocument(w http.ResponseWriter, r *http.Request) {
 }
 
 // RenderWriterDocument renders a source, outline, or draft with automatic numbering.
-// Markdown remains clean for editing; its numbering is returned as sidecar data.
+// Editor documents remain canonical; generated numbering is returned as sidecar data.
 func RenderWriterDocument(w http.ResponseWriter, r *http.Request) {
 	sessionID := common.PathVar(r, "session_id")
 	if sessionID == "" {
@@ -344,11 +344,23 @@ func RenderWriterDocument(w http.ResponseWriter, r *http.Request) {
 		common.ReplyErr(w, "invalid render response", http.StatusBadGateway)
 		return
 	}
+	// Sessions are pinned to the workflow revision that created them. Older Writer
+	// revisions returned a number-materialized IR document, so enforce the editor
+	// boundary here as well as in the latest workflow implementation.
+	if representation, _ := result["representation"].(string); representation == "ir" {
+		canonical, canonicalErr := writerArtifactData(draft.Value, false)
+		var document map[string]any
+		if canonicalErr != nil || json.Unmarshal(canonical, &document) != nil {
+			common.ReplyErr(w, "invalid writer IR artifact", http.StatusBadGateway)
+			return
+		}
+		result["document"] = document
+	}
 	common.ReplyOK(w, result)
 }
 
 // SaveWriterDocument persists an IR or Markdown edit as a mutable draft or a
-// versioned checkpoint. Markdown remains clean and numbering stays in sidecar data.
+// versioned checkpoint. Editor content remains clean and numbering stays in sidecar data.
 func SaveWriterDocument(w http.ResponseWriter, r *http.Request) {
 	sessionID := common.PathVar(r, "session_id")
 	if sessionID == "" {
@@ -450,6 +462,11 @@ func SaveWriterDocument(w http.ResponseWriter, r *http.Request) {
 		(!markdownSource && (!irSource || representation != "ir" || !irDocument)) {
 		common.ReplyErr(w, "invalid workflow action response", http.StatusBadGateway)
 		return
+	}
+	if representation == "ir" {
+		// The persisted source is the canonical editor document. Do not echo a
+		// materialized compatibility response from a pinned older workflow revision.
+		renderedDocument = sourceValue
 	}
 	schema := "lazyllm.tools.writer.data_models.writer_ir.WriterDocument"
 	if markdownSource {

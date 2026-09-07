@@ -343,6 +343,48 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
+describe('WriterIRDocumentEditor numbering sidecar', () => {
+  it('renders an immutable highlighted marker without persisting it in heading content', async () => {
+    const onChange = vi.fn();
+    const cleanDocument: WriterDocument = {
+      ...document,
+      blocks: [{ ...document.blocks[0], content: 'Target section' }],
+    };
+    const { container } = render(
+      <WriterIRDocumentEditor
+        document={cleanDocument}
+        numbering={{
+          ordered_style: 'hierarchical',
+          entries: { 'sec-1': { label: '1.', mode: 'ordered' } },
+        }}
+        ariaLabel='Writer document'
+        onChange={onChange}
+      />,
+    );
+
+    const heading = container.querySelector<HTMLElement>(
+      '[data-node-id="sec-1"] > [data-writer-block-content]',
+    );
+    const marker = heading?.querySelector<HTMLElement>('[data-writer-numbering-marker="sec-1"]');
+    expect(marker).toHaveTextContent('1.');
+    expect(marker).toHaveAttribute('contenteditable', 'false');
+    expect(marker).toHaveClass('writer-ir__numbering-marker');
+
+    const editableText = heading?.cloneNode(true) as HTMLElement;
+    editableText.querySelector('[data-writer-numbering-marker]')?.remove();
+    expect(editableText).toHaveTextContent('Target section');
+
+    const textNode = Array.from(heading?.childNodes ?? []).find((node) => node.nodeType === Node.TEXT_NODE);
+    expect(textNode).toBeDefined();
+    textNode!.textContent = 'Renamed section';
+    fireEvent.input(heading!);
+
+    await waitFor(() => expect(onChange).toHaveBeenCalled());
+    const updated = onChange.mock.calls.at(-1)?.[0] as WriterDocument;
+    expect(updated.blocks[0].content).toBe('Renamed section');
+  });
+});
+
 describe('WriterIRDocumentEditor image preview', () => {
   it('renders a Notion preview asset URL without requiring a media asset', async () => {
     const previewDocument: WriterDocument = {

@@ -60,6 +60,25 @@ describe('Writer Markdown system anchors', () => {
     expect(editable).not.toContain('<a id=');
   });
 
+  it('keeps PDF page markers hidden and round-trippable through MDXEditor', () => {
+    const source = [
+      '<!-- 第 1 页 -->',
+      '',
+      '招标文件正文',
+      '',
+      '```html',
+      '<!-- 第 2 页 -->',
+      '```',
+    ].join('\n');
+
+    const editorValue = writerMarkdownForEditing(source);
+
+    expect(editorValue).toContain('<a id="writer-page-marker-1" />');
+    expect(editorValue).not.toContain('<!-- 第 1 页 -->');
+    expect(editorValue).toContain('```html\n<!-- 第 2 页 -->\n```');
+    expect(writerMarkdownForSave(editorValue)).toBe(source);
+  });
+
   it('keeps heading anchors out of the editable document without leaving blank blocks', () => {
     const source = [
       '# 标题',
@@ -77,9 +96,41 @@ describe('Writer Markdown system anchors', () => {
       '',
       '## 1 章节',
       '',
-      '<a id="block-image-1" />',
       '![插图](https://example.com/image.png)',
     ].join('\n'));
+  });
+
+  it('keeps image and following heading anchors stable across an HTML image round trip', () => {
+    const source = [
+      '# 标题',
+      '',
+      '<a id="block-sec-002-001"></a>',
+      '### 证据与谜团',
+      '',
+      '[因果链](#block-IMAGE-1)',
+      '',
+      '<a id="block-IMAGE-1"></a>',
+      '![恐惧递进因果链](/data/chain.jpg)',
+      '',
+      '<a id="block-sec-002-002"></a>',
+      '### 不可名状的征兆',
+    ].join('\n');
+    const editable = writerMarkdownForEditing(source).replace(
+      '![恐惧递进因果链](/data/chain.jpg)',
+      '<img height="712" width="712" alt="恐惧递进因果链" src="/data/chain.jpg" />',
+    );
+    const restored = writerMarkdownForSave(
+      protectWriterMarkdownHeadingAnchors(source, editable),
+    );
+
+    expect(editable).not.toContain('<a id=');
+    expect(restored).toContain(
+      '<a id="block-IMAGE-1"></a>\n<img height="712" width="712"',
+    );
+    expect(restored).toContain(
+      '<a id="block-sec-002-002"></a>\n### 不可名状的征兆',
+    );
+    expect(restored).not.toContain('block-user-');
   });
 
   it('keeps outline instructions hidden from the editor and restores them on save', () => {
@@ -299,6 +350,34 @@ describe('Writer Markdown system anchors', () => {
     expect(revised).toContain('详见前文约定。');
     expect(revised).not.toContain('](#block-sec-1)');
     expect(revised).toContain('<a id="block-sec-1"></a>');
+  });
+
+  it('unwraps a selected reference by target when the paragraph contains inline formatting', () => {
+    const source = '**重点**：详见[需求理解](#block-sec-1)。';
+
+    expect(removeWriterMarkdownInternalReference(
+      source,
+      '重点：详见需求理解。',
+      5,
+      '需求理解',
+      { anchorId: 'block-sec-1', occurrence: 0 },
+    )).toBe('**重点**：详见需求理解。');
+  });
+
+  it('uses the selected reference occurrence when a target is linked more than once', () => {
+    const source = [
+      '[第一次](#block-sec-1)',
+      '',
+      '[第二次](#block-sec-1)',
+    ].join('\n');
+
+    expect(removeWriterMarkdownInternalReference(
+      source,
+      '第二次',
+      0,
+      '第二次',
+      { anchorId: 'block-sec-1', occurrence: 1 },
+    )).toBe('[第一次](#block-sec-1)\n\n第二次');
   });
 
   it('keeps escaped link labels intact when removing the reference', () => {

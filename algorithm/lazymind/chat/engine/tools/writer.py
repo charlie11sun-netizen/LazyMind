@@ -91,8 +91,11 @@ _SECTION_STREAM_IDLE_ERROR_RE = re.compile(
 
 class _WriterRetrievalError(RuntimeError):
     def __init__(self, message: str, tools_used: list[str]):
-        super().__init__(message)
+        super().__init__(message, tools_used)
         self.tools_used = tools_used
+
+    def __str__(self) -> str:
+        return str(self.args[0])
 
 
 def _writer_selected_kb_ids() -> list[str]:
