@@ -16,6 +16,7 @@ import {
 import {
   CLOUD_DOCUMENTS_FEISHU_SETUP_PATH,
   CLOUD_DOCUMENTS_NOTION_SETUP_PATH,
+  CLOUD_DOCUMENTS_GITHUB_SETUP_PATH,
 } from "../utils/cloudDocumentUrls";
 import type { CloudDocumentProvidersVm } from "../hooks/useCloudDocumentProviders";
 
@@ -394,6 +395,11 @@ export function CloudDocumentModals({ vm }: { vm: CloudDocumentProvidersVm }) {
           <p style={{ marginTop: 12, marginBottom: 0 }}>
             {t("modelProvider.cloudDocuments.githubCallbackLabel")}{" "}
             <code>{getCloudDataSourceCallbackUrl("github")}</code>
+            <br />
+            <a href={CLOUD_DOCUMENTS_GITHUB_SETUP_PATH} target="_blank" rel="noreferrer">
+              {t("modelProvider.cloudDocuments.githubSetupGuideAction")}
+            </a>
+            {t("modelProvider.cloudDocuments.githubSetupGuideHint")}
           </p>
         ) : cloudSetupProvider !== "feishu" ? (
           <p style={{ marginTop: 12, marginBottom: 0 }}>
