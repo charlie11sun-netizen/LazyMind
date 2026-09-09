@@ -7,7 +7,6 @@ import {
 } from "@ant-design/icons";
 import { FeishuCredentialHintAlertFromForm } from "@/modules/dataSource/common/FeishuCredentialHintAlert";
 import { formatValidFeishuAccountNames } from "@/modules/dataSource/utils/feishuAccount";
-import { getCloudDataSourceCallbackUrl } from "@/modules/dataSource/common/feishuOAuth";
 import {
   cloudAuthProviderOptions,
   cloudProviderOptions,
@@ -393,9 +392,6 @@ export function CloudDocumentModals({ vm }: { vm: CloudDocumentProvidersVm }) {
         )}
         {cloudSetupProvider === "github" ? (
           <p style={{ marginTop: 12, marginBottom: 0 }}>
-            {t("modelProvider.cloudDocuments.githubCallbackLabel")}{" "}
-            <code>{getCloudDataSourceCallbackUrl("github")}</code>
-            <br />
             <a href={CLOUD_DOCUMENTS_GITHUB_SETUP_PATH} target="_blank" rel="noreferrer">
               {t("modelProvider.cloudDocuments.githubSetupGuideAction")}
             </a>

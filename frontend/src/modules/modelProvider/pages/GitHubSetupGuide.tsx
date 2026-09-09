@@ -39,14 +39,18 @@ function buildGuideSteps(t: TFunction): GuideStep[] {
       fields: [
         ["Application name", "LazyMind GitHub"],
         ["Homepage URL", "http://localhost:8090"],
-        ["Authorization callback URL / Redirect URI", "http://localhost:8090/oauth/github/data-source/callback"],
+        ["Redirect URI", "http://localhost:8090/oauth/github/data-source/callback"],
       ],
       details: [t(stepKey("portHint")), t(stepKey("registerHint"))],
     },
     {
       title: t(stepKey("credentialsTitle")),
       description: t(stepKey("credentialsDesc")),
-      details: [t(stepKey("credentialsClientId")), t(stepKey("credentialsClientSecret"))],
+      details: [
+        t(stepKey("credentialsClientId")),
+        t(stepKey("credentialsClientSecret")),
+        t(stepKey("credentialsFillBack")),
+      ],
     },
     {
       title: t(stepKey("finishTitle")),

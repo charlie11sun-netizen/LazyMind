@@ -4015,10 +4015,11 @@ const zhCN = {
         "applicationDesc": "按下表填写应用信息，可点击每项右侧的复制按钮直接复制。",
         "portHint": "注意：如果修改了部署端口，需要同步修改 Homepage URL 和 Redirect URI 中的端口号，并使用修改后的地址打开 LazyMind、发起授权。例如，端口改为 8091 时，上述两个地址中的 8090 均需替换为 8091。",
         "registerHint": "确认回调地址与实际访问地址一致后，点击 Register application 完成创建。",
-        "credentialsTitle": "获取 Client ID 和 Client Secret",
+        "credentialsTitle": "获取凭证并填回 LazyMind",
         "credentialsDesc": "在创建好的 OAuth 应用详情页中获取以下凭证：",
         "credentialsClientId": "复制页面显示的 Client ID。",
         "credentialsClientSecret": "点击 Generate a new client secret，按提示完成身份验证后，复制生成的 Client Secret 并妥善保管。",
+        "credentialsFillBack": "返回 LazyMind 云文档页面，选择 GitHub，将 Client ID 填入 App ID，将 Client Secret 填入 App Secret。",
         "finishTitle": "保存并完成授权",
         "finishDesc": "点击「保存并授权」，在 GitHub 授权页面确认登录账号、应用名称和申请的权限，点击 Authorize 完成授权，然后返回 LazyMind 查看连接结果。",
         "organizationHint": "如果需要访问受 OAuth 应用访问限制保护的组织资源，还需要组织管理员批准该应用。"

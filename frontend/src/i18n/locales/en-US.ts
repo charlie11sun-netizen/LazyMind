@@ -4127,10 +4127,11 @@ const enUS = {
         "applicationDesc": "Use the values below. Click the copy icon beside a value to copy it.",
         "portHint": "If you change the deployment port, update the port in both Homepage URL and Redirect URI, then open LazyMind at that address to authorize. For example, if the port is 8091, replace 8090 with 8091 in both URLs.",
         "registerHint": "Confirm the callback matches the address you use to access LazyMind, then click Register application.",
-        "credentialsTitle": "Get the Client ID and Client Secret",
+        "credentialsTitle": "Get credentials and enter them in LazyMind",
         "credentialsDesc": "On the registered OAuth app’s details page, obtain these credentials:",
         "credentialsClientId": "Copy the Client ID displayed on the page.",
         "credentialsClientSecret": "Click Generate a new client secret, complete identity verification if prompted, then copy and securely store the generated Client Secret.",
+        "credentialsFillBack": "Return to Cloud documents in LazyMind and select GitHub. Enter the Client ID in App ID and the Client Secret in App Secret.",
         "finishTitle": "Save and authorize",
         "finishDesc": "Click Save and authorize. On GitHub, review the signed-in account, app name, and requested permissions, then click Authorize. Return to LazyMind to check the connection result.",
         "organizationHint": "Access to organization resources protected by OAuth app access restrictions also requires approval from an organization owner."
