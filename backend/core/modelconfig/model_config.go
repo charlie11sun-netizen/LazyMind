@@ -18,7 +18,7 @@ import (
 
 const cloudToolTokenTimeout = 5 * time.Second
 
-var cloudToolProviders = []string{"feishu", "googledrive", "notion"}
+var cloudToolProviders = []string{"feishu", "github", "googledrive", "notion", "wechat"}
 
 // gmailimap is IMAP + a Google app password (not Gmail OAuth). App passwords skip
 // Google Cloud OAuth client setup and are the more user-friendly connect path.
@@ -558,6 +558,25 @@ type selectedProviderConfig struct {
 	BaseURL          string
 	APIKey           string
 	APIKeyCiphertext string
+}
+
+// TranslationConfig contains the selected translation provider and its decrypted
+// server-side credential. It must never be returned directly to a client.
+type TranslationConfig struct {
+	ProviderName string
+	BaseURL      string
+	APIKey       string
+}
+
+func LoadTranslationConfig(ctx context.Context, db *gorm.DB, userID string) (*TranslationConfig, error) {
+	row, err := loadSelectedProviderConfig(ctx, db, strings.TrimSpace(userID), "translation", false)
+	if err != nil || row == nil {
+		return nil, err
+	}
+	if strings.TrimSpace(row.APIKey) == "" {
+		return nil, nil
+	}
+	return &TranslationConfig{ProviderName: row.ProviderName, BaseURL: row.BaseURL, APIKey: row.APIKey}, nil
 }
 
 func loadSelectedProviderConfig(

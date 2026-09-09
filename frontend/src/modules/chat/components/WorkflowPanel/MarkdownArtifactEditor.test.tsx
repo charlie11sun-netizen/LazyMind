@@ -2,6 +2,10 @@ import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { useState } from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+const mdxMocks = vi.hoisted(() => ({
+  imagePreviewHandler: undefined as ((url: string) => Promise<string>) | undefined,
+}));
+
 vi.mock('@mdxeditor/editor', async () => {
   const React = await import('react');
   const { flushSync } = await import('react-dom');
@@ -78,7 +82,14 @@ vi.mock('@mdxeditor/editor', async () => {
     codeMirrorPlugin: emptyPlugin,
     frontmatterPlugin: emptyPlugin,
     headingsPlugin: emptyPlugin,
-    imagePlugin: emptyPlugin,
+    imagePlugin: ({
+      imagePreviewHandler,
+    }: {
+      imagePreviewHandler: (url: string) => Promise<string>;
+    }) => {
+      mdxMocks.imagePreviewHandler = imagePreviewHandler;
+      return {};
+    },
     jsxPlugin: emptyPlugin,
     linkDialogPlugin: emptyPlugin,
     linkPlugin: emptyPlugin,
@@ -187,6 +198,7 @@ const rangeClientRectsDescriptor = Object.getOwnPropertyDescriptor(
 );
 
 beforeEach(() => {
+  mdxMocks.imagePreviewHandler = undefined;
   Object.defineProperty(window.Range.prototype, 'getBoundingClientRect', {
     configurable: true,
     value: () => rect(),
@@ -381,6 +393,22 @@ describe('MarkdownArtifactEditor MDX compatibility', () => {
 });
 
 describe('MarkdownArtifactEditor rewrite selection highlight', () => {
+  it('uses the image resolver supplied by the writer document response', async () => {
+    const resolveImageUrl = vi.fn(async (url: string) => `/preview/${url}`);
+    render(
+      <MarkdownArtifactEditor
+        markdown='![diagram](docs/assets/diagram.png)'
+        resolveImageUrl={resolveImageUrl}
+        sourceRevision={1}
+        onSave={async () => 1}
+      />,
+    );
+
+    expect(mdxMocks.imagePreviewHandler).toBe(resolveImageUrl);
+    await expect(mdxMocks.imagePreviewHandler?.('docs/assets/diagram.png'))
+      .resolves.toBe('/preview/docs/assets/diagram.png');
+  });
+
   it('renders numbering from state in the outline without changing the heading title', () => {
     render(
       <MarkdownArtifactEditor
@@ -411,7 +439,7 @@ describe('MarkdownArtifactEditor rewrite selection highlight', () => {
       />,
     );
     expect(container.querySelector<HTMLElement>('.writer-markdown-editor__surface')?.dataset.markdown)
-      .toBe('$\\mathcal\\{D}=\\{(x_i,y_i)\\}_\\{i=1}^\\{N}$ and $y_\\{\\<t}$');
+      .toBe('$\\mathcal\\{D\\}=\\{(x_i,y_i)\\}_\\{i=1\\}^\\{N\\}$ and $y_\\{\\<t\\}$');
   });
 
   it('navigates internal references without opening the link editor', () => {
@@ -786,6 +814,7 @@ describe('MarkdownArtifactEditor rewrite selection highlight', () => {
       ].join('\n'),
       11,
       'draft',
+      undefined,
     );
   });
 
@@ -872,7 +901,7 @@ describe('MarkdownArtifactEditor autosave', () => {
       expect(await flush?.()).toBe(true);
     });
 
-    expect(onSave).toHaveBeenCalledWith('Checkpoint edit', 7, 'checkpoint');
+    expect(onSave).toHaveBeenCalledWith('Checkpoint edit', 7, 'checkpoint', undefined);
   });
 
   it('replaces clean backend updates without remounting or moving the viewport', async () => {
@@ -928,7 +957,7 @@ describe('MarkdownArtifactEditor autosave', () => {
       await act(async () => {
         vi.advanceTimersByTime(1_000);
       });
-      expect(onSave).toHaveBeenCalledWith('Local draft', 7, 'draft');
+      expect(onSave).toHaveBeenCalledWith('Local draft', 7, 'draft', undefined);
       await act(async () => {
         resolveSave?.({ markdown: 'Backend normalized draft', revision: 8 });
         await Promise.resolve();
@@ -979,7 +1008,7 @@ describe('MarkdownArtifactEditor autosave', () => {
         await Promise.resolve();
       });
       expect(onSave).toHaveBeenCalledTimes(1);
-      expect(onSave).toHaveBeenCalledWith('Final edit', 7, 'draft');
+      expect(onSave).toHaveBeenCalledWith('Final edit', 7, 'draft', undefined);
       expect(screen.queryByText('chat.writerMarkdown.saved')).toBeNull();
     } finally {
       vi.useRealTimers();
@@ -1009,7 +1038,7 @@ describe('MarkdownArtifactEditor autosave', () => {
       await act(async () => {
         vi.advanceTimersByTime(1_000);
       });
-      expect(onSave).toHaveBeenCalledWith('First edit', 7, 'draft');
+      expect(onSave).toHaveBeenCalledWith('First edit', 7, 'draft', undefined);
 
       editable.textContent = 'Second edit';
       fireEvent.input(editable);
@@ -1027,7 +1056,7 @@ describe('MarkdownArtifactEditor autosave', () => {
         await Promise.resolve();
       });
       expect(onSave).toHaveBeenCalledTimes(2);
-      expect(onSave).toHaveBeenLastCalledWith('Second edit', 8, 'draft');
+      expect(onSave).toHaveBeenLastCalledWith('Second edit', 8, 'draft', undefined);
     } finally {
       vi.useRealTimers();
     }

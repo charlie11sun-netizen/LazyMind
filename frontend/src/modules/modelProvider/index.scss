@@ -3153,6 +3153,10 @@
   }
 }
 
+.model-provider-cloud-doc-open-platform {
+  align-self: flex-start;
+}
+
 .model-provider-cloud-doc-setup-callback {
   display: flex;
   align-items: center;
@@ -3329,5 +3333,13 @@
   .model-provider-cloud-doc-setup-callback {
     align-items: flex-start;
     flex-direction: column;
+  }
+}
+.model-provider-tencent-setup-steps {
+  margin: 8px 0 0;
+  padding-left: 20px;
+
+  li + li {
+    margin-top: 6px;
   }
 }

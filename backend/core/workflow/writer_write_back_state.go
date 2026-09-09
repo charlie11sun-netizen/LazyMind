@@ -16,12 +16,14 @@ const (
 	writerWriteBackSyncedClean     = "synced_clean"
 	writerWriteBackSyncedDirty     = "synced_dirty"
 	writerWriteBackBlocked         = "blocked"
+	writerMarkdownSourceEditor     = "writer-markdown-source"
 )
 
 type writerProviderBinding struct {
 	Provider   string `json:"provider"`
 	DocumentID string `json:"document_id"`
 	URI        string `json:"uri"`
+	BrowserURL string `json:"browser_url"`
 }
 
 type writerDocumentIdentity struct {
@@ -37,14 +39,26 @@ type writerWriteBackInfo struct {
 }
 
 // enrichWriterWriteBackSlots exposes the server-owned delivery state for the
-// selected Writer draft. A source_document remains authoritative when present;
-// ordinary Markdown drafts can create the default provider document on first delivery.
+// selected Writer draft. Provider-bound Markdown uses target_document, while
+// Writer IR continues to use its source or draft provider binding.
 func enrichWriterWriteBackSlots(ctx context.Context, db *gorm.DB, sessionID string, slots []slotDTO) {
 	var source *slotDTO
+	var target *slotDTO
 	for i := range slots {
 		if slots[i].SlotID == "source_document" && slots[i].ListIndex == nil {
 			source = &slots[i]
-			break
+		}
+		if slots[i].SlotID == "target_document" && slots[i].ListIndex == nil {
+			target = &slots[i]
+		}
+	}
+	if source != nil && target != nil && isWriterWorkflowSession(ctx, db, sessionID) {
+		targetValue, err := loadWriterSlotDTOValue(ctx, db, sessionID, *target)
+		if err == nil {
+			binding, bound := writerProviderBindingFromTargetArtifact(targetValue)
+			if bound && binding.Provider == "github" {
+				source.EditorProfile = writerMarkdownSourceEditor
+			}
 		}
 	}
 
@@ -53,7 +67,7 @@ func enrichWriterWriteBackSlots(ctx context.Context, db *gorm.DB, sessionID stri
 		if (slot.SlotID != "draft_document" && slot.SlotID != "flat_draft_document") || slot.ListIndex != nil {
 			continue
 		}
-		info := writerWriteBackState(ctx, db, sessionID, *slot, source)
+		info := writerWriteBackState(ctx, db, sessionID, *slot, source, target)
 		slot.WriteBackState = info.State
 		slot.WriteBackReady = info.State != writerWriteBackBlocked
 		slot.WriteBackDirty = info.State == writerWriteBackInitialDelivery || info.State == writerWriteBackSyncedDirty
@@ -64,12 +78,21 @@ func enrichWriterWriteBackSlots(ctx context.Context, db *gorm.DB, sessionID stri
 	}
 }
 
+func isWriterWorkflowSession(ctx context.Context, db *gorm.DB, sessionID string) bool {
+	var session orm.WorkflowSession
+	return db.WithContext(ctx).
+		Select("plugin_id").
+		Where("id = ?", sessionID).
+		First(&session).Error == nil && session.WorkflowID == "writer-workflow"
+}
+
 func writerWriteBackState(
 	ctx context.Context,
 	db *gorm.DB,
 	sessionID string,
 	draft slotDTO,
 	source *slotDTO,
+	target *slotDTO,
 ) writerWriteBackInfo {
 	info := writerWriteBackInfo{State: writerWriteBackBlocked}
 	if draft.Revision <= 0 {
@@ -80,29 +103,38 @@ func writerWriteBackState(
 	if err != nil {
 		return info
 	}
-
 	var binding writerProviderBinding
 	hasBinding := false
-	if source != nil {
+	draftIsMarkdown := writerArtifactIsMarkdown(draftValue)
+	if !draftIsMarkdown {
+		binding, hasBinding = writerProviderBindingFromArtifact(draftValue)
+	}
+	if !hasBinding && draftIsMarkdown && target != nil {
+		targetValue, targetErr := loadWriterSlotDTOValue(ctx, db, sessionID, *target)
+		if targetErr != nil {
+			return info
+		}
+		binding, hasBinding = writerProviderBindingFromTargetArtifact(targetValue)
+	}
+	sourceIsUnboundIR := false
+	if !hasBinding && source != nil {
 		sourceValue, sourceErr := loadWriterSlotDTOValue(ctx, db, sessionID, *source)
 		if sourceErr != nil {
 			return info
 		}
 		binding, hasBinding = writerProviderBindingFromArtifact(sourceValue)
 		if !hasBinding && writerArtifactIsUnboundIR(sourceValue) {
+			sourceIsUnboundIR = true
 			binding, hasBinding = writerProviderBindingFromArtifact(draftValue)
-			if !hasBinding {
-				info.State = writerWriteBackInitialDelivery
-			}
 		}
-		if !hasBinding {
-			if writerArtifactIsMarkdown(draftValue) {
-				info.State = writerWriteBackInitialDelivery
-			}
-			return info
-		}
-	} else {
+	} else if !hasBinding && source == nil {
 		binding, hasBinding = writerProviderBindingFromArtifact(draftValue)
+	}
+	if !hasBinding && source != nil {
+		if sourceIsUnboundIR || writerArtifactIsMarkdown(draftValue) {
+			info.State = writerWriteBackInitialDelivery
+		}
+		return info
 	}
 	if hasBinding {
 		applyWriterProviderBinding(&info, binding)
@@ -150,7 +182,11 @@ func writerWriteBackState(
 func applyWriterProviderBinding(info *writerWriteBackInfo, binding writerProviderBinding) {
 	info.Provider = binding.Provider
 	info.ProviderDocumentID = binding.DocumentID
-	info.URL = writerProviderURL(binding.URI)
+	url := binding.BrowserURL
+	if strings.TrimSpace(url) == "" {
+		url = binding.URI
+	}
+	info.URL = writerProviderURL(binding.Provider, url)
 }
 
 func writerRevisionPointer(revision int) *int {
@@ -212,6 +248,53 @@ func writerProviderBindingFromArtifact(value json.RawMessage) (writerProviderBin
 		return writerProviderBinding{}, false
 	}
 	return identity.ProviderBinding, true
+}
+
+func writerProviderBindingFromTargetArtifact(value json.RawMessage) (writerProviderBinding, bool) {
+	resolved, ok := resolveWriterArtifact(value)
+	if !ok {
+		return writerProviderBinding{}, false
+	}
+	var envelope struct {
+		Data json.RawMessage `json:"data"`
+	}
+	if json.Unmarshal(resolved, &envelope) != nil {
+		return writerProviderBinding{}, false
+	}
+	target := resolved
+	if len(envelope.Data) > 0 {
+		target = envelope.Data
+	}
+	var identity struct {
+		DocumentID string `json:"doc_id"`
+		URI        string `json:"uri"`
+		Adapter    string `json:"adapter"`
+		Meta       struct {
+			BrowserURL     string `json:"browser_url"`
+			PullRequestURL string `json:"pull_request_url"`
+		} `json:"meta"`
+	}
+	if json.Unmarshal(target, &identity) != nil {
+		return writerProviderBinding{}, false
+	}
+	provider := canonicalWriterWriteBackProvider(identity.Adapter)
+	if provider == "" || (identity.DocumentID == "" && identity.URI == "") {
+		return writerProviderBinding{}, false
+	}
+	documentID := identity.DocumentID
+	if documentID == "" {
+		documentID = identity.URI
+	}
+	uri := identity.Meta.PullRequestURL
+	if uri == "" {
+		uri = identity.Meta.BrowserURL
+	}
+	if uri == "" {
+		uri = identity.URI
+	}
+	return writerProviderBinding{
+		Provider: provider, DocumentID: documentID, URI: uri,
+	}, true
 }
 
 func resolveWriterArtifact(value json.RawMessage) (json.RawMessage, bool) {
@@ -299,25 +382,51 @@ func writerArtifactPathAllowed(path string) bool {
 }
 
 func writerProviderSupported(provider string) bool {
-	switch strings.ToLower(strings.TrimSpace(provider)) {
-	case "feishu", "notion":
+	switch canonicalWriterWriteBackProvider(provider) {
+	case "feishu", "notion", "github", "wechat":
 		return true
 	default:
 		return false
 	}
 }
 
-func writerProviderURL(uri string) string {
+func writerProviderURL(provider, uri string) string {
 	if !strings.HasPrefix(uri, "https://") {
 		return ""
 	}
+	provider = canonicalWriterWriteBackProvider(provider)
 	host := strings.ToLower(strings.Split(strings.TrimPrefix(uri, "https://"), "/")[0])
-	if host == "feishu.cn" || strings.HasSuffix(host, ".feishu.cn") ||
-		host == "larksuite.com" || strings.HasSuffix(host, ".larksuite.com") ||
-		host == "app.notion.com" ||
-		host == "notion.so" || strings.HasSuffix(host, ".notion.so") ||
-		host == "notion.site" || strings.HasSuffix(host, ".notion.site") {
+	valid := false
+	switch provider {
+	case "feishu":
+		valid = host == "feishu.cn" || strings.HasSuffix(host, ".feishu.cn") ||
+			host == "larksuite.com" || strings.HasSuffix(host, ".larksuite.com")
+	case "notion":
+		valid = host == "app.notion.com" || host == "notion.so" ||
+			strings.HasSuffix(host, ".notion.so") || host == "notion.site" ||
+			strings.HasSuffix(host, ".notion.site")
+	case "github":
+		valid = host == "github.com" || host == "www.github.com"
+	case "wechat":
+		valid = host == "mp.weixin.qq.com"
+	}
+	if valid {
 		return uri
 	}
 	return ""
+}
+
+func canonicalWriterWriteBackProvider(provider string) string {
+	switch strings.ToLower(strings.TrimSpace(provider)) {
+	case "lark", "feishu":
+		return "feishu"
+	case "github", "githubrepo", "githubwiki":
+		return "github"
+	case "notion":
+		return "notion"
+	case "wechat":
+		return "wechat"
+	default:
+		return ""
+	}
 }

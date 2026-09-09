@@ -533,7 +533,8 @@ func init() {
 		"decode conversation ext",
 		"load artifact action head revision", "parse artifact action policy",
 		"artifact action head revision is incomplete",
-		"decode sync_document action response", "artifact sync state save failed",
+		"decode sync_document action response", "decode convert_document action response",
+		"decode write_document action response", "artifact sync state save failed",
 		"invalid render response", "invalid writer ir artifact",
 		"task unavailable",
 		"query task center settings failed", "query settings controls failed",
@@ -613,6 +614,19 @@ func init() {
 		"invalid run status/reason combination",
 	} {
 		registerAdditionalErrorAlias(source, "algorithm chat stream failed", http.StatusBadGateway, 2002077)
+	}
+	for _, source := range []string{
+		"performance metrics are nil",
+		"unsupported performance metrics schema_version",
+		"performance step counts must be non-negative",
+		"performance turn_seq must be non-negative",
+		"performance numeric facts must be non-negative",
+		"performance derived values must be finite and non-negative",
+		"performance database is nil",
+		"performance ownership fields are required",
+		"performance run ownership does not match existing row",
+	} {
+		registerAdditionalErrorAlias(source, "Internal server error", http.StatusInternalServerError, 2000000)
 	}
 	registerAdditionalError("task_lease_lost", http.StatusConflict, 2002365)
 	registerAdditionalError("maintenance_busy", http.StatusServiceUnavailable, 2002366)

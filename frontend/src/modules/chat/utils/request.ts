@@ -235,8 +235,13 @@ export interface WriteBackWriterDocumentResult {
   provider_synced: boolean;
   artifact_saved: boolean;
   patch_result: SyncWriterDocumentPatchResult;
-  document: Record<string, unknown>;
+  document: RenderedWriterDocument;
+  representation: WriterDocumentRepresentation;
+  provider?: string;
+  write_result?: Record<string, unknown>;
 }
+
+export type WriterWriteBackProvider = 'feishu' | 'notion' | 'github' | 'wechat';
 
 export interface WriteBackWriterDocumentRequest {
   base_revision: number;
@@ -245,7 +250,11 @@ export interface WriteBackWriterDocumentRequest {
   revised_document: Record<string, unknown>;
 }
 
-export type WriterDocumentSlot = 'outline_document' | 'flat_draft_document' | 'draft_document';
+export type WriterDocumentSlot =
+  | 'source_document'
+  | 'outline_document'
+  | 'flat_draft_document'
+  | 'draft_document';
 export type WriterDocumentRepresentation = 'markdown' | 'ir';
 export type RenderedWriterDocument = string | Record<string, unknown>;
 export type WriterHeadingNumberingMode = 'ordered' | 'unordered';
@@ -278,6 +287,8 @@ export interface RenderWriterDocumentResult {
   title: string;
   representation: WriterDocumentRepresentation;
   document: RenderedWriterDocument;
+  /** Session-authorized display URLs keyed by the unchanged Markdown image source. */
+  media_urls?: Record<string, string>;
   /** Number-materialized Markdown used only by download/export flows. */
   export_document?: string;
   numbering: WriterNumberingState;
@@ -559,7 +570,7 @@ export function WorkflowSessionApi() {
       sourceDocument?: Record<string, unknown>,
       revisedDocument?: Record<string, unknown>,
       slot?: WriterDocumentSlot,
-      provider?: string,
+      provider?: WriterWriteBackProvider,
       options?: RawAxiosRequestConfig,
     ) {
       const payload: Record<string, unknown> = { base_revision: baseRevision };
