@@ -124,6 +124,26 @@ function renderedMarkdown(document: string, media_urls?: Record<string, string>)
 }
 
 describe('Writer write-back provider choice', () => {
+  it('shows the Obsidian logo and falls back when it cannot be loaded', () => {
+    const { container } = render(
+      <WriterProviderChoice
+        initialProvider='obsidian'
+        githubEnabled={false}
+        onChange={vi.fn()}
+      />,
+    );
+
+    const obsidian = container.querySelector<HTMLInputElement>('input[value="obsidian"]')!;
+    const option = obsidian.closest('label')!;
+    const logo = option.querySelector<HTMLImageElement>(
+      'img[src="https://obsidian.md/images/obsidian-logo-gradient.svg"]',
+    )!;
+    expect(logo).toBeInTheDocument();
+
+    fireEvent.error(logo);
+    expect(option.querySelector('.anticon-folder-open')).toBeInTheDocument();
+  });
+
   it('selects GitHub only after the conversation binds a target', () => {
     const onChange = vi.fn();
     const { container, rerender } = render(
@@ -208,6 +228,30 @@ describe('SlotWriterDocument render refresh', () => {
       expect(document.querySelector('.workflow-slot__writer-writeback-summary')).toHaveTextContent('草稿');
       expect(document.querySelector('.workflow-slot__writer-writeback-summary')).not.toHaveTextContent('v3');
     });
+  });
+
+  it('shows a persisted local target path after refresh', async () => {
+    workflowApi.renderWriterDocument.mockResolvedValue(renderedMarkdown('# Obsidian note'));
+    const slot = {
+      ...writerSlot(2),
+      provider: 'obsidian',
+      change_source: 'provider_sync' as const,
+      write_back_ready: true,
+      write_back_state: 'synced_clean' as const,
+      write_back_local_path: '/Users/test/Documents/obs/Note.md',
+    };
+
+    render(
+      <SlotRenderer
+        slot={slot}
+        widget={{ widgetType: 'writer-document' }}
+        sessionId='writer-session'
+        slotId='draft_document'
+      />,
+    );
+
+    fireEvent.click(await screen.findByRole('link', { name: '打开云文档' }));
+    expect(await screen.findByText('/Users/test/Documents/obs/Note.md')).toBeInTheDocument();
   });
 
   it('saves against the selected older revision after rollback', async () => {

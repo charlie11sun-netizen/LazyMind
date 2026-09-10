@@ -202,6 +202,39 @@ func TestApplyWriterProviderBindingUsesWeChatBrowserURL(t *testing.T) {
 	}
 }
 
+func TestCanonicalWriterWriteBackProviderSupportsObsidian(t *testing.T) {
+	if !writerProviderSupported("obsidian") {
+		t.Fatal("Obsidian should be a supported write-back provider")
+	}
+	if got := canonicalWriterWriteBackProvider("obsidian"); got != "obsidian" {
+		t.Fatalf("canonical provider = %q, want obsidian", got)
+	}
+	if got := writerProviderURL("obsidian", "obsidian://vlt_test/Note.md"); got != "" {
+		t.Fatalf("Obsidian should not expose a browser URL, got %q", got)
+	}
+}
+
+func TestEnrichWriterWriteBackSlots_UsesObsidianLocalPath(t *testing.T) {
+	db := newTestDB(t)
+	draft := writerRevision("draft", "session", "draft_document", 2, "provider_sync", json.RawMessage(
+		`{"schema":"text/markdown","data":"# Note\n"}`,
+	))
+	target := writerRevision("target", "session", "target_document", 1, "provider_sync", json.RawMessage(
+		`{"data":{"doc_id":"vlt_test:Note.md","uri":"obsidian://vlt_test/Note.md","adapter":"obsidian","meta":{"local_path":"/Users/test/Documents/obs/Note.md"}}}`,
+	))
+	mustCreateWriterRecord(t, db.DB.Create(&draft).Error)
+	mustCreateWriterRecord(t, db.DB.Create(&target).Error)
+
+	slots := []slotDTO{toSlotDTO(&target), toSlotDTO(&draft)}
+	enrichSlots(context.Background(), db.DB, "session", slots)
+	got := slots[1]
+	if got.WriteBackState != writerWriteBackSyncedClean ||
+		got.WriteBackURL != "" ||
+		got.WriteBackLocalPath != "/Users/test/Documents/obs/Note.md" {
+		t.Fatalf("unexpected Obsidian write-back projection: %+v", got)
+	}
+}
+
 func writerRevision(id, sessionID, slot string, revision int, source string, content json.RawMessage) orm.WorkflowSlotRevision {
 	return orm.WorkflowSlotRevision{
 		ID: id, SessionID: sessionID, SlotID: slot, Revision: revision, Selected: true,

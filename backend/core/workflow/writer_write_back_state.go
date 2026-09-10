@@ -24,6 +24,7 @@ type writerProviderBinding struct {
 	DocumentID string `json:"document_id"`
 	URI        string `json:"uri"`
 	BrowserURL string `json:"browser_url"`
+	LocalPath  string `json:"local_path"`
 }
 
 type writerDocumentIdentity struct {
@@ -33,6 +34,7 @@ type writerDocumentIdentity struct {
 type writerWriteBackInfo struct {
 	State              string
 	URL                string
+	LocalPath          string
 	Provider           string
 	ProviderDocumentID string
 	LastSyncedRevision *int
@@ -72,6 +74,7 @@ func enrichWriterWriteBackSlots(ctx context.Context, db *gorm.DB, sessionID stri
 		slot.WriteBackReady = info.State != writerWriteBackBlocked
 		slot.WriteBackDirty = info.State == writerWriteBackInitialDelivery || info.State == writerWriteBackSyncedDirty
 		slot.WriteBackURL = info.URL
+		slot.WriteBackLocalPath = info.LocalPath
 		slot.Provider = info.Provider
 		slot.ProviderDocumentID = info.ProviderDocumentID
 		slot.LastSyncedRevision = info.LastSyncedRevision
@@ -182,6 +185,7 @@ func writerWriteBackState(
 func applyWriterProviderBinding(info *writerWriteBackInfo, binding writerProviderBinding) {
 	info.Provider = binding.Provider
 	info.ProviderDocumentID = binding.DocumentID
+	info.LocalPath = binding.LocalPath
 	url := binding.BrowserURL
 	if strings.TrimSpace(url) == "" {
 		url = binding.URI
@@ -272,6 +276,7 @@ func writerProviderBindingFromTargetArtifact(value json.RawMessage) (writerProvi
 		Meta       struct {
 			BrowserURL     string `json:"browser_url"`
 			PullRequestURL string `json:"pull_request_url"`
+			LocalPath      string `json:"local_path"`
 		} `json:"meta"`
 	}
 	if json.Unmarshal(target, &identity) != nil {
@@ -294,6 +299,7 @@ func writerProviderBindingFromTargetArtifact(value json.RawMessage) (writerProvi
 	}
 	return writerProviderBinding{
 		Provider: provider, DocumentID: documentID, URI: uri,
+		LocalPath: identity.Meta.LocalPath,
 	}, true
 }
 
@@ -383,7 +389,7 @@ func writerArtifactPathAllowed(path string) bool {
 
 func writerProviderSupported(provider string) bool {
 	switch canonicalWriterWriteBackProvider(provider) {
-	case "feishu", "notion", "github", "wechat":
+	case "feishu", "notion", "github", "wechat", "obsidian":
 		return true
 	default:
 		return false
@@ -426,6 +432,8 @@ func canonicalWriterWriteBackProvider(provider string) string {
 		return "notion"
 	case "wechat":
 		return "wechat"
+	case "obsidian":
+		return "obsidian"
 	default:
 		return ""
 	}

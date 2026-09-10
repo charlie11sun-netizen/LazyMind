@@ -193,6 +193,8 @@ export interface SlotRevision {
   write_back_state?: 'initial_delivery' | 'synced_clean' | 'synced_dirty' | 'blocked';
   /** Public cloud document URL resolved by the server from source_document. */
   write_back_url?: string;
+  /** Host-local path for a provider target backed by a local file. */
+  write_back_local_path?: string;
   /** Cloud provider bound to source_document, for example "feishu". */
   provider?: string;
   /** Stable cloud-document identity. It is never a local revision number. */

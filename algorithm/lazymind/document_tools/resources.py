@@ -20,6 +20,7 @@ from lazyllm.tools.writer.provider import (
     WriterProviderWriteOutcomeError,
     get_writer_provider,
     is_ambiguous_write_error,
+    list_writer_providers,
     match_writer_provider,
     resolve_writer_create_target,
 )
@@ -41,6 +42,10 @@ _PROVIDER_LOCATOR_RE = re.compile(
     r"(?:https?://|[a-z][a-z0-9_+.-]*:(?://)?)[^\s<>\"'，。；！？、（）【】《》「」『』]+",
     re.IGNORECASE,
 )
+
+
+def list_document_providers() -> list[dict[str, Any]]:
+    return list_writer_providers()
 
 
 def _provider_name_from_document(document: WriterDocument) -> str:
@@ -170,6 +175,7 @@ def convert_document(
     target_document: Mapping[str, Any] | None = None,
     *,
     output_format: str = 'native',
+    template: str = '',
 ) -> dict[str, Any]:
     """Purely convert canonical Writer content to one provider's copyable format."""
     if output_format != 'native':
@@ -194,10 +200,12 @@ def convert_document(
     if target is not None and target.adapter and target.adapter != provider_name:
         raise ToolExecutionError('target_document provider does not match provider.')
     media_library = MediaAssetLibrary.model_validate(media_assets) if media_assets else None
-    converted = get_writer_provider(provider_name).convert_document(
+    writer_provider = get_writer_provider(provider_name)
+    converted = writer_provider.convert_document_with_template(
         content,
         target=target,
         media_assets=media_library,
+        template=template,
     )
     return converted.model_dump()
 
@@ -586,6 +594,7 @@ class WriterResourceCapabilities:
         target_document_json: str = '',
         media_assets_json: str = '',
         output_format: str = 'native',
+        template: str = '',
     ) -> str:
         """Convert Writer content without provider IO."""
         return _json_dumps(convert_document(
@@ -600,6 +609,7 @@ class WriterResourceCapabilities:
                 if target_document_json.strip()
                 else None
             ),
+            template=template,
         ))
 
     def write_document(
@@ -627,12 +637,18 @@ class WriterResourceCapabilities:
             mode=mode,
         )
         target = TargetDocument.model_validate(payload['target_document'])
+        write_result = payload.get('write_result')
+        published_link = (
+            str(write_result.get('published_link') or '').strip()
+            if isinstance(write_result, Mapping) and 'published_link' in write_result
+            else _published_link(target)
+        )
         return _json_dumps({
             'publish_result': payload['write_result'],
             'draft_document': payload['persisted_document'],
             'representation': payload['representation'],
             'provider': payload['provider'],
-            'published_link': _published_link(target),
+            'published_link': published_link,
             'target_document': payload['target_document'],
         })
 
@@ -676,6 +692,7 @@ __all__ = [
     'WriterResourceCapabilities',
     'convert_document',
     'extract_provider_resources',
+    'list_document_providers',
     'provider_reference',
     'resolve_provider_target',
     'resolve_provider_targets',

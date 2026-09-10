@@ -46,6 +46,8 @@ x-core-env: &core-env
   # production deployments should leave this unset/false.
   MIGRATION_RECONCILE_UNKNOWN_DEV_HISTORY: ${MIGRATION_RECONCILE_UNKNOWN_DEV_HISTORY:-true}
   LAZYMIND_PREFERENCE_CONTEXT_MAX_CHARS: ${LAZYMIND_PREFERENCE_CONTEXT_MAX_CHARS:-5000}
+  LAZYMIND_VOCABULARY_ENABLED: ${LAZYMIND_VOCABULARY_ENABLED:-false}
+  LAZYMIND_ANKI_CONNECT_URL: ${LAZYMIND_ANKI_CONNECT_URL:-http://host.docker.internal:8765}
   LAZYMIND_REDIS_URL: redis://test:123456@redis:6379/0
   LAZYMIND_UPLOAD_ROOT: /var/lib/lazymind/uploads
   LAZYMIND_UPLOAD_TEXT_UTF8_CONVERT_ENABLED: ${LAZYMIND_UPLOAD_TEXT_UTF8_CONVERT_ENABLED:-true}
@@ -81,6 +83,10 @@ x-upload-paths: &upload-paths
 # Single source for the local_fs visible root. Makefile exports the normal
 # per-OS default; ECS_01 should override this to /tmp/test_watch.
 x-file-watcher-watch-host-dir: &file-watcher-watch-host-dir ${LAZYMIND_FILE_WATCHER_WATCH_HOST_DIR:-${HOME}}
+
+# Optional Obsidian scan-root override. Without it, reuse the generic local_fs
+# visible root. It may contain one Vault or multiple Vault folders.
+x-obsidian-host-root: &obsidian-host-root ${OBSIDIAN_HOST_ROOT:-${LAZYMIND_FILE_WATCHER_WATCH_HOST_DIR:-${HOME}}}
 
 # Development compose overrides the installed package with the LazyLLM submodule.
 x-lazyllm-src-mount: &lazyllm-src-mount ./algorithm/lazyllm:/opt/lazyllm
@@ -415,7 +421,6 @@ services:
       MIGRATIONS_DIR: /migrations
       LAZYMIND_ALGO_SERVICE_URL: http://lazyllm-doc-server:8000
       LAZYMIND_SUBAGENT_WORKSPACE: /data/subagent
-      LAZYMIND_SUBAGENT_DB_DSN: ${ACL_DB_DSN}
       LAZYMIND_READONLY_VALIDATE: "0"
       LAZYMIND_READONLY_DB_DRIVER: postgres
       LAZYMIND_READONLY_DB_DSN: "host=db user=app password=app dbname=app port=5432 sslmode=disable TimeZone=UTC"
@@ -478,6 +483,7 @@ services:
       dockerfile: Dockerfile
       args:
         <<: *mirror-args
+        VITE_VOCABULARY_ENABLED: ${LAZYMIND_VOCABULARY_ENABLED:-false}
     ports:
       - "${LAZYMIND_FRONTEND_PORT:-8090}:80"
     expose:
@@ -794,6 +800,9 @@ services:
       - ./data/observability:/var/lib/lazymind/observability
       - evo-data:/var/lib/lazymind/evo:ro
       - ./data/subagent:/data/subagent
+      - type: bind
+        source: *obsidian-host-root
+        target: /mnt/obsidian
       - *algorithm-src-mount
       - *lazyllm-src-mount
       # Router mode: mount algorithm source so child processes can load different versions.
@@ -819,6 +828,10 @@ services:
       LAZYMIND_SEGMENT_STORE_USER: ${LAZYMIND_SEGMENT_STORE_USER:-admin}
       LAZYMIND_SEGMENT_STORE_PASSWORD: ${LAZYMIND_SEGMENT_STORE_PASSWORD:-LazyRAG_OpenSearch123!}
       LAZYMIND_SHARED_UPLOAD_DIR: /var/lib/lazymind/uploads
+      # Keep the Provider on a stable container-internal scan root.
+      LAZYLLM_OBSIDIAN_VAULT_PATH: /mnt/obsidian
+      # Map an Obsidian write-back result back to its host-local path for the UI.
+      LAZYLLM_OBSIDIAN_HOST_ROOT: *obsidian-host-root
       LAZYMIND_OBSERVABILITY_DIR: /var/lib/lazymind/observability
       LAZYMIND_MOUNT_BASE_DIR: /var/lib/lazymind/uploads
       # Same root as SUBAGENT_WORKSPACE. chat_agent_workspace() adds chat-artifacts/<user>/<conv>/,

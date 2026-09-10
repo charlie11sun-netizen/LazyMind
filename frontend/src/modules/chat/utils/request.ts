@@ -27,6 +27,7 @@ import {
   DefaultApiFactory as CoreDefaultApiFactory,
   PromptsApiFactory as CorePromptsApiFactory,
   type ConversationHistoryListResponse,
+  type ConversationPinResponse,
   type ConversationTrailListResponse,
   type DefaultApiApiCoreConversationsNameHistoryGetRequest,
   type DefaultApiApiCoreConversationsNameTrailGetRequest,
@@ -69,6 +70,8 @@ const corePromptsClient = CorePromptsApiFactory(
   BASE_URL,
   axiosInstance,
 );
+
+export type ConversationOrderResult = ConversationPinResponse;
 
 export interface PromptLibraryListParams {
   pageSize?: number; // 每页数量
@@ -241,11 +244,12 @@ export interface WriteBackWriterDocumentResult {
   write_result?: Record<string, unknown>;
 }
 
-export type WriterWriteBackProvider = 'feishu' | 'notion' | 'github' | 'wechat';
+export type WriterWriteBackProvider = 'feishu' | 'notion' | 'github' | 'wechat' | 'obsidian';
 
 export interface WriteBackWriterDocumentRequest {
   base_revision: number;
   slot?: WriterDocumentSlot;
+  template?: string;
   source_document: Record<string, unknown>;
   revised_document: Record<string, unknown>;
 }
@@ -593,6 +597,7 @@ export function WorkflowSessionApi() {
       revisedDocument?: Record<string, unknown>,
       slot?: WriterDocumentSlot,
       provider?: WriterWriteBackProvider,
+      template?: string,
       options?: RawAxiosRequestConfig,
     ) {
       const payload: Record<string, unknown> = { base_revision: baseRevision };
@@ -602,6 +607,7 @@ export function WorkflowSessionApi() {
       if (revisedDocument !== undefined) payload.revised_document = revisedDocument;
       if (slot !== undefined && slot !== 'draft_document') payload.slot = slot;
       if (provider !== undefined) payload.provider = provider;
+      if (template !== undefined) payload.template = template;
       return axiosInstance.post<{
         code: number;
         message: string;
@@ -785,14 +791,20 @@ export function ChatServiceApi() {
       pinned: boolean,
       options?: RawAxiosRequestConfig,
     ) {
-      return axiosInstance.post<{
-        conversation_id: string;
-        is_pinned: boolean;
-        pinned_at?: string | null;
-      }>(
+      return axiosInstance.post<ConversationOrderResult>(
         `${coreApiBaseUrl}/conversations/${encodeURIComponent(conversationId)}:${pinned ? "pin" : "unpin"}`,
         undefined,
         options,
+      );
+    },
+    conversationServiceReorder(
+      conversationId: string,
+      targetConversationId: string,
+      position: "before" | "after",
+    ) {
+      return axiosInstance.post<ConversationOrderResult>(
+        `${coreApiBaseUrl}/conversations/${encodeURIComponent(conversationId)}:reorder`,
+        { target_conversation_id: targetConversationId, position },
       );
     },
     conversationServiceDeleteConversation(
@@ -1383,4 +1395,22 @@ export function ConversationSettingsApi() {
       );
     },
   };
+}
+
+export interface ConversationOpeningState {
+  batch: {status: string; scan_complete: boolean; scanned: number};
+  pending: number;
+  revision: number;
+  completed: number;
+  failed: number;
+  skipped: number;
+  unprocessed: number;
+}
+
+export async function conversationOpeningState(action?: "start" | "pause" | "resume" | "retry", signal?: AbortSignal) {
+  const url = `${coreApiBaseUrl}/conversations/metadata-backfill`;
+  const response = action
+    ? await axiosInstance.post<ConversationOpeningState>(url, {action}, {signal})
+    : await axiosInstance.get<ConversationOpeningState>(url, {signal});
+  return response.data;
 }

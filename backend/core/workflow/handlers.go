@@ -96,6 +96,7 @@ type slotDTO struct {
 	WriteBackDirty     bool   `json:"write_back_dirty,omitempty"`
 	WriteBackState     string `json:"write_back_state,omitempty"`
 	WriteBackURL       string `json:"write_back_url,omitempty"`
+	WriteBackLocalPath string `json:"write_back_local_path,omitempty"`
 	Provider           string `json:"provider,omitempty"`
 	ProviderDocumentID string `json:"provider_document_id,omitempty"`
 	LastSyncedRevision *int   `json:"last_synced_revision,omitempty"`

@@ -50,6 +50,24 @@ class RewriteSelectionExecuteArguments(_StrictModel):
     commit_token: str = Field(pattern=r'^[0-9a-f]{32}$')
 
 
+class IRCrossReferenceSelection(IRSelection):
+    selected_text: str = Field(min_length=1)
+
+
+class ListCrossReferenceTargetsArguments(_StrictModel):
+    pass
+
+
+class UpdateCrossReferencePreviewArguments(_StrictModel):
+    operation: Literal['add', 'remove', 'retarget']
+    selection: IRCrossReferenceSelection | MarkdownSelection = Field(discriminator='type')
+    target_id: str = ''
+
+
+class UpdateCrossReferenceExecuteArguments(_StrictModel):
+    commit_token: str = Field(pattern=r'^[0-9a-f]{32}$')
+
+
 class RenderDocumentArguments(_StrictModel):
     pass
 
@@ -71,6 +89,7 @@ class ConvertDocumentArguments(_StrictModel):
     document: str | dict[str, Any] | None = None
     target_document: dict[str, Any] | None = None
     media_assets: dict[str, Any] | None = None
+    template: str = ''
 
 
 class WriteDocumentArguments(_StrictModel):
@@ -118,6 +137,35 @@ class RewriteSelectionPreviewResult(_StrictModel):
 
 
 class RewriteSelectionExecuteResult(_StrictModel):
+    representation: Literal['ir', 'markdown']
+    artifact: ActionArtifact
+
+
+class CrossReferenceTarget(_StrictModel):
+    target_id: str
+    type: Literal['heading', 'image']
+    title: str
+
+
+class InvalidCrossReference(_StrictModel):
+    target_id: str
+
+
+class ListCrossReferenceTargetsResult(_StrictModel):
+    representation: Literal['ir', 'markdown']
+    targets: list[CrossReferenceTarget]
+    invalid_references: list[InvalidCrossReference]
+
+
+class UpdateCrossReferencePreviewResult(_StrictModel):
+    representation: Literal['ir', 'markdown']
+    operation: Literal['add', 'remove', 'retarget']
+    patch: RewritePatch
+    artifact: ActionArtifact
+    commit: CommitReference
+
+
+class UpdateCrossReferenceExecuteResult(_StrictModel):
     representation: Literal['ir', 'markdown']
     artifact: ActionArtifact
 
@@ -420,9 +468,6 @@ def _rewrite_preview(instruction: str,
     from .revision import preview_selection_rewrite
 
     document = _artifact_data(context.artifact)
-    if context.slot not in {'outline_document', 'flat_draft_document',
-                            'draft_document'}:
-        raise ValueError('selection rewrite is not enabled for this document slot')
     root = _rewrite_store(context)
     result = preview_selection_rewrite(
         document, instruction, selection.model_dump(),
@@ -432,7 +477,6 @@ def _rewrite_preview(instruction: str,
             'meta': {'source': 'rewrite_selection_action'},
         },
         artifact_store=str(root),
-        flat_markdown=context.slot == 'flat_draft_document',
     )
     representation = result['representation']
     candidate = (
@@ -476,6 +520,87 @@ def _rewrite_execute(commit_token: str, *,
             or _canonical_hash(candidate) != manifest.get('candidate_hash')):
         raise DocumentActionError(
             'SELECTION_STALE', 'The document changed after the rewrite preview.',
+            status_code=409,
+        )
+    return {'representation': manifest.get('representation'), 'artifact': artifact}
+
+
+def _cross_reference_store(context: DocumentActionContext) -> Path:
+    base = (Path(context.artifact_store) if context.artifact_store else
+            Path(tempfile.gettempdir()) / 'lazymind-document-actions')
+    root = base / 'update-cross-reference-v1'
+    root.mkdir(parents=True, exist_ok=True)
+    return root
+
+
+def _list_cross_reference_targets(*, context: DocumentActionContext) -> dict[str, Any]:
+    from .references import list_cross_reference_targets
+
+    return list_cross_reference_targets(_artifact_data(context.artifact))
+
+
+def _update_cross_reference_preview(
+    operation: str,
+    selection: IRCrossReferenceSelection | MarkdownSelection,
+    target_id: str = '',
+    *,
+    context: DocumentActionContext,
+) -> dict[str, Any]:
+    from .references import update_cross_reference
+
+    source = _artifact_data(context.artifact)
+    result = update_cross_reference(
+        source, operation, selection.model_dump(), target_id
+    )
+    representation = result['representation']
+    candidate = result.pop('document')
+    title = str(candidate.get('title') or '') if isinstance(candidate, dict) else ''
+    artifact = _artifact_payload(candidate, representation, title)
+    token = uuid.uuid4().hex
+    root = _cross_reference_store(context)
+    temporary_path = root / f'.{token}.{uuid.uuid4().hex}.tmp'
+    temporary_path.write_text(json.dumps({
+        'source_hash': _canonical_hash(source),
+        'candidate_hash': _canonical_hash(candidate),
+        'representation': representation,
+        'artifact': artifact,
+    }, ensure_ascii=False), encoding='utf-8')
+    os.replace(temporary_path, root / f'{token}.json')
+    return {
+        **result,
+        'operation': operation,
+        'artifact': artifact,
+        'commit': {'token': token},
+    }
+
+
+def _update_cross_reference_execute(
+    commit_token: str,
+    *,
+    context: DocumentActionContext,
+) -> dict[str, Any]:
+    manifest_path = _cross_reference_store(context) / f'{commit_token}.json'
+    if not manifest_path.is_file():
+        raise DocumentActionError(
+            'SELECTION_STALE',
+            'The cross-reference preview expired; generate a new preview.',
+            status_code=409,
+        )
+    try:
+        manifest = json.loads(manifest_path.read_text(encoding='utf-8'))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise DocumentActionError(
+            'SELECTION_STALE', 'The cross-reference preview is invalid.',
+            status_code=409,
+        ) from exc
+    current = _artifact_data(context.artifact)
+    artifact = manifest.get('artifact')
+    candidate = artifact.get('value') if isinstance(artifact, dict) else None
+    if (_canonical_hash(current) != manifest.get('source_hash')
+            or _canonical_hash(candidate) != manifest.get('candidate_hash')):
+        raise DocumentActionError(
+            'SELECTION_STALE',
+            'The document changed after the cross-reference preview.',
             status_code=409,
         )
     return {'representation': manifest.get('representation'), 'artifact': artifact}
@@ -531,6 +656,24 @@ def _install_builtins() -> None:
             RewriteSelectionExecuteResult, _rewrite_execute,
         ),
         DocumentActionSpec(
+            'builtin:document.list_cross_reference_targets.v1',
+            'list_cross_reference_targets', 1, 'preview',
+            ListCrossReferenceTargetsArguments,
+            ListCrossReferenceTargetsResult, _list_cross_reference_targets,
+        ),
+        DocumentActionSpec(
+            'builtin:document.update_cross_reference.v1',
+            'update_cross_reference', 1, 'preview',
+            UpdateCrossReferencePreviewArguments,
+            UpdateCrossReferencePreviewResult, _update_cross_reference_preview,
+        ),
+        DocumentActionSpec(
+            'builtin:document.update_cross_reference.v1',
+            'update_cross_reference', 1, 'execute',
+            UpdateCrossReferenceExecuteArguments,
+            UpdateCrossReferenceExecuteResult, _update_cross_reference_execute,
+        ),
+        DocumentActionSpec(
             'builtin:document.render_document.v1', 'render_document', 1,
             'preview', RenderDocumentArguments, RenderDocumentResult, _render,
         ),
@@ -573,11 +716,14 @@ __all__ = [
     'ActionArtifact', 'DocumentAction', 'DocumentActionContext',
     'DocumentActionError', 'DocumentActionPhase', 'DocumentActionSpec',
     'ConvertDocumentArguments', 'ConvertDocumentResult',
+    'ListCrossReferenceTargetsArguments', 'ListCrossReferenceTargetsResult',
     'RenderDocumentArguments', 'RenderDocumentResult',
     'RewriteSelectionExecuteArguments', 'RewriteSelectionExecuteResult',
     'RewriteSelectionPreviewArguments', 'RewriteSelectionPreviewResult',
     'SaveDocumentArguments', 'SaveDocumentResult', 'SyncDocumentArguments',
     'SyncDocumentResult', 'WriteDocumentArguments', 'document_action_names', 'document_action_specs',
+    'UpdateCrossReferenceExecuteArguments', 'UpdateCrossReferenceExecuteResult',
+    'UpdateCrossReferencePreviewArguments', 'UpdateCrossReferencePreviewResult',
     'get_document_action', 'invoke_document_action', 'register_document_action',
     'resolve_document_action',
 ]
