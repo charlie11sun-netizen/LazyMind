@@ -102,7 +102,8 @@ Full-document rewrite mode:
 3. stream newly generated draft sections in the source's IR or Markdown representation;
 4. assemble and save the new `draft_document`;
 5. for cloud-bound IR, replace the provider document once and save the provider-confirmed
-   IR; keep Markdown local.
+   IR; a first rewrite of an existing GitHub repository document follows the initial
+   GitHub write-back behavior below. Other Markdown rewrites remain local.
 
 Do not run section planning for a targeted body revision. Do run it again whenever the
 body is generated or rewritten from a changed outline.
@@ -110,11 +111,27 @@ body is generated or rewritten from a changed outline.
 When the first full `.lmd` draft is derived from a cloud-bound Feishu source, generation
 or direct revision writes it back once and replaces `draft_document` with the
 provider-confirmed IR. Every cloud-bound IR full rewrite also writes back exactly once.
-Markdown rewrites stay local. Frontend edits and later targeted AI body revisions are
+Frontend edits and later targeted AI body revisions are
 revisions of the same `draft_document` slot and remain local until the user explicitly
 writes them back.
 The initial provider write receives `resolved_media_assets` whenever the generated IR
 contains Image WriterBlocks.
+
+For an existing GitHub repository document that the user asks to revise or rewrite,
+the first `write_document` execution without an existing `draft_document` automatically
+writes the completed Markdown and its resolved images through the GitHub provider's PR
+flow. Save the returned `target_document`, including its work branch, base ref, revision,
+and PR URL, and return the PR link with the completion result. Preserve that updated
+target when preparing the Markdown for the editor. Later AI or frontend edits remain
+local until the user clicks write-back; manual write-back reuses the saved branch and
+the same open PR.
+
+If the initial GitHub write-back fails, keep the completed draft and media available,
+report that write-back did not complete, and let the user retry with the write-back
+button. A saved failure must not repeatedly trigger automatic publishing on workflow
+retries. From-scratch creation, including creation with a GitHub destination, waits for
+the user to click write-back. A link used only as reference material does not authorize
+writing to its source. GitHub Wiki keeps its existing manual write-back behavior.
 
 ## Supported paths
 

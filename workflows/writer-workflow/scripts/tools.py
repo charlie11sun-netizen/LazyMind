@@ -226,7 +226,7 @@ def _state_workspace_completion(
     saved_keys: list[str],
 ) -> dict[str, Any]:
     draft_blocks = result.get('draft_blocks')
-    return {
+    completion = {
         'status': 'completed',
         'operation': result.get('operation'),
         'representation': result.get('representation'),
@@ -238,6 +238,9 @@ def _state_workspace_completion(
         'artifacts_saved': True,
         'control': {'next_step': '__end__'},
     }
+    if result.get('published_link'):
+        completion['published_link'] = result['published_link']
+    return completion
 
 
 LOG = logging.getLogger(__name__)
@@ -1494,11 +1497,40 @@ def writer_draft_workspace() -> dict:
         result.setdefault('target_document', target_document_path)
         if media_assets_path and not result.get('resolved_media_assets'):
             result['resolved_media_assets'] = resolved_media or media_assets_path
+        if command.action in {'revise', 'rewrite'} and source_document_path \
+                and not draft_document_path and not result.get('document_write_result') \
+                and not result.get('github_auto_write_back_attempted'):
+            target = _read_json_file(result['target_document'])
+            target_meta = target.get('meta') or {}
+            if target.get('adapter') == 'github' \
+                    and target_meta.get('target_type') == 'repository' \
+                    and not target_meta.get('create_pending'):
+                _emit_writer_progress('首次修改已完成，正在提交 GitHub PR')
+                try:
+                    published = writer_replace_document(
+                        content_path=result['draft_document'],
+                        source_document_path=source_document_path,
+                        target_document_path=result['target_document'],
+                        media_assets_path=resolved_media or media_assets_path,
+                    )
+                except Exception as exc:  # noqa: BLE001 - keep the draft available for manual retry.
+                    LOG.warning('[Writer] Initial GitHub write-back failed: %s', exc)
+                    warning = 'GitHub 自动写回未完成，草稿已保留，可点击“写回”重试。'
+                    result['warnings'] = [*(result.get('warnings') or []), warning]
+                    _emit_writer_progress(warning)
+                else:
+                    result['document_write_result'] = published['publish_result']
+                    result['draft_document'] = published['draft_document']
+                    result['target_document'] = published['target_document']
+                    result['published_link'] = published['published_link']
+                result['github_auto_write_back_attempted'] = True
+                state['result'] = result
+                _persist_draft_workspace_state(state, checkpoint_path)
     if representation == 'markdown' and target_document_path \
             and result.get('draft_document') \
             and not result.get('markdown_editor_prepared'):
         prepared_draft, updated_target = writer_prepare_markdown_for_editor(
-            str(result['draft_document']), target_document_path,
+            str(result['draft_document']), str(result['target_document']),
         )
         result['draft_document'] = prepared_draft
         if updated_target:
