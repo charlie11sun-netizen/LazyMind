@@ -3,7 +3,9 @@ package executor
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -141,7 +143,7 @@ func TestRemoteHandlerReadsResourceAndArtifactInputs(t *testing.T) {
 		binding  map[string]any
 		want     string
 	}{{"brief", map[string]any{"source_type": "input_resource", "source_id": resource.ID}, "brief"},
-		{"draft", map[string]any{"source_type": "artifact", "source_revision_id": "revision-1"}, `{"ok":true}`},
+		{"draft", map[string]any{"source_type": "artifact", "source_revision_id": "revision-1", "content_hash": ""}, `{"ok":true}`},
 		{"draft_document", map[string]any{"source_type": "artifact", "source_revision_id": "revision-2"}, "# Durable draft"},
 		{"material_images", map[string]any{"source_type": "artifact", "source_revision_id": "revision-3"}, "https://images.example.test/subject.png"}}
 	for _, test := range tests {
@@ -166,6 +168,215 @@ func TestRemoteHandlerReadsResourceAndArtifactInputs(t *testing.T) {
 				t.Fatalf("content=%q", decoded)
 			}
 		})
+	}
+}
+
+func TestRemoteHandlerRejectsChangedArtifactInput(t *testing.T) {
+	value := AttemptContext{
+		AttemptID: "attempt-hash", SessionID: "session-hash", StepID: "step-hash",
+		Inputs: map[string]any{},
+	}
+	handler, db, claim := remoteHandlerFixture(t, value)
+	now := time.Now().UTC()
+	original := json.RawMessage(`{"text":"original"}`)
+	sum := sha256.Sum256(original)
+	wantHash := "sha256:" + hex.EncodeToString(sum[:])
+	humanID := "human-hash"
+	if err := db.Create(&orm.WorkflowHumanArtifact{
+		ID: humanID, SessionID: value.SessionID, Slot: "draft", ContentType: "text",
+		Value: original, CreatedAt: now,
+	}).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Create(&orm.WorkflowSlotRevision{
+		ID: "revision-hash", SessionID: value.SessionID, SlotID: "draft", Revision: 1,
+		Selected: true, HumanArtifactID: &humanID, Slot: "draft", StepID: "source",
+		Attempt: 1, Validity: "effective", CreatedAt: now,
+	}).Error; err != nil {
+		t.Fatal(err)
+	}
+	value.Inputs["draft"] = map[string]any{
+		"source_type": "artifact", "source_revision_id": "revision-hash",
+		"content_hash": wantHash,
+	}
+	handler.Contexts = staticContextLoader{value: value}
+	request := func() *httptest.ResponseRecorder {
+		req := httptest.NewRequest(http.MethodGet, "/inputs/draft", nil)
+		req.Header.Set("Authorization", "Bearer test-token")
+		req.Header.Set("X-Workflow-Lease-Token", claim.LeaseToken)
+		req = mux.SetURLVars(req, map[string]string{
+			"attempt_id": value.AttemptID, "material_id": "draft",
+		})
+		recorder := httptest.NewRecorder()
+		handler.Input(recorder, req)
+		return recorder
+	}
+
+	matching := request()
+	if matching.Code != http.StatusOK {
+		t.Fatalf("matching hash: status=%d body=%s", matching.Code, matching.Body.String())
+	}
+	var matchingEnvelope remoteEnvelope
+	if err := json.Unmarshal(matching.Body.Bytes(), &matchingEnvelope); err != nil {
+		t.Fatal(err)
+	}
+	matchingData := matchingEnvelope.Data.(map[string]any)
+	matchingContent, err := base64.StdEncoding.DecodeString(matchingData["content_base64"].(string))
+	if err != nil || !bytes.Equal(matchingContent, original) {
+		t.Fatalf("matching content=%q err=%v, want raw original", matchingContent, err)
+	}
+	if err := db.Model(&orm.WorkflowHumanArtifact{}).Where("id = ?", humanID).
+		Update("value", json.RawMessage(`{"text":"changed"}`)).Error; err != nil {
+		t.Fatal(err)
+	}
+	recorder := request()
+	if recorder.Code != http.StatusConflict {
+		t.Fatalf("changed input status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+	var envelope remoteEnvelope
+	if err := json.Unmarshal(recorder.Body.Bytes(), &envelope); err != nil {
+		t.Fatal(err)
+	}
+	if envelope.OK || envelope.Error["code"] != "ATTEMPT_INPUT_CHANGED" || envelope.Data != nil {
+		t.Fatalf("changed input response=%#v", envelope)
+	}
+}
+
+func TestRemoteHandlerPreservesHistoricalRootTextAttemptBytes(t *testing.T) {
+	value := AttemptContext{
+		AttemptID: "attempt-root-text", SessionID: "session-root-text", StepID: "step-root-text",
+		Inputs: map[string]any{},
+	}
+	handler, db, claim := remoteHandlerFixture(t, value)
+	now := time.Now().UTC()
+	original := json.RawMessage(`"# Historical\n\\# literal hash"`)
+	sum := sha256.Sum256(original)
+	humanID := "human-root-text"
+	revisionID := "revision-root-text"
+	if err := db.Create(&orm.WorkflowHumanArtifact{
+		ID: humanID, SessionID: value.SessionID, Slot: "draft", ContentType: "text",
+		Value: original, CreatedAt: now,
+	}).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Create(&orm.WorkflowSlotRevision{
+		ID: revisionID, SessionID: value.SessionID, SlotID: "draft", Revision: 1,
+		Selected: true, HumanArtifactID: &humanID, Slot: "draft", StepID: "source",
+		Attempt: 1, Validity: "effective", CreatedAt: now,
+	}).Error; err != nil {
+		t.Fatal(err)
+	}
+	value.Inputs["draft"] = map[string]any{
+		"source_type": "artifact", "source_revision_id": revisionID,
+		"content_hash": "sha256:" + hex.EncodeToString(sum[:]),
+	}
+	handler.Contexts = staticContextLoader{value: value}
+	req := httptest.NewRequest(http.MethodGet, "/inputs/draft", nil)
+	req.Header.Set("Authorization", "Bearer test-token")
+	req.Header.Set("X-Workflow-Lease-Token", claim.LeaseToken)
+	req = mux.SetURLVars(req, map[string]string{
+		"attempt_id": value.AttemptID, "material_id": "draft",
+	})
+	recorder := httptest.NewRecorder()
+	handler.Input(recorder, req)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("root text input: status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+	var envelope remoteEnvelope
+	if err := json.Unmarshal(recorder.Body.Bytes(), &envelope); err != nil {
+		t.Fatal(err)
+	}
+	data := envelope.Data.(map[string]any)
+	content, err := base64.StdEncoding.DecodeString(data["content_base64"].(string))
+	if err != nil || !bytes.Equal(content, original) {
+		t.Fatalf("root text content=%q err=%v, want raw bytes %q", content, err, original)
+	}
+}
+
+func TestRemoteHandlerRejectsChangedListArtifactMetadata(t *testing.T) {
+	value := AttemptContext{
+		AttemptID: "attempt-list-hash", SessionID: "session-list-hash", StepID: "step-list-hash",
+		Inputs: map[string]any{},
+	}
+	handler, db, claim := remoteHandlerFixture(t, value)
+	now := time.Now().UTC()
+	bindings := make([]map[string]any, 0, 2)
+	humanIDs := make([]string, 0, 2)
+	for index, content := range []string{"first", "second"} {
+		path := filepath.Join(t.TempDir(), content+".md")
+		if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		raw, err := json.Marshal(map[string]any{"filename": content + ".md", "path": path})
+		if err != nil {
+			t.Fatal(err)
+		}
+		humanID := "human-list-hash-" + content
+		humanIDs = append(humanIDs, humanID)
+		if err := db.Create(&orm.WorkflowHumanArtifact{
+			ID: humanID, SessionID: value.SessionID, Slot: "files", ContentType: "file",
+			Value: raw, CreatedAt: now,
+		}).Error; err != nil {
+			t.Fatal(err)
+		}
+		listIndex := index
+		revisionID := "revision-list-hash-" + content
+		if err := db.Create(&orm.WorkflowSlotRevision{
+			ID: revisionID, SessionID: value.SessionID, SlotID: "files", Revision: index + 1,
+			ListIndex: &listIndex, Selected: true, HumanArtifactID: &humanID,
+			Slot: "files", StepID: "source", Attempt: 1, Validity: "effective", CreatedAt: now,
+		}).Error; err != nil {
+			t.Fatal(err)
+		}
+		sum := sha256.Sum256(raw)
+		bindings = append(bindings, map[string]any{
+			"source_type": "artifact", "source_revision_id": revisionID,
+			"content_hash": "sha256:" + hex.EncodeToString(sum[:]),
+		})
+	}
+	value.Inputs["files"] = bindings
+	handler.Contexts = staticContextLoader{value: value}
+	request := func() *httptest.ResponseRecorder {
+		req := httptest.NewRequest(http.MethodGet, "/inputs/files", nil)
+		req.Header.Set("Authorization", "Bearer test-token")
+		req.Header.Set("X-Workflow-Lease-Token", claim.LeaseToken)
+		req = mux.SetURLVars(req, map[string]string{
+			"attempt_id": value.AttemptID, "material_id": "files",
+		})
+		recorder := httptest.NewRecorder()
+		handler.Input(recorder, req)
+		return recorder
+	}
+	if recorder := request(); recorder.Code != http.StatusOK {
+		t.Fatalf("matching list: status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+	var second orm.WorkflowHumanArtifact
+	if err := db.First(&second, "id = ?", humanIDs[1]).Error; err != nil {
+		t.Fatal(err)
+	}
+	var metadata map[string]any
+	if err := json.Unmarshal(second.Value, &metadata); err != nil {
+		t.Fatal(err)
+	}
+	metadata["filename"] = "changed.md"
+	changed, err := json.Marshal(metadata)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Model(&orm.WorkflowHumanArtifact{}).Where("id = ?", second.ID).
+		Update("value", changed).Error; err != nil {
+		t.Fatal(err)
+	}
+	recorder := request()
+	if recorder.Code != http.StatusConflict {
+		t.Fatalf("changed list status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+	var envelope remoteEnvelope
+	if err := json.Unmarshal(recorder.Body.Bytes(), &envelope); err != nil {
+		t.Fatal(err)
+	}
+	if envelope.OK || envelope.Error["code"] != "ATTEMPT_INPUT_CHANGED" || envelope.Data != nil {
+		t.Fatalf("changed list response=%#v", envelope)
 	}
 }
 

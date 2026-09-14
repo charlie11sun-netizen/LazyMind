@@ -2230,7 +2230,21 @@ export function WorkflowPanel({
                           {action.label}
                         </button>
                         {action.menu && (
-                          <Dropdown menu={{ items: action.menu }} trigger={['click']} disabled={actionPending || action.disabled}>
+                          <Dropdown
+                            menu={{
+                              className: action.selectedMenuKey ? 'workflow-panel__format-menu' : undefined,
+                              selectable: Boolean(action.selectedMenuKey),
+                              selectedKeys: action.selectedMenuKey ? [action.selectedMenuKey] : [],
+                              items: action.menu.map((option) => ({
+                                ...option,
+                                icon: action.selectedMenuKey
+                                  ? <span className='workflow-panel__format-radio' aria-hidden='true' />
+                                  : undefined,
+                              })),
+                            }}
+                            trigger={['click']}
+                            disabled={actionPending || action.disabled}
+                          >
                             <button type='button' className='workflow-panel__action-btn workflow-panel__action-btn--secondary'
                               disabled={actionPending || action.disabled} aria-label={t('chat.writerCopy.chooseFormat')}>
                               <DownOutlined />

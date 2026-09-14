@@ -14,7 +14,7 @@ from pathlib import Path
 from types import MappingProxyType
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator, model_validator
 
 DocumentActionPhase = Literal['preview', 'execute']
 DocumentAction = Callable[..., Any]
@@ -25,18 +25,27 @@ class _StrictModel(BaseModel):
 
 
 class IRSelection(_StrictModel):
-    type: Literal['ir']
     node_id: str = Field(min_length=1)
+    selected_text: str | None = Field(default=None, min_length=1)
 
 
 class MarkdownSelection(_StrictModel):
-    type: Literal['markdown']
     selected_text: str = Field(min_length=1)
+    start: int | None = Field(default=None, ge=0)
+    end: int | None = Field(default=None, gt=0)
 
 
 class RewriteSelectionPreviewArguments(_StrictModel):
+    type: Literal['ir', 'markdown']
     instruction: str = Field(min_length=1)
-    selection: IRSelection | MarkdownSelection = Field(discriminator='type')
+    selection_ranges: list[IRSelection | MarkdownSelection] = Field(min_length=1)
+
+    @model_validator(mode='after')
+    def selection_type_matches(self) -> 'RewriteSelectionPreviewArguments':
+        expected = IRSelection if self.type == 'ir' else MarkdownSelection
+        if any(not isinstance(item, expected) for item in self.selection_ranges):
+            raise ValueError('selection_ranges must match the request type')
+        return self
 
     @field_validator('instruction')
     @classmethod
@@ -51,6 +60,12 @@ class RewriteSelectionExecuteArguments(_StrictModel):
 
 
 class IRCrossReferenceSelection(IRSelection):
+    type: Literal['ir']
+    selected_text: str = Field(min_length=1)
+
+
+class MarkdownCrossReferenceSelection(_StrictModel):
+    type: Literal['markdown']
     selected_text: str = Field(min_length=1)
 
 
@@ -60,7 +75,7 @@ class ListCrossReferenceTargetsArguments(_StrictModel):
 
 class UpdateCrossReferencePreviewArguments(_StrictModel):
     operation: Literal['add', 'remove', 'retarget']
-    selection: IRCrossReferenceSelection | MarkdownSelection = Field(discriminator='type')
+    selection: IRCrossReferenceSelection | MarkdownCrossReferenceSelection = Field(discriminator='type')
     target_id: str = ''
 
 
@@ -111,6 +126,8 @@ class RewriteTarget(_StrictModel):
     type: Literal['block']
     block_type: str
     node_id: str | None = None
+    target_start: int | None = None
+    target_end: int | None = None
 
 
 class RewritePreview(_StrictModel):
@@ -127,11 +144,15 @@ class CommitReference(_StrictModel):
     token: str = Field(pattern=r'^[0-9a-f]{32}$')
 
 
-class RewriteSelectionPreviewResult(_StrictModel):
-    representation: Literal['ir', 'markdown']
+class RewriteParagraphResult(_StrictModel):
     target: RewriteTarget
     preview: RewritePreview
     patch: RewritePatch
+
+
+class RewriteSelectionPreviewResult(_StrictModel):
+    representation: Literal['ir', 'markdown']
+    results: list[RewriteParagraphResult] = Field(min_length=1)
     artifact: ActionArtifact
     commit: CommitReference
 
@@ -462,15 +483,17 @@ def _artifact_payload(document: Any, representation: str,
     }
 
 
-def _rewrite_preview(instruction: str,
-                     selection: IRSelection | MarkdownSelection, *,
+def _rewrite_preview(type: Literal['ir', 'markdown'], instruction: str,
+                     selection_ranges: list[IRSelection | MarkdownSelection], *,
                      context: DocumentActionContext) -> dict[str, Any]:
     from .revision import preview_selection_rewrite
 
     document = _artifact_data(context.artifact)
+    if type != ('markdown' if isinstance(document, str) else 'ir'):
+        raise ValueError('request type does not match the document representation')
     root = _rewrite_store(context)
     result = preview_selection_rewrite(
-        document, instruction, selection.model_dump(),
+        document, instruction, [selection.model_dump(exclude_none=True) for selection in selection_ranges],
         {
             'context_id': f'selection-{uuid.uuid4().hex}',
             'doc_id': document.get('document_id') if isinstance(document, dict) else None,
@@ -541,7 +564,7 @@ def _list_cross_reference_targets(*, context: DocumentActionContext) -> dict[str
 
 def _update_cross_reference_preview(
     operation: str,
-    selection: IRCrossReferenceSelection | MarkdownSelection,
+    selection: IRCrossReferenceSelection | MarkdownCrossReferenceSelection,
     target_id: str = '',
     *,
     context: DocumentActionContext,

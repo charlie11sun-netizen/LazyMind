@@ -1,7 +1,18 @@
+DROP TABLE IF EXISTS document_publication_bindings;
+DROP TABLE IF EXISTS document_publication_operations;
+
 DROP TABLE IF EXISTS conversation_fork_requests;
 DROP TABLE IF EXISTS conversation_fork_origins;
 DROP INDEX IF EXISTS idx_vocabulary_review_session_word;
 DROP INDEX IF EXISTS idx_vocabulary_review_sessions_active;
+
+-- +migrate Dialect postgres
+ALTER TABLE plugin_human_artifacts
+    DROP COLUMN IF EXISTS draft_version;
+
+-- +migrate Dialect sqlite
+ALTER TABLE plugin_human_artifacts
+    DROP COLUMN draft_version;
 
 -- +migrate Dialect postgres
 DROP TABLE IF EXISTS public.workflow_approval_preferences;

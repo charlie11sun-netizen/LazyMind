@@ -22,7 +22,7 @@ def _stub_module(name, **attributes):
 def _load_writer_bridge():
     stubs = {
         'lazymind.document_tools.revision': _stub_module(
-            'lazymind.document_tools.revision', preview_selection_rewrite=object,
+            'lazymind.document_tools.revision',
             revise_markdown_document=object,
         ),
         'lazymind': _stub_module('lazymind'),
@@ -428,34 +428,3 @@ def test_full_document_revision_failure_preserves_source_without_retry(monkeypat
     assert Path(result['revised_document']).read_text(encoding='utf-8') == (
         '# 标题\n\n已批准正文。\n'
     )
-
-
-def test_selection_rewrite_delegates_to_shared_document_tool(monkeypatch, tmp_path):
-    bridge = _load_writer_bridge()
-    calls = []
-    slot = next(iter(bridge.EDITABLE_SLOTS))
-
-    def preview(document, instruction, selection, context, *, artifact_store):
-        calls.append((document, instruction, selection, context))
-        candidate = Path(artifact_store) / 'revised_document.md'
-        candidate.write_text('# Title\n\nRevised.', encoding='utf-8')
-        return {
-            'representation': 'markdown',
-            'target': {'type': 'block', 'block_type': 'paragraph'},
-            'preview': {'old_text': 'Original.', 'new_text': 'Revised.'},
-            'patch': {'type': 'string_replace_set', 'payload': {'replacements': []}},
-            'revised_document_md': str(candidate),
-        }
-
-    monkeypatch.setattr(bridge, 'preview_selection_rewrite', preview)
-    result = bridge.academic_writer_preview_selection_rewrite(
-        {'data': '# Title\n\nOriginal.'}, 'Polish',
-        {'type': 'markdown', 'selected_text': 'Original.'},
-        artifact_store=str(tmp_path), slot=slot,
-    )
-    assert len(calls) == 1
-    assert calls[0][3]['meta']['slot'] == slot
-    assert result['preview']['new_text'] == 'Revised.'
-    artifact = result['artifact']['value']
-    assert artifact['filename'] == f'{slot}.md'
-    assert Path(artifact['path']).read_text(encoding='utf-8') == '# Title\n\nRevised.'

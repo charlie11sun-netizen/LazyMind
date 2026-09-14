@@ -65,12 +65,22 @@ describe('document copy', () => {
 
   it('remembers the selected format and supports one-click reuse', async () => {
     render(<Harness />, { wrapper });
+    const label = action.label;
+    expect(action.selectedMenuKey).toBe('markdown');
     act(() => action.menu?.find((item) => item.key === 'latex')?.onClick());
     await waitFor(() => expect(writeText).toHaveBeenCalledTimes(1));
     expect(localStorage.getItem('writer-copy-format')).toBe('latex');
+    expect(action.selectedMenuKey).toBe('latex');
+    expect(action.label).toBe(label);
     act(() => action.onClick());
     await waitFor(() => expect(writeText).toHaveBeenCalledTimes(2));
     expect(mocks.convert.mock.calls[1][4]).toBe('latex');
+  });
+
+  it('restores the last format when the document is opened again', () => {
+    localStorage.setItem('writer-copy-format', 'text');
+    render(<Harness />, { wrapper });
+    expect(action.selectedMenuKey).toBe('text');
   });
 
   it('retains the converted text for retry if clipboard permission is denied', async () => {

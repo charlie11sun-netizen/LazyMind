@@ -450,6 +450,59 @@ describe('WriterIRDocumentEditor image preview', () => {
   });
 });
 
+describe('WriterIRDocumentEditor tables', () => {
+  it('renders and saves structured table cells', async () => {
+    const onDocumentChange = vi.fn();
+    const tableDocument: WriterDocument = {
+      ...document,
+      blocks: [{
+        node_id: 'table-1',
+        type: 'table',
+        content: '指标表',
+        children: [{
+          node_id: 'row-1',
+          type: 'table_row',
+          children: [
+            {
+              node_id: 'cell-1',
+              type: 'table_cell',
+              content: '指标',
+              numbering: { header: true, align: 'center', column_span: 2 },
+            },
+            { node_id: 'cell-2', type: 'table_cell', content: '100' },
+          ],
+        }],
+      }],
+    };
+    const { container } = render(
+      <ControlledWriter
+        initialDocument={tableDocument}
+        onDocumentChange={onDocumentChange}
+      />,
+    );
+
+    const header = container.querySelector<HTMLElement>('[data-node-id="cell-1"]');
+    const value = container.querySelector<HTMLElement>('[data-node-id="cell-2"]');
+    expect(header?.tagName).toBe('TH');
+    expect(header).toHaveAttribute('data-table-align', 'center');
+    expect(header).toHaveAttribute('colspan', '2');
+    expect(value?.tagName).toBe('TD');
+    expect(container.querySelector('.writer-ir__table-caption')).toHaveTextContent('指标表');
+
+    value!.textContent = '200';
+    fireEvent.input(value!);
+
+    await waitFor(() => expect(onDocumentChange).toHaveBeenCalled());
+    const updated = onDocumentChange.mock.calls.at(-1)?.[0] as WriterDocument;
+    expect(updated.blocks[0].children?.[0].children?.[1].content).toBe('200');
+    expect(updated.blocks[0].content).toBe('指标表');
+    expect(updated.blocks[0].children?.[0].children?.[0].numbering).toEqual({
+      header: true, align: 'center', column_span: 2,
+    });
+    expect(container.querySelector('[data-node-id="cell-2"]')).toHaveTextContent('200');
+  });
+});
+
 describe('WriterIRDocumentEditor cross-reference menu', () => {
   it('keeps the selected text highlighted and applies the reference without rewriting it', async () => {
     Object.defineProperty(HTMLElement.prototype, 'scrollIntoView', {
@@ -493,6 +546,68 @@ describe('WriterIRDocumentEditor cross-reference menu', () => {
 
     expect(screen.getByTestId('selection-highlight').getAttribute('data-active')).toBe('true');
     fireEvent.click(screen.getByTitle('1. Target section'));
+
+    expect(onCrossReferenceApplied).toHaveBeenCalledTimes(1);
+    const updated = onCrossReferenceApplied.mock.calls[0][0] as WriterDocument;
+    const paragraphBlock = updated.blocks.find((block) => block.node_id === 'p-1');
+    expect(paragraphBlock?.spans?.map((span) => span.text).join('')).toBe('Alpha beta gamma');
+    expect(getWriterInternalReference(paragraphBlock?.spans?.[0] ?? { text: '' })).toMatchObject({
+      targetNodeId: 'sec-1',
+      displayText: 'Alpha',
+    });
+    await waitFor(() => {
+      expect(screen.getByTestId('selection-highlight').getAttribute('data-active')).toBe('false');
+    });
+  });
+
+  it.each(['1.1', '3.2'])('displays independent heading number %s and preserves the reference target', async (label) => {
+    Object.defineProperty(HTMLElement.prototype, 'scrollIntoView', {
+      configurable: true,
+      value: vi.fn(),
+    });
+    const onCrossReferenceApplied = vi.fn();
+    const { container } = render(
+      <WriterIRDocumentEditor
+        document={{
+          ...document,
+          blocks: document.blocks.map((block) => block.type === 'heading'
+            ? { ...block, content: 'Target section' }
+            : block),
+        }}
+        numbering={{ entries: { 'sec-1': { label } } }}
+        ariaLabel='Writer document'
+        onChange={vi.fn()}
+        onCrossReferenceApplied={onCrossReferenceApplied}
+        onFocus={vi.fn()}
+        onBlur={vi.fn()}
+      />,
+    );
+    const paragraph = container.querySelector<HTMLElement>(
+      '[data-node-id="p-1"] [data-writer-block-content]',
+    );
+    const textNode = paragraph?.firstChild;
+    expect(paragraph).not.toBeNull();
+    expect(textNode).not.toBeNull();
+
+    const range = window.document.createRange();
+    range.setStart(textNode!, 0);
+    range.setEnd(textNode!, 5);
+    Object.defineProperty(range, 'getBoundingClientRect', { value: selectionRect });
+    Object.defineProperty(range, 'getClientRects', { value: () => [selectionRect()] });
+    const selection = window.getSelection();
+    selection?.removeAllRanges();
+    selection?.addRange(range);
+    fireEvent.mouseUp(paragraph!);
+
+    const trigger = await screen.findByRole('button', {
+      name: 'chat.writerIR.crossReference',
+    });
+    expect((trigger as HTMLButtonElement).disabled).toBe(false);
+    fireEvent.mouseDown(trigger);
+    fireEvent.click(trigger);
+
+    expect(screen.getByTestId('selection-highlight').getAttribute('data-active')).toBe('true');
+    fireEvent.click(screen.getByTitle(`${label} Target section`));
 
     expect(onCrossReferenceApplied).toHaveBeenCalledTimes(1);
     const updated = onCrossReferenceApplied.mock.calls[0][0] as WriterDocument;

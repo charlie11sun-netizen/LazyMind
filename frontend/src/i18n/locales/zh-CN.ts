@@ -1714,6 +1714,7 @@ const zhCN = {
 
   chat: {
     writerCopy: {
+      copyContent: "复制内容",
       copyAs: "复制 {{format}}",
       chooseFormat: "选择复制格式",
       markdown: "Markdown",
@@ -2298,12 +2299,10 @@ const zhCN = {
       confirmWriteBack: "确认写回",
       notionTargetRequired: "需要先绑定 Notion 目标页",
       githubTargetRequired: "请先在对话中提供 GitHub 仓库、目录或文件链接",
-      comingSoon: "暂未接入",
       providers: {
         feishu: "飞书",
         notion: "Notion",
         wechat: "微信公众号草稿箱",
-        yuque: "语雀",
         obsidian: "Obsidian",
         github: "GitHub",
       },

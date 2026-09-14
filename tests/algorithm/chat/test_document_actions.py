@@ -126,13 +126,13 @@ def test_rewrite_execute_uses_exact_preview_without_second_model_call(
         candidate.write_text("# Title\n\nRewritten.\n", encoding="utf-8")
         return {
             "representation": "markdown",
-            "target": {"type": "block", "block_type": "paragraph"},
+            "results": [{"target": {"type": "block", "block_type": "paragraph"},
             "preview": {"old_text": "Original.", "new_text": "Rewritten."},
             "patch": {
                 "type": "string_replace_set",
                 "payload": {"replacements": [{"old_string": "Original.", "new_string": "Rewritten."}]},
             },
-            "revised_document_md": str(candidate),
+            }], "revised_document_md": str(candidate),
         }
 
     monkeypatch.setattr(
@@ -144,7 +144,8 @@ def test_rewrite_execute_uses_exact_preview_without_second_model_call(
         "preview",
         {
             "instruction": "Improve it",
-            "selection": {"type": "markdown", "selected_text": "Original."},
+            "type": "markdown",
+            "selection_ranges": [{"selected_text": "Original."}],
         },
         artifact={"data": source},
         artifact_store=str(tmp_path),

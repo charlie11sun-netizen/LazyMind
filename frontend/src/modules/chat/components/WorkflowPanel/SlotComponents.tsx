@@ -1,3 +1,6 @@
+import { WriterProviderChoice } from "./DocumentProviderChoice";
+export { WriterProviderChoice } from "./DocumentProviderChoice";
+import { DocumentArtifactEditor } from "./DocumentArtifactEditor";
 import { useState, useCallback, useLayoutEffect, useRef, useEffect, useMemo, createContext, useContext } from "react";
 import ReactDOM from "react-dom";
 import type { SlotRevision, SlotVersionEntry, SlotWidgetConfig } from "@/modules/chat/store/workflowPanel";
@@ -62,9 +65,7 @@ import { SlotHtmlSlide } from './ppt/SlotHtmlSlide';
 import { SlotJsonSlide } from './ppt/SlotJsonSlide';
 import { isSlideSpecArtifact } from './ppt/slideSchema';
 import type { TaskArtifactStream } from '@/modules/chat/store/taskCenter';
-import { Image as AntImage, Modal, Radio, type RadioChangeEvent } from 'antd';
-import { FolderOpenOutlined, GithubOutlined } from '@ant-design/icons';
-import { cloudProviderOptions } from '@/modules/modelProvider/constants/cloudProviderOptions';
+import { Image as AntImage, Modal } from 'antd';
 import { isVideoArtifactValue } from './artifactMedia';
 
 export { SlotEditingContext } from './slotEditingContext';
@@ -994,7 +995,10 @@ export function SlotVersionPopover({
     if (!draftText) return;
     setFlushing(true);
     try {
-      await draftStore.flushDraft(sessionId, slotId, effectiveDraftIndex, listIndex);
+      const flushed = await draftStore.flushDraft(
+        sessionId, slotId, effectiveDraftIndex, listIndex,
+      );
+      if (!flushed) return;
       onDiscardDraft?.();
       setOpen(false);
       onRollbackDone?.();
@@ -1008,6 +1012,9 @@ export function SlotVersionPopover({
     versionUploadRef.current?.click();
   }, []);
 
+  const isImage = contentType === 'image';
+  const isFile = contentType === 'file';
+
   const handleVersionFileChange = useCallback(async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     e.target.value = '';
@@ -1015,7 +1022,17 @@ export function SlotVersionPopover({
     setUploading(true);
     try {
       const storedPath = await uploadFileInChunks(file);
-      await patchSlotItemValue(sessionId, slotId, listIndex, { path: storedPath }, isImage ? 'image' : undefined);
+      const activeVersion = versions.find((version) => version.selected);
+      await patchSlotItemValue(
+        sessionId,
+        slotId,
+        listIndex,
+        { path: storedPath },
+        isImage ? 'image' : undefined,
+        'checkpoint',
+        activeVersion?.revision ?? currentRevision,
+        activeVersion?.draft_version,
+      );
       setOpen(false);
       onRollbackDone?.();
     } catch {
@@ -1023,10 +1040,7 @@ export function SlotVersionPopover({
     } finally {
       setUploading(false);
     }
-  }, [sessionId, slotId, listIndex, patchSlotItemValue, setOpen, onRollbackDone]);
-
-  const isImage = contentType === 'image';
-  const isFile = contentType === 'file';
+  }, [currentRevision, isImage, listIndex, onRollbackDone, patchSlotItemValue, sessionId, setOpen, slotId, versions]);
 
   // Extract plain text/URL from a content_snapshot or artifact_value.
   // For image slots, url/path values are passed through resolveCoreAssetUrl so that
@@ -1514,14 +1528,23 @@ export function SlotImage({
     setUploading(true);
     try {
       const storedPath = await uploadFileInChunks(file);
-      await patchSlotItemValue(sessionId, slotId, slot.list_index, { path: storedPath }, 'image');
+      await patchSlotItemValue(
+        sessionId,
+        slotId,
+        slot.list_index,
+        { path: storedPath },
+        'image',
+        'checkpoint',
+        slot.revision,
+        slot.draft_version,
+      );
       onRefresh?.();
     } catch {
       // upload failure — no-op, user can retry
     } finally {
       setUploading(false);
     }
-  }, [sessionId, slotId, slot.list_index, patchSlotItemValue, onRefresh]);
+  }, [onRefresh, patchSlotItemValue, sessionId, slot.draft_version, slot.list_index, slot.revision, slotId]);
 
   const handleDeleteClick = useCallback((e: React.MouseEvent) => {
     e.stopPropagation();
@@ -1849,6 +1872,7 @@ export function SlotText({ slot, widget, sessionId, slotId, revisionCount, onRef
   const [captionEditing, setCaptionEditing] = useState(false);
   const [captionDraft, setCaptionDraft] = useState('');
   const [localRevision, setLocalRevision] = useState(slot.revision);
+  const [localDraftVersion, setLocalDraftVersion] = useState(slot.draft_version);
   const [currentValue, setCurrentValue] = useState(raw);
   const [rewriteSelection, setRewriteSelection] = useState<ArtifactRewriteSelection | null>(null);
   const [rewritePreview, setRewritePreview] = useState<{
@@ -1919,8 +1943,9 @@ export function SlotText({ slot, widget, sessionId, slotId, revisionCount, onRef
 
   useEffect(() => {
     setLocalRevision(slot.revision);
+    setLocalDraftVersion(slot.draft_version);
     setCurrentValue(raw);
-  }, [raw, slot.revision]);
+  }, [raw, slot.draft_version, slot.revision]);
 
   let text = '';
   if (isOffloaded) {
@@ -1946,7 +1971,10 @@ export function SlotText({ slot, widget, sessionId, slotId, revisionCount, onRef
       setDraft(String(saved.text));
       setHasPendingDraft(true);
       // Re-register with draftStore to restart the 60s flush timer lost on page reload.
-      draftStore.setDraft(sessionId, slotId, effectiveListIndex, saved, apiListIndex);
+      draftStore.setDraft(
+        sessionId, slotId, effectiveListIndex, saved, apiListIndex,
+        localRevision, localDraftVersion,
+      );
     } else if (saved?.text !== undefined) {
       draftStore.cancelDraft(sessionId, slotId, effectiveListIndex);
       setHasPendingDraft(false);
@@ -2011,7 +2039,10 @@ export function SlotText({ slot, widget, sessionId, slotId, revisionCount, onRef
           ? (raw as any).path.split('/').pop() ?? 'artifact.txt'
           : 'artifact.txt';
       }
-      draftStore.setDraft(sessionId, slotId, effectiveListIndex, draftPayload, apiListIndex);
+      draftStore.setDraft(
+        sessionId, slotId, effectiveListIndex, draftPayload, apiListIndex,
+        localRevision, localDraftVersion,
+      );
     }
   };
 
@@ -2029,7 +2060,10 @@ export function SlotText({ slot, widget, sessionId, slotId, revisionCount, onRef
             ? (raw as any).path.split('/').pop() ?? 'artifact.txt'
             : 'artifact.txt';
         }
-        draftStore.setDraft(sessionId, slotId, effectiveListIndex, draftPayload, apiListIndex);
+        draftStore.setDraft(
+          sessionId, slotId, effectiveListIndex, draftPayload, apiListIndex,
+          localRevision, localDraftVersion,
+        );
         setHasPendingDraft(true);
       } else {
         draftStore.cancelDraft(sessionId, slotId, effectiveListIndex);
@@ -2145,13 +2179,14 @@ export function SlotText({ slot, widget, sessionId, slotId, revisionCount, onRef
       'text',
       mode,
       baseRevision,
+      localDraftVersion,
     );
     draftStore.cancelDraft(sessionId, slotId, effectiveListIndex);
     setHasPendingDraft(false);
     setCurrentValue(nextValue);
     if (typeof revision === 'number' && revision > 0) setLocalRevision(revision);
     return { markdown, revision };
-  }, [apiListIndex, effectiveListIndex, isOffloaded, patchSlotItemValue, raw, readOnly, sessionId, slotId]);
+  }, [apiListIndex, effectiveListIndex, isOffloaded, localDraftVersion, patchSlotItemValue, raw, readOnly, sessionId, slotId]);
 
   const canRewriteMarkdown = canEditMarkdown
     && localRevision > 0
@@ -2175,8 +2210,9 @@ export function SlotText({ slot, widget, sessionId, slotId, revisionCount, onRef
     setRewritePreview({ selection: rewriteSelection, preview });
   }, [rewriteSelection]);
 
-  const handleRewriteApplied = useCallback((revision?: number) => {
+  const handleRewriteApplied = useCallback((revision?: number, draftVersion?: number) => {
     if (typeof revision === 'number' && revision > 0) setLocalRevision(revision);
+    if (typeof draftVersion === 'number') setLocalDraftVersion(draftVersion);
     setRewriteSelection(null);
     setRewritePreview(null);
     onRefresh?.();
@@ -2354,6 +2390,7 @@ export function SlotText({ slot, widget, sessionId, slotId, revisionCount, onRef
         slotId={slotId ?? ''}
         listIndex={apiListIndex}
         baseRevision={localRevision}
+        baseDraftVersion={localDraftVersion}
         selection={rewriteSelection}
         onClose={() => setRewriteSelection(null)}
         onApplied={handleRewriteApplied}
@@ -2508,6 +2545,7 @@ async function syncWriterDocumentSlot(
   slotId: string,
   listIndex: number,
   sourceRevision: string | number | undefined,
+  sourceDraftVersion: number | undefined,
   sourceDocument: WriterDocument,
   revisedDocument: WriterDocument,
   mode: WriterIRSaveMode = 'checkpoint',
@@ -2521,6 +2559,7 @@ async function syncWriterDocumentSlot(
     listIndex,
     {
       base_revision: sourceRevision,
+      ...(sourceDraftVersion !== undefined ? { base_draft_version: sourceDraftVersion } : {}),
       source_document: normalizeWriterDocumentForSync(sourceDocument),
       revised_document: normalizeWriterDocumentForSync(revisedDocument),
       mode,
@@ -2534,6 +2573,7 @@ async function syncWriterDocumentSlot(
     || (result.status !== 'synced' && result.status !== 'no_change')
     || typeof result.revision !== 'number'
     || result.revision <= 0
+    || typeof result.draft_version !== 'number'
     || result.provider_synced !== true
     || (result.status === 'synced' && result.artifact_saved !== true)
     || (result.status === 'no_change' && result.artifact_saved !== false)
@@ -2545,6 +2585,7 @@ async function syncWriterDocumentSlot(
   return {
     document: restoreWriterInternalReferenceDisplayText(result.document),
     sourceRevision: result.revision,
+    draftVersion: result.draft_version,
   };
 }
 
@@ -2690,93 +2731,7 @@ function isWriterWriteBackDisabled(
 
 export type { WriterWriteBackProvider } from '@/modules/chat/utils/request';
 
-const writerWriteBackProviders = ['feishu', 'notion', 'github', 'wechat', 'obsidian'] as const;
-const futureWriterProviders = ['yuque'] as const;
-const obsidianLogoUrl = 'https://obsidian.md/images/obsidian-logo-gradient.svg';
-
-function ObsidianWriterProviderIcon() {
-  const [failed, setFailed] = useState(false);
-
-  return failed
-    ? <FolderOpenOutlined aria-hidden='true' />
-    : (
-      <img
-        src={obsidianLogoUrl}
-        alt=''
-        aria-hidden='true'
-        onError={() => setFailed(true)}
-      />
-    );
-}
-
-function writerWriteBackProvider(provider?: string): WriterWriteBackProvider {
-  return provider === 'notion' || provider === 'github' || provider === 'wechat' || provider === 'obsidian'
-    ? provider
-    : 'feishu';
-}
-
-export function WriterProviderChoice({
-  initialProvider,
-  githubEnabled,
-  onChange,
-}: {
-  initialProvider: WriterWriteBackProvider;
-  githubEnabled: boolean;
-  onChange: (provider: WriterWriteBackProvider) => void;
-}) {
-  const [value, setValue] = useState<WriterWriteBackProvider>(initialProvider);
-  const option = (provider: WriterWriteBackProvider) =>
-    provider === 'github'
-      ? undefined
-      : cloudProviderOptions.find((item) => item.type === provider);
-  return (
-    <div className='workflow-writer-provider-picker'>
-      <div className='workflow-writer-provider-picker__hint'>
-        {tr('chat.writerIR.providerPickerHint')}
-      </div>
-      <Radio.Group
-        value={value}
-        onChange={(event: RadioChangeEvent) => {
-          const next = event.target.value as WriterWriteBackProvider;
-          setValue(next);
-          onChange(next);
-        }}
-        className='workflow-writer-provider-picker__options'
-      >
-        {writerWriteBackProviders.map((item) => {
-          const config = option(item);
-          const disabled = item === 'github' && !githubEnabled;
-          return (
-            <Radio key={item} value={item} disabled={disabled}>
-              <span className='workflow-writer-provider-picker__option'>
-                {item === 'github'
-                  ? <GithubOutlined aria-hidden='true' />
-                  : item === 'obsidian'
-                    ? <ObsidianWriterProviderIcon />
-                  : config?.logoUrl
-                    ? <img src={config.logoUrl} alt='' aria-hidden='true' />
-                    : config?.icon}
-                <span>{tr(`chat.writerIR.providers.${item}`)}</span>
-                {disabled && <small>{tr('chat.writerIR.githubTargetRequired')}</small>}
-              </span>
-            </Radio>
-          );
-        })}
-        {futureWriterProviders.map((item) => (
-          <Radio key={item} value={item} disabled>
-            <span className='workflow-writer-provider-picker__option'>
-              <span className='workflow-writer-provider-picker__fallback-icon' aria-hidden='true'>
-                ◇
-              </span>
-              <span>{tr(`chat.writerIR.providers.${item}`)}</span>
-              <small>{tr('chat.writerIR.comingSoon')}</small>
-            </span>
-          </Radio>
-        ))}
-      </Radio.Group>
-    </div>
-  );
-}
+function writerWriteBackProvider(provider?: string): WriterWriteBackProvider {return provider || 'feishu';}
 
 function useRegisterWriterWriteBack({
   enabled,
@@ -2787,6 +2742,7 @@ function useRegisterWriterWriteBack({
   sessionId,
   slotId,
   revision,
+  draftVersion,
   getLatestRevision,
   writeBackUrl: serverWriteBackUrl,
   writeBackLocalPath: serverWriteBackLocalPath,
@@ -2803,12 +2759,17 @@ function useRegisterWriterWriteBack({
   sessionId?: string;
   slotId?: WriterDocumentSlot;
   revision: number;
+  draftVersion?: number;
   getLatestRevision?: () => number;
   writeBackUrl?: string;
   writeBackLocalPath?: string;
   provider?: string;
   disabled?: boolean;
-  onSuccess?: (revision: number, document: RenderedWriterDocument) => void;
+  onSuccess?: (
+    revision: number,
+    document: RenderedWriterDocument,
+    draftVersion: number,
+  ) => void;
   onConflict?: () => void;
 }) {
   const tabActive = useContext(WorkflowPanelTabActiveContext);
@@ -2844,6 +2805,7 @@ function useRegisterWriterWriteBack({
       const response = await WorkflowSessionApi().writeBackWriterDocument(
         sessionId,
         currentRevision,
+        draftVersion,
         undefined,
         undefined,
         slotId,
@@ -2858,6 +2820,7 @@ function useRegisterWriterWriteBack({
         || result.provider_synced !== true
         || result.artifact_saved !== true
         || typeof result.revision !== 'number'
+        || typeof result.draft_version !== 'number'
         || result.patch_result?.success !== true
         || (result.representation === 'markdown'
           ? typeof result.document !== 'string'
@@ -2870,7 +2833,7 @@ function useRegisterWriterWriteBack({
       const localPath = result.write_result?.local_path;
       setWriteBackLocalPath(typeof localPath === 'string' ? localPath.trim() : '');
       setStatus('success');
-      onSuccess?.(result.revision, result.document);
+      onSuccess?.(result.revision, result.document, result.draft_version);
     } catch (error) {
       const errorResponse = (error as {
         response?: {
@@ -2887,7 +2850,7 @@ function useRegisterWriterWriteBack({
         setStatus('error');
       }
     }
-  }, [getLatestRevision, initialDelivery, onConflict, onSuccess, revision, sessionId, slotId]);
+  }, [draftVersion, getLatestRevision, initialDelivery, onConflict, onSuccess, revision, sessionId, slotId]);
   const writeBackRef = useRef(writeBack);
   writeBackRef.current = writeBack;
 
@@ -3037,6 +3000,7 @@ function SlotWriterDocument({
   const [error, setError] = useState<string | null>(null);
   const [reloadToken, setReloadToken] = useState(0);
   const [localRevision, setLocalRevision] = useState(slot.revision);
+  const [localDraftVersion, setLocalDraftVersion] = useState(slot.draft_version);
   const [localRevisionCount, setLocalRevisionCount] = useState<number | undefined>(revisionCount);
   const [localChangeSource, setLocalChangeSource] = useState(slot.change_source);
   const [writerEditing, setWriterEditing] = useState(false);
@@ -3108,6 +3072,10 @@ function SlotWriterDocument({
     setLocalRevision((current) => Math.max(current, slot.revision));
     setLocalChangeSource(slot.change_source);
   }, [slot.revision]);
+
+  useEffect(() => {
+    setLocalDraftVersion(slot.draft_version);
+  }, [slot.draft_version]);
 
   useEffect(() => {
     if (typeof revisionCount !== 'number') return;
@@ -3208,6 +3176,7 @@ function SlotWriterDocument({
       const response = await WorkflowSessionApi().saveWriterDocument(
         sessionId,
         sourceRevision,
+        localDraftVersion,
         normalizeWriterDocumentForSync(document),
         slotId,
         ['draft_document', 'flat_draft_document'].includes(slotId) ? 'draft' : mode,
@@ -3221,6 +3190,7 @@ function SlotWriterDocument({
         || result.representation !== 'ir'
         || !isWriterDocument(result.document)
         || typeof result.revision !== 'number'
+        || typeof result.draft_version !== 'number'
       ) {
         throw new Error(tr('chat.writerIR.saveFailed'));
       }
@@ -3229,6 +3199,7 @@ function SlotWriterDocument({
       );
       setRendered({ ...result, document: savedDocument });
       applySavedRevision(result.revision);
+      setLocalDraftVersion(result.draft_version);
       return { document: savedDocument, sourceRevision: result.revision };
     } catch (saveError) {
       if ((saveError as { response?: { status?: number } })?.response?.status === 409) {
@@ -3236,7 +3207,7 @@ function SlotWriterDocument({
       }
       throw saveError;
     }
-  }, [applySavedRevision, mediaLibrary, onRefresh, readOnly, sessionId, slotId]);
+  }, [applySavedRevision, localDraftVersion, mediaLibrary, onRefresh, readOnly, sessionId, slotId]);
 
   const saveMarkdown = useCallback(async (
     document: string,
@@ -3251,6 +3222,7 @@ function SlotWriterDocument({
       const response = await WorkflowSessionApi().saveWriterDocument(
         sessionId,
         baseRevision,
+        localDraftVersion,
         document,
         slotId,
         ['draft_document', 'flat_draft_document'].includes(slotId) ? 'draft' : mode,
@@ -3264,6 +3236,7 @@ function SlotWriterDocument({
         || result.representation !== 'markdown'
         || typeof result.document !== 'string'
         || typeof result.revision !== 'number'
+        || typeof result.draft_version !== 'number'
       ) {
         throw new Error(tr('chat.writerMarkdown.saveFailed'));
       }
@@ -3271,6 +3244,7 @@ function SlotWriterDocument({
       setRendered({ ...result, document: displayDocument });
       setDownloadMarkdownContent(result.export_document ?? displayDocument);
       applySavedRevision(result.revision);
+      setLocalDraftVersion(result.draft_version);
       return { markdown: displayDocument, revision: result.revision };
     } catch (saveError) {
       if ((saveError as { response?: { status?: number } })?.response?.status === 409) {
@@ -3278,7 +3252,7 @@ function SlotWriterDocument({
       }
       throw saveError;
     }
-  }, [applySavedRevision, onRefresh, readOnly, sessionId, slotId]);
+  }, [applySavedRevision, localDraftVersion, onRefresh, readOnly, sessionId, slotId]);
 
   const handleWriterEditingChange = useCallback((editing: boolean) => {
     setWriterEditing(editing);
@@ -3311,8 +3285,9 @@ function SlotWriterDocument({
     });
   }, [canRewrite]);
 
-  const handleRewriteApplied = useCallback((revision?: number) => {
+  const handleRewriteApplied = useCallback((revision?: number, draftVersion?: number) => {
     applySavedRevision(revision, 'human');
+    if (typeof draftVersion === 'number') setLocalDraftVersion(draftVersion);
     setRewriteSelection(null);
     setRewritePreview(null);
     setRenderedSelection(null);
@@ -3328,6 +3303,7 @@ function SlotWriterDocument({
   const handleWriteBackSuccess = useCallback((
     revision: number,
     document: RenderedWriterDocument,
+    draftVersion: number,
   ) => {
     if (isWriterDocument(document)) {
       setRendered((current) => current ? {
@@ -3339,6 +3315,7 @@ function SlotWriterDocument({
       } : current);
     }
     applySavedRevision(revision, 'provider_sync');
+    setLocalDraftVersion(draftVersion);
     refreshDocument();
   }, [applySavedRevision, mediaLibrary, refreshDocument]);
 
@@ -3361,6 +3338,7 @@ function SlotWriterDocument({
     sessionId,
     slotId: isWriterWriteBackSlot(slotId) ? slotId : undefined,
     revision: displayRevision,
+    draftVersion: localDraftVersion,
     getLatestRevision,
     writeBackUrl: slot.write_back_url,
     writeBackLocalPath: slot.write_back_local_path,
@@ -3524,6 +3502,7 @@ function SlotWriterDocument({
         slotId={slotId}
         listIndex={apiListIndex}
         baseRevision={displayRevision}
+        baseDraftVersion={localDraftVersion}
         selection={rewriteSelection}
         onClose={() => setRewriteSelection(null)}
         onApplied={handleRewriteApplied}
@@ -3597,6 +3576,7 @@ function SlotJsonFile({
   const [sourceJson, setSourceJson] = useState<unknown>(null);
   const [loadedSourceKey, setLoadedSourceKey] = useState('');
   const [loadedRevision, setLoadedRevision] = useState<number>();
+  const [localDraftVersion, setLocalDraftVersion] = useState(slot.draft_version);
   const [localRevisionCount, setLocalRevisionCount] = useState<number | undefined>(revisionCount);
   const [writerEditing, setWriterEditing] = useState(false);
   const [rewriteSelection, setRewriteSelection] = useState<ArtifactRewriteSelection | null>(null);
@@ -3621,6 +3601,10 @@ function SlotJsonFile({
       setLoadedRevision((prev) => (prev === undefined || slot.revision >= prev ? slot.revision : prev));
     }
   }, [slot.revision]);
+
+  useEffect(() => {
+    setLocalDraftVersion(slot.draft_version);
+  }, [slot.draft_version]);
 
   useEffect(() => {
     if (typeof revisionCount === 'number' && revisionCount > 0) {
@@ -3743,6 +3727,7 @@ function SlotJsonFile({
           slot.slot_id,
           apiListIndex,
           sourceRevision,
+          localDraftVersion,
           sourceDocument,
           document,
           mode,
@@ -3755,6 +3740,7 @@ function SlotJsonFile({
         applySavedRevision(
           typeof result.sourceRevision === 'number' ? result.sourceRevision : undefined,
         );
+        setLocalDraftVersion(result.draftVersion);
         // Keep the editor mounted: local payload/revision are already authoritative.
         // Session polling will catch up without a hard refresh.
         return {
@@ -3789,6 +3775,7 @@ function SlotJsonFile({
     const revision = await patchSlotItemValue(
       sessionId, slotId, apiListIndex, nextValue, 'file', persistMode,
       typeof sourceRevision === 'number' ? sourceRevision : undefined,
+      localDraftVersion,
     );
     setSourceJson(serialized);
     setPayload(document);
@@ -3800,6 +3787,7 @@ function SlotJsonFile({
   }, [
     apiListIndex,
     applySavedRevision,
+    localDraftVersion,
     name,
     onRefresh,
     patchSlotItemValue,
@@ -3832,7 +3820,7 @@ function SlotJsonFile({
     });
   }, [canRewriteIR]);
 
-  const handleIRRewriteApplied = useCallback((revision?: number) => {
+  const handleIRRewriteApplied = useCallback((revision?: number, draftVersion?: number) => {
     if (writerDocument && rewritePreview?.selection.type === 'ir') {
       setPayload(updateWriterBlockContent(
         writerDocument,
@@ -3841,6 +3829,7 @@ function SlotJsonFile({
       ));
     }
     applySavedRevision(revision);
+    if (typeof draftVersion === 'number') setLocalDraftVersion(draftVersion);
     setRewriteSelection(null);
     setRewritePreview(null);
     setReloadToken((value) => value + 1);
@@ -3856,11 +3845,16 @@ function SlotJsonFile({
     setRewritePreview(null);
   }, []);
 
-  const handleWriteBackSuccess = useCallback((revision: number, persisted: RenderedWriterDocument) => {
+  const handleWriteBackSuccess = useCallback((
+    revision: number,
+    persisted: RenderedWriterDocument,
+    draftVersion: number,
+  ) => {
     if (isWriterDocument(persisted)) {
       setPayload(persisted);
     }
     applySavedRevision(revision);
+    setLocalDraftVersion(draftVersion);
     onRefresh?.();
   }, [applySavedRevision, onRefresh]);
 
@@ -3889,6 +3883,7 @@ function SlotJsonFile({
     sessionId,
     slotId: isWriterWriteBackSlot(resolvedSlotId) ? resolvedSlotId : undefined,
     revision: displayRevision,
+    draftVersion: localDraftVersion,
     getLatestRevision,
     writeBackUrl: slot.write_back_url,
     writeBackLocalPath: slot.write_back_local_path,
@@ -4013,6 +4008,7 @@ function SlotJsonFile({
         slotId={slotId ?? ''}
         listIndex={apiListIndex}
         baseRevision={displayRevision}
+        baseDraftVersion={localDraftVersion}
         selection={rewriteSelection}
         onClose={() => setRewriteSelection(null)}
         onApplied={handleIRRewriteApplied}
@@ -4071,6 +4067,7 @@ function SlotInlineStructured({
     preview: RewriteSelectionPreview;
   } | null>(null);
   const [localRevision, setLocalRevision] = useState(slot.revision);
+  const [localDraftVersion, setLocalDraftVersion] = useState(slot.draft_version);
   const [localRevisionCount, setLocalRevisionCount] = useState<number | undefined>(revisionCount);
   const apiListIndex = slot.list_index ?? -1;
   const resolvedSlotId = slotId ?? slot.slot;
@@ -4133,6 +4130,10 @@ function SlotInlineStructured({
   }, [slot.revision]);
 
   useEffect(() => {
+    setLocalDraftVersion(slot.draft_version);
+  }, [slot.draft_version]);
+
+  useEffect(() => {
     if (typeof revisionCount === 'number' && revisionCount > 0) {
       setLocalRevisionCount((prev) => (prev === undefined || revisionCount >= prev ? revisionCount : prev));
     }
@@ -4154,6 +4155,7 @@ function SlotInlineStructured({
           slot.slot_id,
           apiListIndex,
           sourceRevision,
+          localDraftVersion,
           sourceDocument,
           document,
           mode,
@@ -4161,6 +4163,7 @@ function SlotInlineStructured({
         applySavedRevision(
           typeof result.sourceRevision === 'number' ? result.sourceRevision : undefined,
         );
+        setLocalDraftVersion(result.draftVersion);
         // Avoid hard session refresh; WriterIRControl already applied the result.
         return result;
       } catch (syncError) {
@@ -4175,6 +4178,7 @@ function SlotInlineStructured({
     const revision = await patchSlotItemValue(
       sessionId, slotId, apiListIndex, serialized, 'json', persistMode,
       typeof sourceRevision === 'number' ? sourceRevision : undefined,
+      localDraftVersion,
     );
     applySavedRevision(revision);
     return {
@@ -4184,6 +4188,7 @@ function SlotInlineStructured({
   }, [
     apiListIndex,
     applySavedRevision,
+    localDraftVersion,
     onRefresh,
     patchSlotItemValue,
     readOnly,
@@ -4213,8 +4218,9 @@ function SlotInlineStructured({
     });
   }, [canRewriteIR]);
 
-  const handleIRRewriteApplied = useCallback((revision?: number) => {
+  const handleIRRewriteApplied = useCallback((revision?: number, draftVersion?: number) => {
     applySavedRevision(revision);
+    if (typeof draftVersion === 'number') setLocalDraftVersion(draftVersion);
     setRewriteSelection(null);
     setRewritePreview(null);
     onRefresh?.();
@@ -4229,8 +4235,13 @@ function SlotInlineStructured({
     setRewritePreview(null);
   }, []);
 
-  const handleWriteBackSuccess = useCallback((revision: number) => {
+  const handleWriteBackSuccess = useCallback((
+    revision: number,
+    _persisted: RenderedWriterDocument,
+    draftVersion: number,
+  ) => {
     applySavedRevision(revision);
+    setLocalDraftVersion(draftVersion);
     onRefresh?.();
   }, [applySavedRevision, onRefresh]);
 
@@ -4242,6 +4253,7 @@ function SlotInlineStructured({
     sessionId,
     slotId: isWriterWriteBackSlot(resolvedSlotId) ? resolvedSlotId : undefined,
     revision: displayRevision,
+    draftVersion: localDraftVersion,
     writeBackUrl: slot.write_back_url,
     writeBackLocalPath: slot.write_back_local_path,
     provider: slot.provider,
@@ -4325,6 +4337,7 @@ function SlotInlineStructured({
         slotId={slotId ?? ''}
         listIndex={apiListIndex}
         baseRevision={displayRevision}
+        baseDraftVersion={localDraftVersion}
         selection={rewriteSelection}
         onClose={() => setRewriteSelection(null)}
         onApplied={handleIRRewriteApplied}
@@ -4453,6 +4466,7 @@ function SlotMarkdownFile({
   const [downloadFormatOpen, setDownloadFormatOpen] = useState(false);
   const [currentValue, setCurrentValue] = useState(raw);
   const [localRevision, setLocalRevision] = useState(slot.revision);
+  const [localDraftVersion, setLocalDraftVersion] = useState(slot.draft_version);
   const [localRevisionCount, setLocalRevisionCount] = useState<number | undefined>(revisionCount);
   const [rewriteSelection, setRewriteSelection] = useState<ArtifactRewriteSelection | null>(null);
   const [rewritePreview, setRewritePreview] = useState<{
@@ -4546,8 +4560,9 @@ function SlotMarkdownFile({
   useEffect(() => {
     if (slot.revision < localRevision) return;
     setLocalRevision(slot.revision);
+    setLocalDraftVersion(slot.draft_version);
     setCurrentValue(raw);
-  }, [localRevision, raw, slot.revision]);
+  }, [localRevision, raw, slot.draft_version, slot.revision]);
 
   useEffect(() => {
     if (typeof revisionCount !== 'number') return;
@@ -4660,6 +4675,7 @@ function SlotMarkdownFile({
           ? 'draft'
           : 'checkpoint',
       baseRevision,
+      localDraftVersion,
     );
     setContent(markdown);
     setCurrentValue(nextValue);
@@ -4668,7 +4684,7 @@ function SlotMarkdownFile({
       setLocalRevisionCount((previous) => Math.max(previous ?? 0, revisionCount ?? 0, revision));
     }
     return { markdown, revision };
-  }, [apiListIndex, content, markdownFilename, patchSlotItemValue, raw, readOnly, resolvedSlotId, revisionCount, sessionId, slotId, usesWriterMarkdownSourceProfile]);
+  }, [apiListIndex, content, localDraftVersion, markdownFilename, patchSlotItemValue, raw, readOnly, resolvedSlotId, revisionCount, sessionId, slotId, usesWriterMarkdownSourceProfile]);
 
   const refreshMarkdown = useCallback(() => {
     setReloadToken((value) => value + 1);
@@ -4698,11 +4714,12 @@ function SlotMarkdownFile({
     return () => document.removeEventListener('selectionchange', recordRenderedMarkdownSelection);
   }, [canEditMarkdown, canRewriteMarkdown, recordRenderedMarkdownSelection]);
 
-  const handleMarkdownRewriteApplied = useCallback((revision?: number) => {
+  const handleMarkdownRewriteApplied = useCallback((revision?: number, draftVersion?: number) => {
     if (typeof revision === 'number' && revision > 0) {
       setLocalRevision(revision);
       setLocalRevisionCount((previous) => Math.max(previous ?? 0, revisionCount ?? 0, revision));
     }
+    if (typeof draftVersion === 'number') setLocalDraftVersion(draftVersion);
     setRewriteSelection(null);
     setRewritePreview(null);
     setRenderedSelection(null);
@@ -4723,7 +4740,13 @@ function SlotMarkdownFile({
     ? `${sessionId}:${slotId}:${apiListIndex}:markdown`
     : undefined;
 
-  const handleMarkdownWriteBackSuccess = useCallback(() => {
+  const handleMarkdownWriteBackSuccess = useCallback((
+    revision: number,
+    _document: RenderedWriterDocument,
+    draftVersion: number,
+  ) => {
+    setLocalRevision(revision);
+    setLocalDraftVersion(draftVersion);
     onRefresh?.();
   }, [onRefresh]);
 
@@ -4742,6 +4765,7 @@ function SlotMarkdownFile({
     sessionId,
     slotId: isWriterWriteBackSlot(resolvedSlotId) ? resolvedSlotId : undefined,
     revision: displayRevision,
+    draftVersion: localDraftVersion,
     writeBackUrl: slot.write_back_url,
     writeBackLocalPath: slot.write_back_local_path,
     provider: slot.provider,
@@ -4906,6 +4930,7 @@ function SlotMarkdownFile({
         slotId={slotId ?? ''}
         listIndex={apiListIndex}
         baseRevision={displayRevision}
+        baseDraftVersion={localDraftVersion}
         selection={rewriteSelection}
         onClose={() => setRewriteSelection(null)}
         onApplied={handleMarkdownRewriteApplied}
@@ -5298,6 +5323,9 @@ export function SlotRenderer({
     return <SlotPending type={expectedType ?? 'text'} cardMode={cardMode} />;
   }
 
+  if (slot.artifact_id && slot.document) {
+    return <DocumentArtifactEditor slot={slot} sessionId={sessionId ?? ''} readOnly={readOnly || widget?.readOnly} onRefresh={onRefresh} />;
+  }
   const effectiveReadOnly = readOnly || widget?.readOnly;
   const resolvedWidgetSlotId = slotId ?? slot.slot;
   if (

@@ -729,6 +729,43 @@ describe('MarkdownArtifactEditor rewrite selection highlight', () => {
     }
   });
 
+  it('updates cross-reference heading labels from independent numbering and preserves anchors', async () => {
+    const markdown = 'Alpha beta gamma\n\n<a id="block-sec-1"></a>\n### Target section';
+    const onSave = vi.fn(async (_markdown: string) => 2);
+    const renderEditor = (label?: string) => (
+      <MarkdownArtifactEditor
+        markdown={markdown}
+        sourceRevision={1}
+        numbering={{ entries: { 'sec-1': { label } } }}
+        onSave={onSave}
+      />
+    );
+    const { container, rerender } = render(renderEditor('1.1'));
+    const paragraph = container.querySelector('p')!;
+    const range = document.createRange();
+    range.setStart(paragraph.firstChild!, 0);
+    range.setEnd(paragraph.firstChild!, 5);
+    Object.defineProperty(range, 'getBoundingClientRect', { value: () => rect() });
+    Object.defineProperty(range, 'getClientRects', { value: () => [rect()] });
+    window.getSelection()?.removeAllRanges();
+    window.getSelection()?.addRange(range);
+    fireEvent.mouseUp(paragraph);
+
+    const trigger = await screen.findByTitle('chat.writerIR.crossReference');
+    fireEvent.mouseDown(trigger);
+    fireEvent.click(trigger);
+    expect(screen.getByTitle('1.1 Target section')).toBeInTheDocument();
+
+    rerender(renderEditor());
+    expect(screen.getByTitle('Target section')).toBeInTheDocument();
+    expect(screen.queryByTitle('1.1 Target section')).not.toBeInTheDocument();
+
+    rerender(renderEditor('3.2'));
+    fireEvent.click(screen.getByTitle('3.2 Target section'));
+    await waitFor(() => expect(onSave).toHaveBeenCalledTimes(1));
+    expect(onSave.mock.calls[0][0]).toBe(markdown.replace('Alpha', '[Alpha](#block-sec-1)'));
+  });
+
   it('reports the controlled reference dropdown expanded state', async () => {
     const { container } = render(<Harness />);
     const paragraph = container.querySelector('p');

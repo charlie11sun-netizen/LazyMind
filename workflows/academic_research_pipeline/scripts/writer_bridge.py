@@ -9,7 +9,7 @@ import uuid
 from pathlib import Path
 from typing import Any, Mapping
 
-from lazymind.document_tools.revision import preview_selection_rewrite, revise_markdown_document
+from lazymind.document_tools.revision import revise_markdown_document
 from lazymind.chat.engine.subagent.context import require_context
 from lazymind.document_tools import (
     DraftMarkdownStreamEventEmitter,
@@ -1010,51 +1010,3 @@ def academic_writer_revise_from_feedback(
     return academic_writer_revise_markdown(
         base_document_path, writing_context_path, instruction, document_slot,
     )
-
-
-def academic_writer_preview_selection_rewrite(
-    artifact: Any,
-    instruction: str,
-    selection: Mapping[str, Any],
-    artifact_store: str = '',
-    slot: str = '',
-) -> dict[str, Any]:
-    if slot not in EDITABLE_SLOTS:
-        raise ValueError('Selection rewrite is supported only for academic Writer documents.')
-    if str((selection or {}).get('type') or '') != 'markdown':
-        raise ValueError("The academic workflow requires selection.type='markdown'.")
-    instruction = str(instruction or '').strip()
-    if not instruction:
-        raise ValueError('instruction must not be empty.')
-    if isinstance(artifact, Mapping):
-        if isinstance(artifact.get('data'), str):
-            document = str(artifact['data'])
-        elif artifact.get('path'):
-            document = _read_text(str(artifact['path']))
-        else:
-            raise ValueError('Markdown artifact path is missing.')
-    elif isinstance(artifact, str) and Path(artifact).is_file():
-        document = _read_text(artifact)
-    else:
-        document = str(artifact or '')
-    root = Path(artifact_store) if artifact_store else _run_root('selection-preview')
-    root = root / 'academic-writer-selection' / uuid.uuid4().hex
-    root.mkdir(parents=True, exist_ok=True)
-    context = {'context_id': f'academic-selection-{uuid.uuid4().hex}', 'meta': {'slot': slot}}
-    output = preview_selection_rewrite(
-        document, instruction, dict(selection), context, artifact_store=str(root),
-    )
-    candidate = Path(str(output['revised_document_md']))
-    canonical = root / f'{slot}.md'
-    if candidate.resolve() != canonical.resolve():
-        canonical.write_bytes(candidate.read_bytes())
-    return {
-        **{key: output[key] for key in ('representation', 'target', 'preview', 'patch')},
-        'artifact': {
-            'content_type': 'file',
-            'value': {
-                'path': str(canonical), 'filename': canonical.name,
-                'size': canonical.stat().st_size,
-            },
-        },
-    }

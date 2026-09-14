@@ -125,22 +125,28 @@ export default function EditableBlock({
       user_instruct: instruction,
       allow_empty: true,
       full_content: markdown,
-      selection_start: codePointOffset(markdown, range.start),
-      selection_end: codePointOffset(markdown, range.end),
+      selection_ranges: [{
+        start: codePointOffset(markdown, range.start),
+        end: codePointOffset(markdown, range.end),
+        content: selection.selectedText,
+      }],
     }, {
       timeout: 10 * 60 * 1_000,
       silentError: true,
     } as never);
-    const newText = response.data.content ?? "";
-    const targetStart = typeof response.data.target_start === "number"
-      ? jsOffsetFromCodePoints(markdown, response.data.target_start) : -1;
-    const targetEnd = typeof response.data.target_end === "number"
-      ? jsOffsetFromCodePoints(markdown, response.data.target_end) : -1;
+    if (response.data.results?.length !== 1) throw new Error("Expected one paragraph rewrite result");
+    const result = response.data.results[0];
+    const newText = result.content;
+    const targetStart = typeof result.target_start === "number"
+      ? jsOffsetFromCodePoints(markdown, result.target_start) : -1;
+    const targetEnd = typeof result.target_end === "number"
+      ? jsOffsetFromCodePoints(markdown, result.target_end) : -1;
     if (targetStart < 0 || targetEnd <= targetStart
       || targetStart > range.start || targetEnd < range.end) {
       throw new Error("invalid authorized block range");
     }
     const oldText = markdown.slice(targetStart, targetEnd);
+    if (oldText !== result.old_content) throw new Error("The original paragraph does not match");
     const nextMarkdown = replaceRange(markdown, targetStart, targetEnd, newText);
     return {
       status: "ready",

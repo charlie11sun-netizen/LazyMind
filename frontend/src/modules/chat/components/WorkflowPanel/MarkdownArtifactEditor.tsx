@@ -497,7 +497,7 @@ interface MarkdownArtifactEditorProps {
   rewriteUnavailableReason?: string;
   rewriteDialogOpen?: boolean;
   rewritePreview?: MarkdownRewritePreview | null;
-  onRewritePreviewApplied?: (revision?: number) => void;
+  onRewritePreviewApplied?: (revision?: number, draftVersion?: number) => void;
   onRewritePreviewRejected?: () => void;
 }
 
@@ -638,8 +638,15 @@ export function MarkdownArtifactEditor({
   );
   const hasOutline = Boolean(markdownOutline.title);
   const referenceTargets = useMemo(
-    () => collectWriterMarkdownReferenceTargets(materializedDraftMarkdown),
-    [materializedDraftMarkdown],
+    () => collectWriterMarkdownReferenceTargets(materializedDraftMarkdown).map((target) => {
+      const numberingLabel = target.type === 'heading'
+        ? numbering?.entries[target.anchorId.slice('block-'.length)]?.label
+        : undefined;
+      return numberingLabel
+        ? { ...target, label: `${numberingLabel} ${target.label}` }
+        : target;
+    }),
+    [materializedDraftMarkdown, numbering],
   );
   const outlineBaseLevel = Math.min(
     ...markdownOutline.items.map((item) => item.level),

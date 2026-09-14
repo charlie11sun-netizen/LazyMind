@@ -57,9 +57,12 @@ func enrichWriterWriteBackSlots(ctx context.Context, db *gorm.DB, sessionID stri
 	if source != nil && target != nil && isWriterWorkflowSession(ctx, db, sessionID) {
 		targetValue, err := loadWriterSlotDTOValue(ctx, db, sessionID, *target)
 		if err == nil {
-			binding, bound := writerProviderBindingFromTargetArtifact(targetValue)
-			if bound && binding.Provider == "github" {
-				source.EditorProfile = writerMarkdownSourceEditor
+			_, bound := writerProviderBindingFromTargetArtifact(targetValue)
+			if bound {
+				sourceValue, sourceErr := loadWriterSlotDTOValue(ctx, db, sessionID, *source)
+				if sourceErr == nil && writerArtifactIsMarkdown(sourceValue) {
+					source.EditorProfile = writerMarkdownSourceEditor
+				}
 			}
 		}
 	}

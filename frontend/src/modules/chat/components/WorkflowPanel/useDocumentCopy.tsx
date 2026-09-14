@@ -80,15 +80,16 @@ export function useDocumentCopy({
       }
     };
     return registerFooterAction(`${editingKey}:copy`, {
-      label: busy ? t('chat.writerCopy.converting') : t('chat.writerCopy.copyAs', { format: t(`chat.writerCopy.${format}`) }),
+      label: t('chat.writerCopy.copyContent'),
       dedupKey: sourceKey ? JSON.stringify(['copy', sessionId, sourceKey]) : undefined,
       icon: 'copy',
       order: 20,
       disabled: busy,
       onClick: () => { void copy(format); },
+      selectedMenuKey: format,
       menu: FORMATS.map((value) => ({
         key: value,
-        label: t('chat.writerCopy.copyAs', { format: t(`chat.writerCopy.${value}`) }),
+        label: t(`chat.writerCopy.${value}`),
         onClick: () => { void copy(value); },
       })),
     });

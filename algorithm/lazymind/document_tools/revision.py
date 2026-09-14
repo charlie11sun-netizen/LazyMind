@@ -7,11 +7,7 @@ from typing import Any
 from lazyllm import AutoModel
 from lazyllm.tools.agent import ToolExecutionError
 from lazyllm.tools.writer.data_models import (
-    ContentRef,
-    ModifyInstruction,
     ModifyPlan,
-    PatchSet,
-    StringReplaceSet,
     TargetDocument,
     VisualInstruction,
     VisualPlan,
@@ -19,8 +15,6 @@ from lazyllm.tools.writer.data_models import (
     WritingTask,
 )
 from lazyllm.tools.writer.tools import WriterQualityTools, WriterRevisionTools
-from lazyllm.tools.writer.tools.revision_tools import apply_patch_to_ir
-from lazyllm.tools.writer.utils import load_artifact_json
 from .artifacts import (
     WRITER_BLOCK_SCHEMA,
     WRITER_IR_SCHEMA,
@@ -192,74 +186,19 @@ def apply_document_revision(
 def preview_selection_rewrite(
     document: str | dict,
     instruction: str,
-    selection: dict,
+    selection_ranges: list[dict],
     context: Any,
     *,
     artifact_store: str,
 ) -> dict[str, Any]:
-    """Generate one selected-block rewrite candidate and its deterministic patch."""
+    """Generate whole-block candidates using the original Writer patch contracts."""
     instruction = str(instruction or '').strip()
     if not instruction:
         raise ValueError('instruction must not be empty.')
-    revision = WriterRevisionTools(
-        llm=AutoModel(model='llm'), artifact_store=artifact_store
-    )
-    selection_type = str((selection or {}).get('type') or '')
-    if isinstance(document, dict):
-        source = WriterDocument.model_validate(document)
-        if selection_type != 'ir':
-            raise ValueError("IR artifacts require selection.type='ir'.")
-        node_id = str(selection.get('node_id') or '')
-        target = source.block_by_id(node_id)
-        if target is None:
-            raise ValueError('The selected IR node no longer exists.')
-        plan = ModifyPlan(
-            scope='block',
-            instructions=[
-                ModifyInstruction(
-                    instruction_id='rewrite-selection',
-                    content_ref=ContentRef(node_id=node_id),
-                    modify_type='update',
-                    instruction=instruction,
-                )
-            ],
-        )
-        output = revision.generate_patch_set(source, plan, context)
-        patch_set = load_artifact_json(output['artifact_path'], PatchSet)
-        revised, _ = apply_patch_to_ir(source, patch_set)
-        return {
-            'representation': 'ir',
-            'target': {'type': 'block', 'block_type': target.type, 'node_id': node_id},
-            'preview': {
-                'old_text': target.content,
-                'new_text': revised.block_by_id(node_id).content,
-            },
-            'patch': {'type': 'writer_ir_patch', 'payload': patch_set.model_dump()},
-            'revised_document': revised,
-        }
-
-    if selection_type != 'markdown':
-        raise ValueError("Markdown artifacts require selection.type='markdown'.")
-    replace_set = StringReplaceSet.model_validate(
-        revision.build_selected_markdown_replace_set(
-            document,
-            instruction,
-            str(selection.get('selected_text') or ''),
-            context,
-        )
-    )
-    replacement = replace_set.replacements[0]
-    output = revision.apply_string_replace(document, replace_set, context)
-    return {
-        'representation': 'markdown',
-        'target': {'type': 'block', 'block_type': 'paragraph'},
-        'preview': {
-            'old_text': replacement.old_string,
-            'new_text': replacement.new_string,
-        },
-        'patch': {'type': 'string_replace_set', 'payload': replace_set.model_dump()},
-        'revised_document_md': output['revised_document_md'],
-    }
+    from .selection import preview_ir, preview_markdown
+    if isinstance(document, str):
+        return preview_markdown(document, instruction, selection_ranges, artifact_store=artifact_store)
+    return preview_ir(document, instruction, selection_ranges, context, artifact_store=artifact_store)
 
 
 class WriterRevisionCapabilities:

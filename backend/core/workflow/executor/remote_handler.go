@@ -59,6 +59,12 @@ type remoteEnvelope struct {
 	Error           map[string]any `json:"error,omitempty"`
 }
 
+type attemptInputReadError struct {
+	Status  int
+	Code    string
+	Message string
+}
+
 func remoteReply(w http.ResponseWriter, status int, data any, code, message string) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
@@ -147,9 +153,9 @@ func (h RemoteHandler) Input(w http.ResponseWriter, r *http.Request) {
 	}
 	items := make([]map[string]any, 0, len(bindings))
 	for _, binding := range bindings {
-		item, message := h.readAttemptInput(r.Context(), materialID, binding)
-		if message != "" {
-			remoteReply(w, 404, nil, "ATTEMPT_INPUT_NOT_FOUND", message)
+		item, readErr := h.readAttemptInput(r.Context(), materialID, binding)
+		if readErr != nil {
+			remoteReply(w, readErr.Status, nil, readErr.Code, readErr.Message)
 			return
 		}
 		items = append(items, item)
@@ -161,7 +167,16 @@ func (h RemoteHandler) Input(w http.ResponseWriter, r *http.Request) {
 	remoteReply(w, 200, map[string]any{"material_id": materialID, "items": items}, "", "")
 }
 
-func (h RemoteHandler) readAttemptInput(ctx context.Context, materialID string, binding map[string]any) (map[string]any, string) {
+func (h RemoteHandler) readAttemptInput(
+	ctx context.Context,
+	materialID string,
+	binding map[string]any,
+) (map[string]any, *attemptInputReadError) {
+	notFound := func(message string) (map[string]any, *attemptInputReadError) {
+		return nil, &attemptInputReadError{
+			Status: http.StatusNotFound, Code: "ATTEMPT_INPUT_NOT_FOUND", Message: message,
+		}
+	}
 	resourceID, _ := binding["source_id"].(string)
 	if binding["source_type"] == "artifact" {
 		var revision orm.WorkflowSlotRevision
@@ -170,11 +185,21 @@ func (h RemoteHandler) readAttemptInput(ctx context.Context, materialID string, 
 			_ = h.DB.WithContext(ctx).Where("id = ?", resourceID).First(&revision).Error
 		}
 		if revision.ID == "" {
-			return nil, "artifact revision was not found"
+			return notFound("artifact revision was not found")
 		}
 		var artifact orm.WorkflowHumanArtifact
 		if revision.HumanArtifactID == nil || h.DB.WithContext(ctx).Where("id = ?", *revision.HumanArtifactID).First(&artifact).Error != nil {
-			return nil, "artifact value was not found"
+			return notFound("artifact value was not found")
+		}
+		expectedHash, _ := binding["content_hash"].(string)
+		if expectedHash = strings.TrimSpace(expectedHash); expectedHash != "" {
+			actualHash := fmt.Sprintf("sha256:%x", sha256.Sum256(artifact.Value))
+			if actualHash != expectedHash {
+				return nil, &attemptInputReadError{
+					Status: http.StatusConflict, Code: "ATTEMPT_INPUT_CHANGED",
+					Message: "artifact input changed after the Attempt was bound",
+				}
+			}
 		}
 		if artifact.ContentType == "file" || artifact.ContentType == "image" {
 			var file struct {
@@ -182,7 +207,7 @@ func (h RemoteHandler) readAttemptInput(ctx context.Context, materialID string, 
 				Path     string `json:"path"`
 			}
 			if json.Unmarshal(artifact.Value, &file) != nil || file.Path == "" {
-				return nil, "artifact file path was not found"
+				return notFound("artifact file path was not found")
 			}
 			// Web-found images and public static-file references are durable artifact
 			// values, not paths in Core's filesystem. Return their metadata unchanged
@@ -193,11 +218,11 @@ func (h RemoteHandler) readAttemptInput(ctx context.Context, materialID string, 
 				return map[string]any{"material_id": materialID,
 					"resource_id": revision.ID, "revision": revision.Revision, "name": revision.Slot + ".json",
 					"mime_type": "application/json", "size": len(artifact.Value),
-					"content_base64": base64.StdEncoding.EncodeToString(artifact.Value)}, ""
+					"content_base64": base64.StdEncoding.EncodeToString(artifact.Value)}, nil
 			}
 			content, readErr := os.ReadFile(file.Path)
 			if readErr != nil {
-				return nil, "artifact file was not found"
+				return notFound("artifact file was not found")
 			}
 			name := file.Filename
 			if name == "" {
@@ -210,21 +235,21 @@ func (h RemoteHandler) readAttemptInput(ctx context.Context, materialID string, 
 			return map[string]any{"material_id": materialID,
 				"resource_id": revision.ID, "revision": revision.Revision, "name": name,
 				"mime_type": mediaType, "size": len(content),
-				"content_base64": base64.StdEncoding.EncodeToString(content)}, ""
+				"content_base64": base64.StdEncoding.EncodeToString(content)}, nil
 		}
 		return map[string]any{"material_id": materialID,
 			"resource_id": revision.ID, "revision": revision.Revision, "name": revision.Slot + ".json",
 			"mime_type": "application/json", "size": len(artifact.Value),
-			"content_base64": base64.StdEncoding.EncodeToString(artifact.Value)}, ""
+			"content_base64": base64.StdEncoding.EncodeToString(artifact.Value)}, nil
 	}
 	var resource orm.WorkflowInputResource
 	if err := h.DB.WithContext(ctx).Where("id = ?", resourceID).First(&resource).Error; err != nil {
-		return nil, "input resource was not found"
+		return notFound("input resource was not found")
 	}
 	return map[string]any{"material_id": materialID, "resource_id": resource.ID,
 		"revision": resource.Revision, "name": resource.Name, "mime_type": resource.MimeType,
 		"size": resource.Size, "content_hash": resource.ContentHash,
-		"content_base64": base64.StdEncoding.EncodeToString(resource.Content)}, ""
+		"content_base64": base64.StdEncoding.EncodeToString(resource.Content)}, nil
 }
 
 func (h RemoteHandler) SaveArtifact(w http.ResponseWriter, r *http.Request) {

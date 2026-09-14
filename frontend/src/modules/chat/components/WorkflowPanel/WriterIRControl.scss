@@ -910,6 +910,46 @@
   margin: 8px 0 0 20px;
 }
 
+.writer-ir__table-scroll {
+  overflow-x: auto;
+}
+
+.writer-ir__table-caption {
+  margin-bottom: 6px;
+  font-weight: 500;
+}
+
+.writer-ir__table-caption:empty {
+  display: none;
+}
+
+.writer-ir__table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+.writer-ir__table-cell {
+  min-width: 96px;
+  padding: 8px 10px;
+  border: 1px solid #d8dee9;
+  line-height: 1.55;
+  text-align: left;
+  vertical-align: top;
+}
+
+.writer-ir__table-cell[data-table-align='center'] {
+  text-align: center;
+}
+
+.writer-ir__table-cell[data-table-align='right'] {
+  text-align: right;
+}
+
+th.writer-ir__table-cell {
+  background: #f7f8fa;
+  font-weight: 600;
+}
+
 // Section body text follows the document margin. Structural nesting is kept
 // in the IR without adding a visual indent after pressing Enter on a heading.
 .writer-ir__block--heading > .writer-ir__children {

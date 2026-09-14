@@ -20,6 +20,7 @@ export interface SlotFooterAction {
   order?: number;
   tone?: 'primary' | 'secondary';
   icon?: 'write-back' | 'download' | 'copy';
+  selectedMenuKey?: string;
   menu?: Array<{ key: string; label: string; onClick: () => void }>;
   statusText?: string;
   statusTone?: 'success' | 'error';

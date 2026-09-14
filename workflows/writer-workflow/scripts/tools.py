@@ -1507,11 +1507,16 @@ def writer_draft_workspace() -> dict:
                     and not target_meta.get('create_pending'):
                 _emit_writer_progress('首次修改已完成，正在提交 GitHub PR')
                 try:
-                    published = writer_replace_document(
+                    converted_document = writer_convert_document(
                         content_path=result['draft_document'],
-                        source_document_path=source_document_path,
                         target_document_path=result['target_document'],
                         media_assets_path=resolved_media or media_assets_path,
+                    )
+                    published = writer_write_document(
+                        converted_document_path=converted_document,
+                        target_document_path=result['target_document'],
+                        media_assets_path=resolved_media or media_assets_path,
+                        mode='replace',
                     )
                 except Exception as exc:  # noqa: BLE001 - keep the draft available for manual retry.
                     LOG.warning('[Writer] Initial GitHub write-back failed: %s', exc)

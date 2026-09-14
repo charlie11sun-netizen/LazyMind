@@ -1763,6 +1763,7 @@ const enUS = {
   // Chat
   chat: {
     writerCopy: {
+      copyContent: "Copy content",
       copyAs: "Copy {{format}}",
       chooseFormat: "Choose copy format",
       markdown: "Markdown",
@@ -2365,12 +2366,10 @@ const enUS = {
       confirmWriteBack: "Write back",
       notionTargetRequired: "Bind a Notion target page first",
       githubTargetRequired: "Provide a GitHub repository, directory, or file link in the conversation first",
-      comingSoon: "Coming soon",
       providers: {
         feishu: "Feishu",
         notion: "Notion",
         wechat: "WeChat Official Account drafts",
-        yuque: "Yuque",
         obsidian: "Obsidian",
         github: "GitHub",
       },

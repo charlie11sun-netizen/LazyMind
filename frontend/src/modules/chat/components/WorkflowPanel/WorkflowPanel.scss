@@ -3871,17 +3871,6 @@
   }
 }
 
-.workflow-writer-provider-picker__fallback-icon {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 22px;
-  height: 22px;
-  border-radius: 5px;
-  background: #f2f4f7;
-  color: #667085;
-}
-
 .workflow-slot__artifact-actions {
   display: flex;
   align-items: center;
@@ -4388,5 +4377,48 @@
       cursor: default;
       pointer-events: none;
     }
+  }
+}
+
+
+.ant-dropdown .ant-dropdown-menu.workflow-panel__format-menu {
+  min-width: 180px;
+  padding: 6px;
+
+  .ant-dropdown-menu-item {
+    min-height: 38px;
+    margin: 4px 0;
+    padding: 8px 12px;
+    border: 1px solid var(--border-color, #e4e7ec);
+    border-radius: 6px;
+    gap: 10px;
+
+    &:hover {
+      border-color: #91caff;
+      background: #f0f7ff;
+    }
+
+    &.ant-dropdown-menu-item-selected {
+      color: #1677ff;
+      border-color: #91caff;
+      background: #e6f4ff;
+      font-weight: 600;
+
+      .workflow-panel__format-radio {
+        border-color: #1677ff;
+        background: #1677ff;
+        box-shadow: inset 0 0 0 3px #fff;
+      }
+    }
+  }
+
+  .workflow-panel__format-radio {
+    display: inline-block;
+    flex: 0 0 16px;
+    width: 16px;
+    height: 16px;
+    border: 1px solid #98a2b3;
+    border-radius: 50%;
+    background: #fff;
   }
 }

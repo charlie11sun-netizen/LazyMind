@@ -116,6 +116,63 @@ func TestEnrichWriterWriteBackSlots_UsesGitHubTarget(t *testing.T) {
 	}
 }
 
+func TestEnrichWriterWriteBackSlots_UsesObsidianTarget(t *testing.T) {
+	db := newTestDB(t)
+	mustCreateWriterRecord(t, db.DB.Create(&orm.WorkflowSession{
+		ID: "session", WorkflowID: "writer-workflow",
+	}).Error)
+	root := t.TempDir()
+	t.Setenv("LAZYMIND_SUBAGENT_WORKSPACE", root)
+	sourcePath := filepath.Join(root, "source_document.md")
+	targetPath := filepath.Join(root, "target_document.json")
+	mustWriteWriterArtifact(t, sourcePath, "# Imported from Obsidian\n")
+	mustWriteWriterArtifact(t, targetPath, `{"data":{"doc_id":"vlt_1:note.md","adapter":"obsidian","uri":"obsidian://vlt_1/note.md","meta":{"local_path":"/mnt/obsidian/obs/note.md"}}}`)
+	source := writerRevision("source", "session", "source_document", 1, "host", writerPathValue(sourcePath))
+	target := writerRevision("target", "session", "target_document", 1, "host", writerPathValue(targetPath))
+	mustCreateWriterRecord(t, db.DB.Create(&source).Error)
+	mustCreateWriterRecord(t, db.DB.Create(&target).Error)
+
+	slots := []slotDTO{toSlotDTO(&source), toSlotDTO(&target)}
+	enrichSlots(context.Background(), db.DB, "session", slots)
+	if slots[0].EditorProfile != writerMarkdownSourceEditor {
+		t.Fatalf("source editor profile = %q, want %q", slots[0].EditorProfile, writerMarkdownSourceEditor)
+	}
+}
+
+func TestEnrichWriterWriteBackSlots_DoesNotUseMarkdownProfileForIRSource(t *testing.T) {
+	for _, provider := range []struct {
+		name    string
+		adapter string
+		uri     string
+	}{
+		{name: "Feishu", adapter: "feishu", uri: "https://tenant.feishu.cn/docx/doc-1"},
+		{name: "Notion", adapter: "notion", uri: "https://app.notion.com/p/page-1"},
+	} {
+		t.Run(provider.name, func(t *testing.T) {
+			db := newTestDB(t)
+			mustCreateWriterRecord(t, db.DB.Create(&orm.WorkflowSession{
+				ID: "session", WorkflowID: "writer-workflow",
+			}).Error)
+			root := t.TempDir()
+			t.Setenv("LAZYMIND_SUBAGENT_WORKSPACE", root)
+			sourcePath := filepath.Join(root, "source_document.lmd")
+			targetPath := filepath.Join(root, "target_document.json")
+			mustWriteWriterArtifact(t, sourcePath, `{"data":{"document_id":"doc-1","blocks":[]}}`)
+			mustWriteWriterArtifact(t, targetPath, `{"data":{"doc_id":"doc-1","adapter":"`+provider.adapter+`","uri":"`+provider.uri+`"}}`)
+			source := writerRevision("source", "session", "source_document", 1, "host", writerPathValue(sourcePath))
+			target := writerRevision("target", "session", "target_document", 1, "host", writerPathValue(targetPath))
+			mustCreateWriterRecord(t, db.DB.Create(&source).Error)
+			mustCreateWriterRecord(t, db.DB.Create(&target).Error)
+
+			slots := []slotDTO{toSlotDTO(&source), toSlotDTO(&target)}
+			enrichSlots(context.Background(), db.DB, "session", slots)
+			if slots[0].EditorProfile != "" {
+				t.Fatalf("source editor profile = %q, want empty for IR source", slots[0].EditorProfile)
+			}
+		})
+	}
+}
+
 func TestEnrichWriterWriteBackSlots_InlineMarkdownInitialDelivery(t *testing.T) {
 	db := newTestDB(t)
 	draft := writerRevision("draft", "session", "flat_draft_document", 1, "human", json.RawMessage(

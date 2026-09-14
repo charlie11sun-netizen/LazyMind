@@ -90,13 +90,14 @@ export interface WriterIRControlProps {
   onRewriteSelection?: (selection: WriterIRRewriteSelection) => void;
   rewriteDialogOpen?: boolean;
   rewritePreview?: WriterIRRewritePreview | null;
-  onRewritePreviewApplied?: (revision?: number) => void;
+  onRewritePreviewApplied?: (revision?: number, draftVersion?: number) => void;
   onRewritePreviewRejected?: () => void;
 }
 
 export interface WriterIRSaveResult {
   document: WriterDocument;
   sourceRevision?: string | number;
+  draftVersion?: number;
 }
 
 function hasEditableWriterBlock(blocks: WriterBlock[]): boolean {
