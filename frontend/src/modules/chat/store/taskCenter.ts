@@ -149,6 +149,17 @@ export interface SubAgentTask {
   writing_subtasks?: WritingSubtask[];
 }
 
+export interface WriterWriteBackNotice {
+  conversation_id: string;
+  session_id: string;
+  slot_id: 'draft_document' | 'flat_draft_document';
+  base_revision: number;
+  revision: number;
+  provider?: string;
+  started_at: number;
+  status: 'loading' | 'success' | 'error' | 'conflict' | 'provider-configuration-required';
+}
+
 function artifactKey(a: TaskArtifact): string {
   return `${a.slot}#${a.seq}`;
 }
@@ -169,6 +180,7 @@ interface TaskCenterStore {
   // tasks keyed by conversation_id, each an ordered list.
   tasksByConversation: Record<string, SubAgentTask[]>;
   artifactsByConversation: Record<string, ConversationArtifact[]>;
+  writerWriteBackByDocument: Record<string, WriterWriteBackNotice>;
   activeConversationId: string;
   // in-flight loadConversationTasks calls keyed by conversation_id.
   _loadingTasks: Record<string, boolean>;
@@ -245,6 +257,7 @@ function stepsToExecutionLog(steps: any[]): TaskLogEntry[] {
 export const useTaskCenterStore = create<TaskCenterStore>()((set, get) => ({
   tasksByConversation: {},
   artifactsByConversation: {},
+  writerWriteBackByDocument: {},
   activeConversationId: '',
   _loadingTasks: {},
   _queuedTaskLoads: {},
@@ -845,6 +858,8 @@ export const useTaskCenterStore = create<TaskCenterStore>()((set, get) => ({
     taskIds.forEach((taskId) => get().unsubscribeTask(taskId));
     get().unsubscribeConvEvents(conversationId);
     set((state) => ({
+      writerWriteBackByDocument: Object.fromEntries(Object.entries(state.writerWriteBackByDocument)
+        .filter(([, notice]) => notice.conversation_id !== conversationId)),
       tasksByConversation: {
         ...state.tasksByConversation,
         [conversationId]: [],
@@ -1014,6 +1029,22 @@ export const useTaskCenterStore = create<TaskCenterStore>()((set, get) => ({
             }
           } else if (type === 'intent_updated') {
             scheduleWorkflowSessionRefresh(conversationId);
+          } else if (type === 'writer_document_write_back') {
+            if (!payload?.session_id
+              || !['draft_document', 'flat_draft_document'].includes(payload.slot_id)
+              || !['loading', 'success', 'error', 'conflict', 'provider-configuration-required'].includes(payload.status)
+              || !Number.isFinite(payload.started_at) || !(payload.base_revision > 0)) return;
+            const key = `${payload.session_id}:${payload.slot_id}`;
+            const notice: WriterWriteBackNotice = { ...payload, conversation_id: conversationId };
+            set((state) => {
+              const previous = state.writerWriteBackByDocument[key];
+              // Reconnection can replay the start of an already finished write.
+              if (previous && (previous.started_at > notice.started_at
+                || (previous.started_at === notice.started_at
+                  && previous.status !== 'loading' && notice.status === 'loading'))) return state;
+              return { writerWriteBackByDocument: { ...state.writerWriteBackByDocument, [key]: notice } };
+            });
+            if (notice.status !== 'loading') scheduleWorkflowSessionRefresh(conversationId);
           } else if (type === 'workflow_artifact_updated') {
             if (!replayed) {
               window.dispatchEvent(

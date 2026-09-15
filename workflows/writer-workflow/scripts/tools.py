@@ -8,6 +8,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import time
 import uuid
 from pathlib import Path
 from typing import Any, Literal, Mapping
@@ -15,6 +16,7 @@ from typing import Any, Literal, Mapping
 from pydantic import BaseModel, ConfigDict
 
 from lazymind.chat.engine.subagent.context import require_context
+from lazymind.chat.engine.tools.infra.core_api_client import get_core_api, post_core_api
 from lazymind.document_tools import execution as _DOCUMENT_EXECUTION
 from lazymind.document_tools import WriterResourceToolkit
 from lazymind.document_tools.artifacts import persist_artifact_json, writer_schema
@@ -1184,6 +1186,68 @@ def _draft_workspace_completion(
     return _state_workspace_completion(result, saved_keys)
 
 
+def _write_back_saved_github_draft(state: dict[str, Any], checkpoint_path: Path | None) -> None:
+    """Finish initial GitHub delivery inside the existing draft step."""
+    result = state['result']
+    if result.get('github_auto_write_back_attempted') or result.get('document_write_result'):
+        return
+    target = _read_json_file(result['target_document'])
+    # Only existing repository documents and Wiki pages are eligible for automatic write-back.
+    if target.get('adapter') != 'github' or (target.get('meta') or {}).get('target_type') not in {'repository', 'wiki'} \
+            or (target.get('meta') or {}).get('create_pending'):
+        return
+    session_id = str((require_context().params or {}).get('session_id') or '').strip()
+    try:
+        if not session_id:
+            raise ValueError('GitHub write-back requires a Writer workflow session.')
+        # save_artifacts streams to Core while this tool is running. Wait until
+        # all outputs (including media) are durable before using the button API.
+        deadline = time.monotonic() + 30
+        while True:
+            slots = get_core_api(f'/workflow-sessions/{session_id}/slots').get('slots') or []
+            saved = {slot['slot_id'] for slot in slots if slot.get('selected')}
+            draft = next((slot for slot in slots if slot.get('slot_id') == 'draft_document'
+                          and slot.get('selected') and slot.get('list_index') is None), {})
+            if draft and set(state['saved_artifact_keys']).issubset(saved):
+                break
+            if time.monotonic() >= deadline:
+                raise TimeoutError('Writer draft outputs have not finished saving.')
+            time.sleep(0.5)
+        if draft.get('provider') == 'github' and draft.get('write_back_state') == 'synced_clean':
+            result['github_auto_write_back_attempted'] = True
+            result['published_link'] = draft.get('write_back_url') or ''
+            return
+        if draft.get('revision') != 1 or draft.get('step_id') != 'write_document' \
+                or draft.get('change_source') not in {'ai', 'host'} \
+                or draft.get('provider') != 'github' \
+                or draft.get('provider_document_id') != target.get('doc_id'):
+            raise ValueError('The saved draft or GitHub target changed before automatic write-back.')
+        # Checkpoint before the external write; a resumed task must not submit it twice.
+        result['github_auto_write_back_attempted'] = True
+        _persist_draft_workspace_state(state, checkpoint_path)
+        _emit_writer_progress('成稿已保存，正在写回 GitHub')
+        response = post_core_api(
+            f'/workflow-sessions/{session_id}/writer-document:write-back',
+            {'slot': 'draft_document', 'base_revision': draft['revision'],
+             'base_draft_version': draft.get('draft_version', 0), 'provider': 'github'},
+        )
+        synced = (response.get('response') or {}).get('data') or {}
+        if synced.get('status') != 'synced' or synced.get('provider_synced') is not True \
+                or synced.get('artifact_saved') is not True \
+                or (synced.get('patch_result') or {}).get('success') is not True:
+            raise ValueError('Writer write-back API did not confirm publication and artifact saving.')
+        published_target = synced.get('target_document') or {}
+        published_meta = published_target.get('meta') or {}
+        result['published_link'] = published_meta.get('pull_request_url') or published_meta.get('browser_url') or ''
+        _emit_writer_progress('GitHub 写回完成，成稿同步状态已保存')
+    except Exception as exc:  # noqa: BLE001 - keep the draft available for manual retry.
+        LOG.warning('[Writer] Initial GitHub write-back failed: %s', exc)
+        result['github_auto_write_back_attempted'] = True
+        warning = 'GitHub 自动写回未完成，草稿已保留，可点击“写回”重试。'
+        result['warnings'] = [*(result.get('warnings') or []), warning]
+        _emit_writer_progress(warning)
+
+
 def writer_draft_workspace() -> dict:
     """Run one existing draft workflow branch through deterministic top-level tools."""
     _emit_writer_progress('正在读取成稿任务与已有 checkpoint')
@@ -1497,40 +1561,6 @@ def writer_draft_workspace() -> dict:
         result.setdefault('target_document', target_document_path)
         if media_assets_path and not result.get('resolved_media_assets'):
             result['resolved_media_assets'] = resolved_media or media_assets_path
-        if command.action in {'revise', 'rewrite'} and source_document_path \
-                and not draft_document_path and not result.get('document_write_result') \
-                and not result.get('github_auto_write_back_attempted'):
-            target = _read_json_file(result['target_document'])
-            target_meta = target.get('meta') or {}
-            if target.get('adapter') == 'github' \
-                    and target_meta.get('target_type') == 'repository' \
-                    and not target_meta.get('create_pending'):
-                _emit_writer_progress('首次修改已完成，正在提交 GitHub PR')
-                try:
-                    converted_document = writer_convert_document(
-                        content_path=result['draft_document'],
-                        target_document_path=result['target_document'],
-                        media_assets_path=resolved_media or media_assets_path,
-                    )
-                    published = writer_write_document(
-                        converted_document_path=converted_document,
-                        target_document_path=result['target_document'],
-                        media_assets_path=resolved_media or media_assets_path,
-                        mode='replace',
-                    )
-                except Exception as exc:  # noqa: BLE001 - keep the draft available for manual retry.
-                    LOG.warning('[Writer] Initial GitHub write-back failed: %s', exc)
-                    warning = 'GitHub 自动写回未完成，草稿已保留，可点击“写回”重试。'
-                    result['warnings'] = [*(result.get('warnings') or []), warning]
-                    _emit_writer_progress(warning)
-                else:
-                    result['document_write_result'] = published['publish_result']
-                    result['draft_document'] = published['draft_document']
-                    result['target_document'] = published['target_document']
-                    result['published_link'] = published['published_link']
-                result['github_auto_write_back_attempted'] = True
-                state['result'] = result
-                _persist_draft_workspace_state(state, checkpoint_path)
     if representation == 'markdown' and target_document_path \
             and result.get('draft_document') \
             and not result.get('markdown_editor_prepared'):
@@ -1552,9 +1582,15 @@ def writer_draft_workspace() -> dict:
     state['result'] = result
     _persist_draft_workspace_state(state, checkpoint_path)
     _emit_writer_progress('成稿校验完成，正在保存工作区结果')
-    saved_keys = _save_draft_workspace_artifacts(result)
-    state['artifacts_saved'] = True
-    state['saved_artifact_keys'] = saved_keys
+    saved_keys = list(state.get('saved_artifact_keys') or [])
+    if not state.get('artifacts_saved'):
+        saved_keys = _save_draft_workspace_artifacts(result)
+        state['artifacts_saved'] = True
+        state['saved_artifact_keys'] = saved_keys
+        _persist_draft_workspace_state(state, checkpoint_path)
+    if representation == 'markdown' and command.action in {'revise', 'rewrite'} \
+            and source_document_path and not draft_document_path and target_document_path:
+        _write_back_saved_github_draft(state, checkpoint_path)
     _persist_draft_workspace_state(state, checkpoint_path, completed=True)
     return _draft_workspace_completion(result, saved_keys)
 
