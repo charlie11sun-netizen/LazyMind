@@ -1192,7 +1192,8 @@ def _write_back_saved_github_draft(state: dict[str, Any], checkpoint_path: Path 
     if result.get('github_auto_write_back_attempted') or result.get('document_write_result'):
         return
     target = _read_json_file(result['target_document'])
-    if target.get('adapter') != 'github' or (target.get('meta') or {}).get('target_type') != 'repository' \
+    # Only existing repository documents and Wiki pages are eligible for automatic write-back.
+    if target.get('adapter') != 'github' or (target.get('meta') or {}).get('target_type') not in {'repository', 'wiki'} \
             or (target.get('meta') or {}).get('create_pending'):
         return
     session_id = str((require_context().params or {}).get('session_id') or '').strip()
