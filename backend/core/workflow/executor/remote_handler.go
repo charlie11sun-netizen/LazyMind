@@ -21,6 +21,7 @@ import (
 	"lazymind/core/common/orm"
 	"lazymind/core/doc"
 	"lazymind/core/workflow/attempt"
+	"lazymind/core/workflow/document"
 )
 
 var unsafeArtifactFilename = regexp.MustCompile(`[^a-zA-Z0-9._-]+`)
@@ -236,6 +237,21 @@ func (h RemoteHandler) readAttemptInput(
 				"resource_id": revision.ID, "revision": revision.Revision, "name": name,
 				"mime_type": mediaType, "size": len(content),
 				"content_base64": base64.StdEncoding.EncodeToString(content)}, nil
+		}
+		// Editor revisions store Markdown inline. Export the document bytes, not
+		// the persistence envelope, so file consumers retain the .md contract.
+		contentType := strings.ToLower(strings.TrimSpace(strings.SplitN(artifact.ContentType, ";", 2)[0]))
+		if contentType == "text/markdown" || contentType == "markdown" {
+			content, failure := document.ReadContent(artifact.Value, artifact.ContentType, func() (bool, error) { return false, nil })
+			var markdown string
+			if failure != nil || content == nil || content.Representation != "markdown" || json.Unmarshal(content.Value, &markdown) != nil {
+				return nil, &attemptInputReadError{Status: http.StatusUnprocessableEntity,
+					Code: "ATTEMPT_INPUT_INVALID", Message: "Markdown artifact input is invalid"}
+			}
+			return map[string]any{"material_id": materialID,
+				"resource_id": revision.ID, "revision": revision.Revision, "name": revision.Slot + ".md",
+				"mime_type": "text/markdown", "size": len(markdown),
+				"content_base64": base64.StdEncoding.EncodeToString([]byte(markdown))}, nil
 		}
 		return map[string]any{"material_id": materialID,
 			"resource_id": revision.ID, "revision": revision.Revision, "name": revision.Slot + ".json",

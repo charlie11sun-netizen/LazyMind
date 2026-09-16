@@ -22,6 +22,7 @@ type GuideStep = {
   description: string;
   imagePath: string;
   alt: string;
+  additionalImage?: { path: string; alt: string };
   details?: string[];
   linkLabel?: string;
   linkHref?: string;
@@ -44,6 +45,16 @@ function buildGuideSteps(t: TFunction): GuideStep[] {
       details: [t(stepKey("credentialsDetail"))],
       imagePath: "/docs/wechat-setup/step-02.png",
       alt: t(stepKey("credentialsAlt")),
+    },
+    {
+      title: t(stepKey("accountSetupTitle")),
+      description: t(stepKey("accountSetupDesc")),
+      imagePath: "/docs/wechat-setup/step-03-account.png",
+      alt: t(stepKey("accountSetupAlt")),
+      additionalImage: {
+        path: "/docs/wechat-setup/step-03-egress-ip.png",
+        alt: t(stepKey("egressIpAlt")),
+      },
     },
     {
       title: t(stepKey("ipWhitelistTitle")),
@@ -207,6 +218,14 @@ export default function WeChatSetupGuide() {
                   zoomMask={t("modelProvider.wechatOfficialAccountSetupGuide.zoomMask")}
                   placeholderTitle={t("modelProvider.wechatOfficialAccountSetupGuide.imagePlaceholder")}
                 />
+                {step.additionalImage ? (
+                  <GuideImage
+                    path={step.additionalImage.path}
+                    alt={step.additionalImage.alt}
+                    zoomMask={t("modelProvider.wechatOfficialAccountSetupGuide.zoomMask")}
+                    placeholderTitle={t("modelProvider.wechatOfficialAccountSetupGuide.imagePlaceholder")}
+                  />
+                ) : null}
               </figure>
             </article>
           ))}

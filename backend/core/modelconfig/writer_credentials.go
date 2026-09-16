@@ -90,6 +90,11 @@ func LoadWriterProviderToolConfig(ctx context.Context, provider, userID string) 
 		return nil, err
 	}
 	if len(tokens) == 0 {
+		// Known cloud providers cannot write without an authorized connection.
+		// Local/custom providers may legitimately require no cloud credentials.
+		if IsCloudToolProvider(provider) {
+			return nil, errWriterCredentialLoad
+		}
 		return nil, nil
 	}
 	if len(tokens) == 1 {

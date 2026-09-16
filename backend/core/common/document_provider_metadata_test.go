@@ -40,3 +40,19 @@ func TestLocalEditCannotStageProviderIdentityInjection(t *testing.T) {
 		}
 	}
 }
+
+func TestMarkdownEditsAfterIRPublicationPreserveCloudTarget(t *testing.T) {
+	previous := json.RawMessage(`{"schema":"application/vnd.lazymind.writer+json","data":{"document_id":"published","blocks":[]},"meta":{"lazymind_provider_sync":{"provider":"feishu","confirmed":true,"target_document":{"adapter":"feishu","doc_id":"test-target"}}}}`)
+	edited := json.RawMessage(`{"schema":"text/markdown","text":"# New local edits"}`)
+	var value map[string]any
+	if err := json.Unmarshal(PreserveDocumentProviderMetadata(previous, edited), &value); err != nil {
+		t.Fatal(err)
+	}
+	if value["schema"] != "text/markdown" || value["data"] != "# New local edits" {
+		t.Fatalf("local Markdown representation changed: %v", value)
+	}
+	sync := value["meta"].(map[string]any)["lazymind_provider_sync"].(map[string]any)
+	if sync["confirmed"] != false || sync["provider"] != "feishu" || sync["target_document"].(map[string]any)["doc_id"] != "test-target" {
+		t.Fatalf("publication target or local edit state lost: %v", sync)
+	}
+}

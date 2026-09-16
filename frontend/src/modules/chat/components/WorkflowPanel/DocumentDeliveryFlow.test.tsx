@@ -1,3 +1,4 @@
+vi.mock('./writerLocalSourcePlugin', () => ({ writerLocalSourcePlugin: () => ({}), writerLocalCodeEditor: {} }));
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import { SlotRenderer, SlotEditingContext } from './SlotComponents';
@@ -22,6 +23,7 @@ vi.mock('@mdxeditor/editor', async () => {
     }} />;
   });
   return { MDXEditor, BlockTypeSelect: control, BoldItalicUnderlineToggles: control, ListsToggle: control, GenericJsxEditor: control,
+    realmPlugin: () => plugin,
     codeBlockPlugin: plugin, codeMirrorPlugin: plugin, frontmatterPlugin: plugin, headingsPlugin: plugin, imagePlugin: plugin,
     jsxPlugin: plugin, linkDialogPlugin: plugin, linkPlugin: plugin, listsPlugin: plugin, markdownShortcutPlugin: plugin,
     quotePlugin: plugin, tablePlugin: plugin, thematicBreakPlugin: plugin, toolbarPlugin: plugin };
@@ -29,14 +31,14 @@ vi.mock('@mdxeditor/editor', async () => {
 vi.mock('./WriterIRDocumentEditor', async (original) => ({
   ...await original<typeof import('./WriterIRDocumentEditor')>(),
   WriterIRDocumentEditor: (props: { document: Record<string, unknown>; onChange: (next: Record<string, unknown>) => void }) =>
-    <textarea aria-label='IR editing surface' value={JSON.stringify(props.document)} onChange={() => props.onChange({
-      ...props.document, blocks: [{ node_id: 'p', type: 'paragraph', content: 'Edited IR' }],
+    <textarea aria-label='IR editing surface' value={JSON.stringify(props.document)} onChange={event => props.onChange({
+      ...props.document, blocks: [{ node_id: 'p', type: 'paragraph', content: event.currentTarget.value }],
     })} />,
 }));
 vi.mock('./FilePreviewDrawer', () => ({ FilePreviewDrawer: () => null }));
 vi.mock('@/modules/chat/components/MarkdownViewer', () => ({ default: ({ children }: { children: string }) => <div>{children}</div> }));
 const api = vi.hoisted(() => ({
-  listDocumentProviders: vi.fn(), saveDocumentArtifact: vi.fn(), publishDocument: vi.fn(), getSlots: vi.fn(),
+  getPublicationForArtifact: vi.fn(), listDocumentProviders: vi.fn(), saveDocumentArtifact: vi.fn(), publishDocument: vi.fn(), getSlots: vi.fn(),
 }));
 const confirm = vi.hoisted(() => vi.fn());
 vi.mock('@/modules/chat/utils/request', async (original) => ({
@@ -51,6 +53,7 @@ afterEach(() => vi.useRealTimers());
 
 beforeEach(() => {
   vi.clearAllMocks();
+  api.getPublicationForArtifact.mockResolvedValue({ data: { data: {} } });
   api.getSlots.mockResolvedValue({ data: { data: { slots: [] } } });
   api.listDocumentProviders.mockResolvedValue({ data: { data: { providers: [{ id: 'future-provider', capabilities: ['create', 'replace', 'patch'] }] } } });
   api.saveDocumentArtifact.mockImplementation(async (_id, body) => ({ data: { contract_version: 'workflow.v1', ok: true, result: {
@@ -83,7 +86,7 @@ for (const representation of ['markdown', 'ir'] as const) {
       const editButton = screen.queryAllByRole('button', { name: /^(编辑|Edit)$/i })[0];
       if (editButton) fireEvent.click(editButton);
       const editor = await screen.findByRole('textbox', { name: representation === 'markdown' ? 'markdown editing surface' : 'IR editing surface' });
-      fireEvent.change(editor, { target: { value: representation === 'markdown' ? '# Edited markdown' : 'edit' } });
+      fireEvent.change(editor, { target: { value: representation === 'markdown' ? '# Edited markdown' : 'Edited IR' } });
       await waitFor(() => expect(action?.flushKey).toBeTruthy());
       const beforeFlushAction = action!;
       expect(beforeFlushAction.flushBeforeAction).toBe(true); // The real panel captures onClick before awaiting flush.
@@ -105,8 +108,7 @@ for (const representation of ['markdown', 'ir'] as const) {
       expect(saved).toBe(true);
       vi.useFakeTimers();
       act(() => beforeFlushAction.onClick());
-      expect(confirm).toHaveBeenCalled();
-      await act(async () => { await confirm.mock.calls[confirm.mock.calls.length - 1][0].onOk(); });
+      expect(confirm).not.toHaveBeenCalled();
       await act(async () => { await vi.advanceTimersByTimeAsync(20_000); });
       expect(api.publishDocument).toHaveBeenCalledTimes(1);
       const [id, body] = api.publishDocument.mock.calls[0];
@@ -114,10 +116,9 @@ for (const representation of ['markdown', 'ir'] as const) {
       expect(body).toEqual(expect.objectContaining({ base_revision: 4, base_draft_version: 1,
         input: expect.objectContaining({ provider: 'future-provider', idempotency_key: expect.any(String) }) }));
       const key = body.input.idempotency_key;
-      // A second confirmation can only replay the same operation, never mint a
-      // new key after an ambiguous write; automatically retrying is forbidden.
+      // An explicit retry can only replay the same operation; never auto-write.
       expect(api.publishDocument).toHaveBeenCalledTimes(1);
-      await act(async () => { await confirm.mock.calls[confirm.mock.calls.length - 1][0].onOk(); });
+      await act(async () => { beforeFlushAction.onClick(); });
       if (api.publishDocument.mock.calls.length > 1) {
         expect(api.publishDocument.mock.calls[1][1].input.idempotency_key).toBe(key);
       }
@@ -137,9 +138,39 @@ it.each(['markdown', 'ir'])('%s editing surface control uses the real registered
       blocks: [{ node_id: 'p', type: 'paragraph', content: 'Original IR' }] }} editingKey='control' sourceRevision={3} onSave={save} />
   }</SlotEditingContext.Provider>);
   const editor = await screen.findByRole('textbox', { name: kind === 'markdown' ? 'markdown editing surface' : 'IR editing surface' });
-  fireEvent.change(editor, { target: { value: '# Edited markdown' } });
+  fireEvent.change(editor, { target: { value: kind === 'markdown' ? '# Edited markdown' : 'Edited IR' } });
   await waitFor(() => expect(flush).toBeTypeOf('function'));
   await act(async () => { expect(await flush!()).toBe(true); });
   expect(save).toHaveBeenCalledTimes(1);
   expect(JSON.stringify(save.mock.calls[0])).toContain(kind === 'markdown' ? 'Edited markdown' : 'Edited IR');
+});
+
+it.each(['markdown', 'ir'] as const)('%s: keeps new edits while a fixed version is publishing and resumes autosave on the returned identity', async representation => {
+  let finish!: (value: unknown) => void;
+  api.publishDocument.mockImplementationOnce(() => new Promise(resolve => { finish = resolve; }));
+  const ir = { document_id: 'ir', title: 'Fixture', stage: 'draft', ui_editable: true, blocks: [{ node_id: 'p', type: 'paragraph', content: 'Original' }] };
+  const original = representation === 'markdown' ? '# Original' : ir;
+  let action: SlotFooterAction | undefined;
+  const slot = { artifact_id: 'before-publish', slot_id: 'unknown-slot', slot: 'unknown-slot', revision: 3, draft_version: 7,
+    selected: true, created_at: '2026-09-12T00:00:00Z', content_type: representation === 'markdown' ? 'text/markdown' : 'json', artifact_value: { data: original },
+    document: { representation, schema: '', editable: true, capabilities: ['save', 'publish_document'] } };
+  render(<SlotEditingContext.Provider value={{ setEditing: vi.fn(), registerFlush: () => () => {},
+    registerFooterAction: (_key, next) => { if (next?.icon === 'write-back') action = next; return () => {}; },
+  }}><SlotRenderer slot={slot} sessionId='unknown-session' /></SlotEditingContext.Provider>);
+  const editor = await screen.findByRole('textbox', { name: representation === 'markdown' ? 'markdown editing surface' : 'IR editing surface' });
+  await waitFor(() => expect(action?.disabled).toBe(false));
+  act(() => action!.onClick());
+  await waitFor(() => expect(api.publishDocument).toHaveBeenCalledTimes(1));
+  fireEvent.change(editor, { target: { value: '发布期间新增中文' } });
+  await act(async () => { await new Promise(resolve => setTimeout(resolve, 1100)); });
+  expect(api.saveDocumentArtifact).not.toHaveBeenCalled();
+  expect(editor).not.toBeDisabled();
+  await act(async () => finish({ data: { data: { artifact_id: 'published-identity', revision: 4, draft_version: 1,
+    document: original, provider_synced: true, artifact_saved: true } } }));
+  expect((editor as HTMLTextAreaElement).value).toContain('发布期间新增中文');
+  await waitFor(() => expect(api.saveDocumentArtifact).toHaveBeenCalledTimes(1), { timeout: 2500 });
+  expect(api.saveDocumentArtifact.mock.calls[0][0]).toBe('published-identity');
+  expect(api.saveDocumentArtifact.mock.calls[0][1]).toMatchObject({ base_revision: 4, base_draft_version: 1 });
+  expect(JSON.stringify(api.saveDocumentArtifact.mock.calls[0][1].value)).toContain('发布期间新增中文');
+  expect(action?.statusText).toMatch(/新修改尚未发布|new edits are not published/i);
 });

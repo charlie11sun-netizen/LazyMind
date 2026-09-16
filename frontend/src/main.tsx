@@ -1,3 +1,5 @@
+// Shared editor language chunks require the Prism global during module evaluation.
+import "prismjs";
 import { createRoot } from "react-dom/client";
 import App from "./App";
 import GlobalErrorBoundary from "./components/GlobalErrorBoundary";

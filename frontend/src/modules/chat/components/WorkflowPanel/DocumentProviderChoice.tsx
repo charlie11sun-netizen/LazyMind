@@ -12,6 +12,12 @@ function ObsidianIcon() {
     : <img src='https://obsidian.md/images/obsidian-logo-gradient.svg' alt='' aria-hidden='true' onError={() => setFailed(true)} />;
 }
 
+export function WriterProviderIcon({ provider }: { provider: string }) {
+  const config = cloudProviderOptions.find((item) => item.type === provider);
+  return provider === 'github' ? <GithubOutlined aria-hidden='true' /> : provider === 'obsidian' ? <ObsidianIcon />
+    : config?.logoUrl ? <img src={config.logoUrl} alt='' aria-hidden='true' /> : config?.icon ?? <FolderOpenOutlined aria-hidden='true' />;
+}
+
 // Provider IDs and eligibility come from the registry. Known icons are only
 // presentation; the optional old props remain compatible with older callers.
 export function WriterProviderChoice({ initialProvider, githubEnabled, providers, onChange }: {
@@ -24,13 +30,11 @@ export function WriterProviderChoice({ initialProvider, githubEnabled, providers
     <Radio.Group value={value} className='workflow-writer-provider-picker__options'
       onChange={(event: RadioChangeEvent) => { setValue(event.target.value); onChange(event.target.value); }}>
       {ids.map((id) => {
-        const config = cloudProviderOptions.find((item) => item.type === id);
         const disabled = providers === undefined && id === 'github' && !githubEnabled;
         const key = `chat.writerIR.providers.${id}`;
         return <Radio key={id} value={id} disabled={disabled}>
           <span className='workflow-writer-provider-picker__option'>
-            {id === 'github' ? <GithubOutlined aria-hidden='true' /> : id === 'obsidian' ? <ObsidianIcon />
-              : config?.logoUrl ? <img src={config.logoUrl} alt='' aria-hidden='true' /> : config?.icon}
+            <WriterProviderIcon provider={id} />
             <span>{i18n.exists(key) ? i18n.t(key) : id}</span>
             {disabled && <small>{i18n.t('chat.writerIR.githubTargetRequired')}</small>}
           </span>

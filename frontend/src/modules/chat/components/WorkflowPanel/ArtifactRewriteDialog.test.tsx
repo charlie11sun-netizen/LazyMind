@@ -1,4 +1,5 @@
-import { fireEvent, render, screen, waitFor, cleanup } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor, cleanup } from '@testing-library/react';
+import { useState } from 'react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const workflowApi = vi.hoisted(() => ({ patchSlotItem: vi.fn(), previewRewriteSelection: vi.fn(), executeArtifactAction: vi.fn() }));
@@ -33,6 +34,14 @@ const selection: ArtifactRewriteSelection = {
   anchor: { top: 120, left: 240, placement: 'above' },
 };
 
+const readyPreview = {
+  status: 'ready', action: 'rewrite_selection', base_revision: 1, representation: 'markdown',
+  target: { type: 'block', block_type: 'paragraph' },
+  preview: { old_text: 'Selected text', new_text: 'Clear text' },
+  patch: { type: 'string_replace_set', payload: {} },
+  artifact: { content_type: 'text/markdown', value: 'Clear text' },
+} as const;
+
 function renderDialog(requestPreview = vi.fn()) {
   render(
     <ArtifactRewriteDialog
@@ -55,6 +64,76 @@ describe('ArtifactRewriteDialog', () => {
     workflowApi.patchSlotItem.mockReset();
     previewApi.mockReset();
     executeApi.mockReset();
+  });
+
+  it.each(['markdown', 'ir'] as const)('shows non-blocking progress in the %s document until preview is ready', async type => {
+    const host = document.createElement('div'); host.className = 'workflow-slot__artifact-body';
+    host.innerHTML = '<div contenteditable="true" tabindex="0"><p>Selected text</p><p>Other content</p></div>';
+    document.body.append(host);
+    const editor = host.firstElementChild as HTMLElement;
+    editor.focus();
+    let finish!: (value: typeof readyPreview) => void;
+    const request = vi.fn(() => new Promise<typeof readyPreview>(resolve => { finish = resolve; }));
+    const onReady = vi.fn();
+    const picked: ArtifactRewriteSelection = type === 'markdown'
+      ? { ...selection, paragraph: editor.querySelector('p')! }
+      : { type: 'ir', node_id: 'p1', selectedText: 'Selected text' };
+    function Form() {
+      const [open, setOpen] = useState(true);
+      return <ArtifactRewriteDialog open={open} sessionId='session' slotId='draft_document' listIndex={0} baseRevision={1}
+        selection={picked} onClose={() => setOpen(false)} onApplied={vi.fn()} onPreviewReady={onReady} requestPreview={request} />;
+    }
+    try {
+      render(<Form />);
+      fireEvent.change(screen.getByRole('textbox', { name: 'chat.artifactRewrite.instruction' }), { target: { value: 'Make clearer' } });
+      fireEvent.click(screen.getByRole('button', { name: 'chat.artifactRewrite.preview' }));
+      expect(screen.getByRole('status')).toHaveTextContent('chat.artifactRewrite.previewing');
+      expect(screen.getByRole('status')).toHaveTextContent('chat.writerLocal.loadingCount');
+      expect(screen.getByRole('status').parentElement).toBe(host);
+      expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+      expect(screen.queryByRole('textbox', { name: 'chat.artifactRewrite.instruction' })).not.toBeInTheDocument();
+      fireEvent.mouseDown(editor); editor.focus();
+      editor.querySelectorAll('p')[1].textContent = 'Edited while waiting';
+      fireEvent.input(editor);
+      expect(editor).toHaveAttribute('contenteditable', 'true');
+      expect(editor).toHaveFocus();
+      expect(request).toHaveBeenCalledTimes(1);
+      await act(async () => finish(readyPreview));
+      expect(screen.queryByRole('status')).not.toBeInTheDocument();
+      expect(onReady).toHaveBeenCalledWith(readyPreview);
+      expect(editor).toHaveTextContent('Edited while waiting');
+      expect(editor).toHaveFocus();
+    } finally { cleanup(); host.remove(); }
+  });
+
+  it('replaces loading with a retryable error and keeps the polishing instruction', async () => {
+    let fail!: (reason: Error) => void;
+    const request = vi.fn(() => new Promise<never>((_, reject) => { fail = reject; }));
+    renderDialog(request);
+    fireEvent.change(screen.getByRole('textbox'), { target: { value: 'Keep my instruction' } });
+    fireEvent.click(screen.getByRole('button', { name: 'chat.artifactRewrite.preview' }));
+    expect(screen.getByRole('status')).toBeInTheDocument();
+    await act(async () => fail(new Error('request failed')));
+    expect(screen.queryByRole('status')).not.toBeInTheDocument();
+    expect(screen.getByRole('alert')).toHaveTextContent('chat.artifactRewrite.errors.previewFailed');
+    expect(screen.getByRole('textbox')).toHaveValue('Keep my instruction');
+    expect(screen.getByRole('button', { name: 'chat.artifactRewrite.preview' })).toBeEnabled();
+  });
+
+  it('removes progress on unmount and ignores a late preview response', async () => {
+    let finish!: (value: typeof readyPreview) => void;
+    const request = vi.fn(() => new Promise<typeof readyPreview>(resolve => { finish = resolve; }));
+    const onReady = vi.fn(), onClose = vi.fn();
+    const view = render(<ArtifactRewriteDialog open sessionId='session' slotId='draft_document' listIndex={0} baseRevision={1}
+      selection={selection} onClose={onClose} onApplied={vi.fn()} onPreviewReady={onReady} requestPreview={request} />);
+    fireEvent.change(screen.getByRole('textbox'), { target: { value: 'Make clearer' } });
+    fireEvent.click(screen.getByRole('button', { name: 'chat.artifactRewrite.preview' }));
+    expect(screen.getByRole('status')).toBeInTheDocument();
+    view.unmount();
+    expect(screen.queryByRole('status')).not.toBeInTheDocument();
+    await act(async () => finish(readyPreview));
+    expect(onReady).not.toHaveBeenCalled();
+    expect(onClose).not.toHaveBeenCalled();
   });
 
   it.each([
@@ -122,6 +201,40 @@ describe('ArtifactRewriteDialog', () => {
     fireEvent.change(input, { target: { value: '   ' } });
     expect(submit).toBeDisabled();
     fireEvent.keyDown(input, { key: 'Enter' });
+    expect(requestPreview).not.toHaveBeenCalled();
+  });
+
+  it('prepares a selected preset without submitting and clears its selected state after a custom edit', () => {
+    const requestPreview = renderDialog();
+    const preset = screen.getByRole('button', { name: 'chat.writerLocal.concise' });
+    fireEvent.click(preset);
+    expect(screen.getByRole('textbox')).toHaveValue('chat.writerLocal.concise');
+    expect(preset).toHaveAttribute('aria-pressed', 'true');
+    expect(requestPreview).not.toHaveBeenCalled();
+    expect(fireEvent.keyDown(preset, { key: 'Enter' })).toBe(true);
+    expect(requestPreview).not.toHaveBeenCalled();
+    fireEvent.change(screen.getByRole('textbox'), { target: { value: 'A custom instruction' } });
+    expect(preset).toHaveAttribute('aria-pressed', 'false');
+  });
+
+  it('allows a line break and IME confirmation without sending, then submits the complete instruction', async () => {
+    const requestPreview = renderDialog(vi.fn().mockResolvedValue(readyPreview));
+    const input = screen.getByRole('textbox');
+    fireEvent.change(input, { target: { value: '保留原意' } });
+    expect(fireEvent.keyDown(input, { key: 'Enter', shiftKey: true })).toBe(true);
+    fireEvent.keyDown(input, { key: 'Enter', isComposing: true, keyCode: 229 });
+    expect(requestPreview).not.toHaveBeenCalled();
+    fireEvent.change(input, { target: { value: '保留原意\n语言更自然' } });
+    fireEvent.keyDown(input, { key: 'Enter' });
+    await waitFor(() => expect(requestPreview).toHaveBeenCalledWith('保留原意\n语言更自然', selection));
+  });
+
+  it('offers an explicit close action without generating a preview', () => {
+    const onClose = vi.fn(), requestPreview = vi.fn();
+    render(<ArtifactRewriteDialog open sessionId='session' slotId='draft_document' listIndex={0} baseRevision={1}
+      selection={selection} onClose={onClose} onApplied={vi.fn()} requestPreview={requestPreview} />);
+    fireEvent.click(screen.getByRole('button', { name: 'chat.artifactRewrite.close' }));
+    expect(onClose).toHaveBeenCalledTimes(1);
     expect(requestPreview).not.toHaveBeenCalled();
   });
 

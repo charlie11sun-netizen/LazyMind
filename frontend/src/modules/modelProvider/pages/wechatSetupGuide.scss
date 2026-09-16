@@ -23,3 +23,9 @@
   max-width: 100%;
   overflow-wrap: anywhere;
 }
+
+.wechat-setup-guide-page .feishu-setup-guide-step figure {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}

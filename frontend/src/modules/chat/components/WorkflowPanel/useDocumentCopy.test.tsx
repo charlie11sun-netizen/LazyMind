@@ -53,7 +53,8 @@ describe('document copy', () => {
     expect(mocks.convert).toHaveBeenCalledWith('session', 'custom_article', -1, 4, 'markdown', '# Unsaved');
     expect(flush).not.toHaveBeenCalled();
     expect(action.flushBeforeAction).toBeUndefined();
-    expect(mocks.success).toHaveBeenCalledTimes(1);
+    expect(action.label).toContain('chat.writerCopy.success');
+    expect(mocks.success).not.toHaveBeenCalled();
   });
 
   it('identifies shared read-only sources without merging independent editors', () => {
@@ -65,13 +66,14 @@ describe('document copy', () => {
 
   it('remembers the selected format and supports one-click reuse', async () => {
     render(<Harness />, { wrapper });
-    const label = action.label;
+
+    expect(action.label).toBe('chat.writerCopy.copyContent');
     expect(action.selectedMenuKey).toBe('markdown');
     act(() => action.menu?.find((item) => item.key === 'latex')?.onClick());
     await waitFor(() => expect(writeText).toHaveBeenCalledTimes(1));
     expect(localStorage.getItem('writer-copy-format')).toBe('latex');
     expect(action.selectedMenuKey).toBe('latex');
-    expect(action.label).toBe(label);
+    expect(action.label).toBe('chat.writerCopy.success');
     act(() => action.onClick());
     await waitFor(() => expect(writeText).toHaveBeenCalledTimes(2));
     expect(mocks.convert.mock.calls[1][4]).toBe('latex');
@@ -92,7 +94,8 @@ describe('document copy', () => {
     expect(mocks.confirm.mock.calls[0][0].content.props.value).toBe('converted content');
     await act(async () => { await mocks.confirm.mock.calls[0][0].onOk(); });
     expect(mocks.convert).toHaveBeenCalledTimes(1);
-    expect(mocks.success).toHaveBeenCalledTimes(1);
+    expect(action.label).toContain('chat.writerCopy.success');
+    expect(mocks.success).not.toHaveBeenCalled();
   });
 
   it('does not touch the clipboard when conversion fails', async () => {

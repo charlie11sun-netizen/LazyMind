@@ -155,7 +155,7 @@ func TestDocumentRewriteCompatibilityRejectsBadResults(t *testing.T) {
 
 func TestDocumentRewriteCompatibilityKeepsPublicSingleSelection(t *testing.T) {
 	for _, representation := range []string{"markdown", "ir"} {
-		for _, kind := range []string{"array input", "additional range", "offset injection"} {
+		for _, kind := range []string{"additional range", "offset injection"} {
 			t.Run(representation+kind, func(t *testing.T) {
 				f := newRewriteFixture(t, representation)
 				server := newRewriteServer(t, f)

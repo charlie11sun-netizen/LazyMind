@@ -60,8 +60,10 @@ func (selection *DocumentRewriteSelection) UnmarshalJSON(raw []byte) error {
 }
 
 type DocumentRewritePreviewInput struct {
-	Instruction string                    `json:"instruction"`
-	Selection   *DocumentRewriteSelection `json:"selection" required:"true"`
+	Instruction     string                       `json:"instruction"`
+	Selection       *DocumentRewriteSelection    `json:"selection,omitempty"`
+	Type            string                       `json:"type,omitempty"`
+	SelectionRanges []map[string]json.RawMessage `json:"selection_ranges,omitempty"`
 }
 type DocumentRewriteExecuteInput struct {
 	CommitToken string `json:"commit_token"`
@@ -108,22 +110,26 @@ type DocumentRewritePreviewResult struct {
 	Commit         *DocumentRewriteCommit  `json:"commit" required:"true"`
 }
 
-// Algorithm accepts ranges and returns per-block results. Keep this wire
-// contract separate from the public single-selection API.
-type documentRewritePreviewAlgorithmResult struct {
-	Representation string `json:"representation"`
-	Results        []struct {
-		Target *struct {
-			DocumentRewriteTarget
-			TargetStart *int `json:"target_start,omitempty"`
-			TargetEnd   *int `json:"target_end,omitempty"`
-		} `json:"target"`
-		Preview *DocumentRewritePreview `json:"preview"`
-		Patch   *DocumentRewritePatch   `json:"patch"`
-	} `json:"results"`
-	Artifact *DocumentActionArtifact `json:"artifact"`
-	Commit   *DocumentRewriteCommit  `json:"commit"`
+// Public array branch preserves the Algorithm target coordinates.
+type DocumentRewriteRangeTarget struct {
+	Type        string  `json:"type" enum:"block"`
+	BlockType   string  `json:"block_type"`
+	NodeID      *string `json:"node_id,omitempty"`
+	TargetStart *int    `json:"target_start,omitempty"`
+	TargetEnd   *int    `json:"target_end,omitempty"`
 }
+type DocumentRewriteRangeResult struct {
+	Target  *DocumentRewriteRangeTarget `json:"target" required:"true"`
+	Preview *DocumentRewritePreview     `json:"preview" required:"true"`
+	Patch   *DocumentRewritePatch       `json:"patch" required:"true"`
+}
+type DocumentRewriteRangesResult struct {
+	Representation string                       `json:"representation"`
+	Results        []DocumentRewriteRangeResult `json:"results" required:"true"`
+	Artifact       *DocumentActionArtifact      `json:"artifact" required:"true"`
+	Commit         *DocumentRewriteCommit       `json:"commit" required:"true"`
+}
+type documentRewritePreviewAlgorithmResult = DocumentRewriteRangesResult
 
 type documentRewriteAlgorithmResult struct {
 	Representation string                  `json:"representation"`
@@ -175,6 +181,7 @@ type documentActionRequest struct {
 	baseDraftVersion *int64
 	arguments        any
 	selectionType    string
+	arrayInput       bool
 }
 type documentActionContext struct {
 	db       *gorm.DB
@@ -246,8 +253,16 @@ func runDocumentRewrite(w http.ResponseWriter, r *http.Request, phase, owner str
 		request.baseRevision = body.BaseRevision
 		request.baseDraftVersion = body.BaseDraftVersion
 		if !invalid {
-			invalid = strings.TrimSpace(body.Input.Instruction) == "" || body.Input.Selection == nil
-			if !invalid {
+			invalid = strings.TrimSpace(body.Input.Instruction) == ""
+			if !invalid && body.Input.Selection == nil {
+				ranges, rangeErr := documentRewriteRanges(body.Input)
+				invalid = rangeErr != nil
+				request.arrayInput = true
+				request.selectionType = body.Input.Type
+				request.arguments = map[string]any{"instruction": body.Input.Instruction, "type": body.Input.Type, "selection_ranges": ranges}
+			} else if !invalid {
+				invalid = body.Input.Type != "" || body.Input.SelectionRanges != nil
+
 				request.selectionType = body.Input.Selection.Type
 				selection := map[string]string{"node_id": body.Input.Selection.NodeID}
 				if request.selectionType == "markdown" {
@@ -295,6 +310,10 @@ func runDocumentRewrite(w http.ResponseWriter, r *http.Request, phase, owner str
 		replyDocumentFailure(w, documentFailure("DOCUMENT_ACTION_INVALID", 400))
 		return
 	}
+	if request.arrayInput && !validDocumentRewriteRangeSource(request.arguments, target.content) {
+		replyDocumentFailure(w, documentFailure("DOCUMENT_ACTION_INVALID", 400))
+		return
+	}
 	var config map[string]any
 	if phase == "preview" {
 		config, err = modelconfig.LoadLLMConfig(r.Context(), target.db, owner)
@@ -321,13 +340,24 @@ func runDocumentRewrite(w http.ResponseWriter, r *http.Request, phase, owner str
 	}
 	if phase == "preview" {
 		var result documentRewritePreviewAlgorithmResult
-		if decodeDocumentJSON(bytes.NewReader(response.Result), &result) != nil || len(result.Results) != 1 || result.Results[0].Target == nil {
+		if decodeDocumentJSON(bytes.NewReader(response.Result), &result) != nil || len(result.Results) == 0 || (!request.arrayInput && len(result.Results) != 1) {
 			replyDocumentFailure(w, documentFailure("DOCUMENT_ACTION_RESULT_INVALID", 502))
 			return
 		}
+		for _, item := range result.Results {
+			if item.Target == nil {
+				replyDocumentFailure(w, documentFailure("DOCUMENT_ACTION_RESULT_INVALID", 502))
+				return
+			}
+			checked := DocumentRewritePreviewResult{Representation: result.Representation, Target: &DocumentRewriteTarget{Type: item.Target.Type, BlockType: item.Target.BlockType, NodeID: item.Target.NodeID}, Preview: item.Preview, Patch: item.Patch, Artifact: result.Artifact, Commit: result.Commit}
+			if !validDocumentPreview(checked, target.content.Representation) {
+				replyDocumentFailure(w, documentFailure("DOCUMENT_ACTION_RESULT_INVALID", 502))
+				return
+			}
+		}
 		item := result.Results[0]
 		preview := DocumentRewritePreviewResult{
-			Representation: result.Representation, Target: &item.Target.DocumentRewriteTarget,
+			Representation: result.Representation, Target: &DocumentRewriteTarget{Type: item.Target.Type, BlockType: item.Target.BlockType, NodeID: item.Target.NodeID},
 			Preview: item.Preview, Patch: item.Patch, Artifact: result.Artifact, Commit: result.Commit,
 		}
 		if !validDocumentPreview(preview, target.content.Representation) || !validDocumentResult(r.Context(), preview.Artifact, target.content.Representation) {
@@ -338,7 +368,15 @@ func runDocumentRewrite(w http.ResponseWriter, r *http.Request, phase, owner str
 			replyDocumentFailure(w, documentFailure("DOCUMENT_ACTION_FAILED", 502))
 			return
 		}
-		common.ReplyOK(w, preview)
+		if request.arrayInput {
+			if !validDocumentRewriteRangeResult(result, request.arguments, target.content) {
+				replyDocumentFailure(w, documentFailure("DOCUMENT_ACTION_RESULT_INVALID", 502))
+				return
+			}
+			common.ReplyOK(w, result)
+		} else {
+			common.ReplyOK(w, preview)
+		}
 		return
 	}
 	var result documentRewriteAlgorithmResult

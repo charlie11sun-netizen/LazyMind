@@ -41,6 +41,8 @@ import {
 import { useLocalDataSourceSettings } from "./useLocalDataSourceSettings";
 import { markCloudDocumentConnectionSuccess } from "../utils/cloudDocumentOnboarding";
 
+const MAIL_PROVIDERS = ["gmailimap", "qqmail", "qqexmail", "netease163", "neteaseqiye"] as const;
+
 export function useCloudDocumentProviders() {
   const { t } = useTranslation();
   const navigate = useNavigate();
@@ -72,11 +74,9 @@ export function useCloudDocumentProviders() {
     useState<ManagementContext["notionOauthConnection"]>(null);
   const [githubConnection, setGitHubConnection] =
     useState<ManagementContext["notionOauthConnection"]>(null);
-  const [mailConnections, setMailConnections] = useState<
-    NonNullable<ManagementContext["notionOauthConnection"]>[]
-  >([]);
   const [wechatOfficialAccountConnections, setWechatOfficialAccountConnections] =
     useState<CloudConnectionResponse[]>([]);
+  const [mailAccounts, setMailAccounts] = useState<string[]>([]);
   const [oauthConnection, setOauthConnection] = useState<ManagementContext["oauthConnection"]>(null);
   const [oauthState, setOauthState] = useState<OAuthState>("pending");
   const [connectionVerified, setConnectionVerified] = useState(false);
@@ -115,15 +115,10 @@ export function useCloudDocumentProviders() {
   const isGitHubAuthValid =
     githubConnection?.status === "connected" &&
     Boolean(githubConnection.connectionId);
-  const isMailConnected = mailConnections.length > 0;
-  const mailConnectionLabel = mailConnections
-    .map((item) => item.accountName)
-    .filter(Boolean)
-    .join("、");
   const isWeChatOfficialAccountAuthValid = wechatOfficialAccountConnections.some(
     (connection) => connection.status.trim().toUpperCase() === "ACTIVE",
   );
-
+  const isMailAuthValid = mailAccounts.length > 0;
   const ctx = {} as ManagementContext;
   Object.assign(ctx, {
     t,
@@ -281,29 +276,6 @@ export function useCloudDocumentProviders() {
     }
   };
 
-  const refreshMailConnection = async () => {
-    try {
-      const connected: NonNullable<ManagementContext["notionOauthConnection"]>[] = [];
-      for (const provider of ["gmailimap", "qqmail", "qqexmail", "netease163", "neteaseqiye"] as const) {
-        const response =
-          await dataSourceCloudOauthApi.listConnectionsApiAuthserviceV1CloudConnectionsGet({
-            provider,
-            status: "ACTIVE",
-          });
-        for (const connection of getCloudConnectionItems(response.data)
-          .map((item) => mapCloudConnectionToDataSourceConnection(item, provider as never))
-          .filter(
-            (item) => item.status === "connected" && Boolean(item.connectionId),
-          )) {
-          connected.push(connection);
-        }
-      }
-      setMailConnections(connected);
-    } catch {
-      setMailConnections([]);
-    }
-  };
-
   const refreshWeChatOfficialAccountConnections = async () => {
     try {
       const response =
@@ -314,6 +286,28 @@ export function useCloudDocumentProviders() {
       setWechatOfficialAccountConnections(getCloudConnectionItems(response.data));
     } catch {
       setWechatOfficialAccountConnections([]);
+    }
+  };
+
+  const refreshMailAccounts = async () => {
+    try {
+      const names: string[] = [];
+      for (const provider of MAIL_PROVIDERS) {
+        const response = await dataSourceCloudOauthApi.listConnectionsApiAuthserviceV1CloudConnectionsGet({
+          provider,
+          status: "ACTIVE",
+        });
+        const items = getCloudConnectionItems(response.data);
+        for (const item of items) {
+          const name = String(item.display_name || (item as { client_id?: string }).client_id || "").trim();
+          if (name) {
+            names.push(name);
+          }
+        }
+      }
+      setMailAccounts(names);
+    } catch {
+      setMailAccounts([]);
     }
   };
 
@@ -328,8 +322,8 @@ export function useCloudDocumentProviders() {
         ctx.refreshNotionAuthConnection(),
         refreshProviderConnection("github"),
         refreshProviderConnection("googledrive"),
-        refreshMailConnection(),
         refreshWeChatOfficialAccountConnections(),
+        refreshMailAccounts(),
       ]);
     } finally {
       setOauthLoading(false);
@@ -546,10 +540,9 @@ export function useCloudDocumentProviders() {
     isNotionAuthValid,
     isGitHubAuthValid,
     isGoogleDriveAuthValid,
-    isMailConnected,
-    mailConnectionLabel,
     isWeChatOfficialAccountAuthValid,
     hasWeChatOfficialAccount: wechatOfficialAccountConnections.length > 0,
+    isMailAuthValid,
     isFeishuSetupReady,
     isNotionSetupReady,
     isGitHubSetupReady,
@@ -557,6 +550,7 @@ export function useCloudDocumentProviders() {
     notionOauthConnection,
     githubConnection,
     googleDriveConnection,
+    mailAccounts,
     handleManageFeishuAuth,
     handleManageLocalSource,
     handleManageGoogleDrive,

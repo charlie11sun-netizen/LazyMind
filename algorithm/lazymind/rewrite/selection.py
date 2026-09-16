@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import re
 from typing import Any
 
 from lazyllm import AutoModel
@@ -116,6 +117,53 @@ def validate_paragraph_replacement(old: str, new: str) -> None:
 
     if protected(parser(old)) != protected(parser(new)):
         raise UnprocessableContentError('Generated paragraph changed protected links, media or code')
+    if source_semantics(old) != source_semantics(new):
+        raise UnprocessableContentError('Generated paragraph changed protected source syntax')
+
+
+def source_semantics(source: str) -> list[str]:
+    """Keep source-only references and equations opaque to prose polishing."""
+    starts = re.compile(r'!?\[\[|\[\^|\^\[|%%|\\\(|\\\[|\${1,2}|(?m:^[ \t]*\^[\w-]+[ \t]*$)|\s\^[\w-]+(?=[ \t]*(?:\n|$))')
+    tokens, cursor = [], 0
+    while match := starts.search(source, cursor):
+        start = match.start()
+        slash = start
+        while slash > 0 and source[slash - 1] == '\\':
+            slash -= 1
+        cursor = match.end()
+        if (start - slash) % 2:
+            continue
+        marker = match[0]
+        if marker.startswith('^['):
+            depth, end = 1, match.end()
+            while end < len(source) and depth:
+                if source[end] == '\\':
+                    end += 2
+                    continue
+                depth += (source[end] == '[') - (source[end] == ']')
+                end += 1
+            if depth:
+                continue
+        elif marker.lstrip().startswith('^'):
+            tokens.append(marker.strip())
+            continue
+        else:
+            close = {'[[': ']]', '![[': ']]', '[^': ']', '%%': '%%',
+                     '\\(': '\\)', '\\[': '\\]', '$': '$', '$$': '$$'}[marker]
+            end = source.find(close, match.end())
+            while end >= 0:
+                preceding = end
+                while preceding > 0 and source[preceding - 1] == '\\':
+                    preceding -= 1
+                if (end - preceding) % 2 == 0:
+                    break
+                end = source.find(close, end + len(close))
+            if end < 0:
+                continue
+            end += len(close)
+        tokens.append(source[start:end])
+        cursor = end
+    return tokens
 
 
 def rewrite_targets(document: str, targets: list[dict], instruction: str, *, generate=None) -> dict[str, Any]:
@@ -156,6 +204,8 @@ def rewrite_targets(document: str, targets: list[dict], instruction: str, *, gen
         validate_paragraph_replacement(target['content'], content)
         results.append({'content': content, 'target_start': target['start'],
                         'target_end': target['end'], 'old_content': target['content']})
+    if source_semantics(document) != source_semantics(apply_paragraph_results(document, results)):
+        raise UnprocessableContentError('Generated paragraphs changed protected document syntax')
     return {'results': results}
 
 

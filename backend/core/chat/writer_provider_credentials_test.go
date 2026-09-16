@@ -448,27 +448,6 @@ func TestWriterScopedCredentialsMissingAndFailures(t *testing.T) {
 				before := f.snapshot(t)
 				w := f.call(t, t.Context(), writerCredentialOwner, f.body())
 				status := 502
-				if mode == "no connections" {
-					if w.Code != 200 {
-						t.Fatalf("credential-optional provider was rejected: %d %s", w.Code, w.Body.String())
-					}
-					lists, tokens, actions := spy.state()
-					expectedActions := 1
-					if entry == "writeback" {
-						expectedActions = 2
-					}
-					if !reflect.DeepEqual(lists, []string{"notion"}) || len(tokens) != 0 || len(actions) != expectedActions || f.privateReads.Load() != 0 {
-						t.Fatalf("empty credentials did not stay scoped: %v %v %d", lists, tokens, len(actions))
-					}
-					for _, action := range actions {
-						config, _ := action["tool_config"].(map[string]any)
-						if len(config) != 0 {
-							t.Fatal("invented credentials")
-						}
-					}
-					requireWriterCredentialPrivate(t, w)
-					return
-				}
 
 				if w.Code != status {
 					t.Errorf("credential failure status=%d want=%d", w.Code, status)

@@ -83,6 +83,15 @@ describe('selectedMarkdownParagraph', () => {
     });
   });
 
+
+  it('captures each paragraph when multi-paragraph rewriting is enabled', () => {
+    const { container, editable } = paragraphFixture();
+    const range = document.createRange(); range.setStart(editable, 0); range.setEnd(editable, 2); selectRange(range);
+    const selected = selectedMarkdownParagraph(container, true);
+    expect(selected?.supported).toBe(true);
+    expect(selected?.paragraphSelections).toHaveLength(2);
+  });
+
   it('keeps a real multi-paragraph selection unsupported', () => {
     const { container, editable } = paragraphFixture();
     const range = document.createRange();

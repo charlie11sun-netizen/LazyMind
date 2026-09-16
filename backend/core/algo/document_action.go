@@ -22,9 +22,11 @@ type DocumentActionInvokeResponse struct {
 	Result json.RawMessage `json:"result"`
 }
 
+const DocumentActionTimeout = 2 * time.Minute
+
 func InvokeDocumentAction(ctx context.Context, request DocumentActionInvokeRequest) (*DocumentActionInvokeResponse, int, error) {
 	var response DocumentActionInvokeResponse
-	err := common.ApiPost(ctx, common.JoinURL(common.ChatServiceEndpoint(), "/api/document/actions:invoke"), request, nil, &response, 2*time.Minute)
+	err := common.ApiPost(ctx, common.JoinURL(common.ChatServiceEndpoint(), "/api/document/actions:invoke"), request, nil, &response, DocumentActionTimeout)
 	if err != nil {
 		return nil, workflowActionHTTPStatus(err), err
 	}

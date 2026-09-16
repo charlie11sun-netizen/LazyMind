@@ -2202,6 +2202,7 @@ export function SlotText({ slot, widget, sessionId, slotId, revisionCount, onRef
       anchor: selection.anchor,
       paragraph: selection.paragraph,
       startOffset: selection.startOffset,
+      sourceRange: selection.sourceRange,
     });
   }, [canRewriteMarkdown]);
 
@@ -3282,6 +3283,7 @@ function SlotWriterDocument({
       anchor: selection.anchor,
       paragraph: selection.paragraph,
       startOffset: selection.startOffset,
+      sourceRange: selection.sourceRange,
     });
   }, [canRewrite]);
 
@@ -4700,6 +4702,7 @@ function SlotMarkdownFile({
       anchor: selection.anchor,
       paragraph: selection.paragraph,
       startOffset: selection.startOffset,
+      sourceRange: selection.sourceRange,
     });
   }, [canRewriteMarkdown]);
 

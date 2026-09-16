@@ -14,7 +14,7 @@ from lazyllm.tools.writer.utils import load_artifact_json
 
 from lazymind.rewrite.base import UnprocessableContentError
 from lazymind.rewrite.selection import (
-    apply_paragraph_results, resolve_markdown_selections, rewrite_targets,
+    apply_paragraph_results, resolve_markdown_selections, rewrite_targets, source_semantics,
 )
 
 
@@ -95,10 +95,22 @@ def preview_ir(document: dict, instruction: str, selections: list[dict], context
         updated = revised.block_by_id(block.node_id)
         if updated.type != block.type or updated.numbering != block.numbering:
             raise RuntimeError('Generated patch changed block type or numbering')
+        if source_semantics(block.content) != source_semantics(updated.content):
+            raise RuntimeError('Generated patch changed protected source syntax')
+        def formulas(node):
+            return [(span.text, {key: value for key, value in span.style.items()
+                                 if key in {'math_source', 'notion:rich_text_type', 'notion:equation'}})
+                    for span in node.spans if span.style.get('math_source')
+                    or span.style.get('notion:rich_text_type') == 'equation']
+        if formulas(block) != formulas(updated):
+            raise RuntimeError('Generated patch changed protected formula spans')
         per_block = patch.model_copy(update={'hunks': [h for h in patch.hunks if h.target_node_id == block.node_id]})
         results.append({
             'target': {'type': 'block', 'block_type': block.type, 'node_id': block.node_id},
             'preview': {'old_text': block.content, 'new_text': updated.content},
             'patch': {'type': 'writer_ir_patch', 'payload': per_block.model_dump()},
         })
+    if source_semantics('\n\n'.join(block.content for block in source.iter_blocks())) != \
+            source_semantics('\n\n'.join(block.content for block in revised.iter_blocks())):
+        raise RuntimeError('Generated patch changed protected document syntax')
     return {'representation': 'ir', 'results': results, 'revised_document': revised}
