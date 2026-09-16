@@ -62,12 +62,26 @@ func publicationStatus(op *DocumentPublicationOperation, now time.Time) Document
 		}
 	}
 	var locator struct {
-		URI string `json:"uri"`
+		URI  string          `json:"uri"`
+		Meta json.RawMessage `json:"meta"`
 	}
 	if json.Unmarshal(target, &locator) == nil {
-		parsed, err := url.Parse(locator.URI)
-		if err == nil && (parsed.Scheme == "https" || parsed.Scheme == "http") && parsed.Host != "" && parsed.User == nil {
-			result.TargetURL = locator.URI
+		candidates := []string{locator.URI}
+		if op.Provider == "github" {
+			var meta struct {
+				PullRequestURL string `json:"pull_request_url"`
+				BrowserURL     string `json:"browser_url"`
+			}
+			if json.Unmarshal(locator.Meta, &meta) == nil {
+				candidates = []string{meta.PullRequestURL, meta.BrowserURL, locator.URI}
+			}
+		}
+		for _, candidate := range candidates {
+			parsed, err := url.Parse(candidate)
+			if err == nil && (parsed.Scheme == "https" || parsed.Scheme == "http") && parsed.Host != "" && parsed.User == nil {
+				result.TargetURL = candidate
+				break
+			}
 		}
 	}
 	return result
