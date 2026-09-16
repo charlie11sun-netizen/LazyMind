@@ -64,7 +64,7 @@ import { localizeErrorCode } from '@/components/request';
 import { SlotHtmlSlide } from './ppt/SlotHtmlSlide';
 import { SlotJsonSlide } from './ppt/SlotJsonSlide';
 import { isSlideSpecArtifact } from './ppt/slideSchema';
-import type { TaskArtifactStream } from '@/modules/chat/store/taskCenter';
+import { useTaskCenterStore, type TaskArtifactStream } from '@/modules/chat/store/taskCenter';
 import { Image as AntImage, Modal } from 'antd';
 import { isVideoArtifactValue } from './artifactMedia';
 
@@ -2790,10 +2790,32 @@ function useRegisterWriterWriteBack({
   const [selectedProvider, setSelectedProvider] = useState<WriterWriteBackProvider>(
     writerWriteBackProvider(provider),
   );
+  const writeBackNotice = useTaskCenterStore((state) =>
+    state.writerWriteBackByDocument[`${sessionId}:${slotId}`]);
 
   useEffect(() => {
     setSelectedProvider(writerWriteBackProvider(provider));
   }, [provider]);
+
+  useEffect(() => {
+    if (!enabled || !writeBackNotice) return;
+    // A durable synchronized revision also settles a missed terminal event.
+    if (synced && revision > writeBackNotice.base_revision) {
+      setStatus('success');
+      return;
+    }
+    if (writeBackNotice.status === 'loading' && revision >= writeBackNotice.base_revision) {
+      setStatus('loading');
+      return;
+    }
+    if (revision !== writeBackNotice.base_revision && revision !== writeBackNotice.revision) {
+      if (revision > Math.max(writeBackNotice.base_revision, writeBackNotice.revision)) setStatus('idle');
+      return;
+    }
+    // Automatic Writer delivery enters the same button states as a manual request.
+    setStatus(writeBackNotice.status);
+    if (writeBackNotice.provider) setSelectedProvider(writerWriteBackProvider(writeBackNotice.provider));
+  }, [enabled, revision, synced, writeBackNotice]);
 
   const writeBack = useCallback(async (targetProvider: WriterWriteBackProvider) => {
     if (!sessionId) return;
