@@ -11,6 +11,8 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -239,6 +241,129 @@ func TestRemoteHandlerRejectsChangedArtifactInput(t *testing.T) {
 	}
 	if envelope.OK || envelope.Error["code"] != "ATTEMPT_INPUT_CHANGED" || envelope.Data != nil {
 		t.Fatalf("changed input response=%#v", envelope)
+	}
+}
+
+func TestRemoteHandlerExportsEditedMarkdownAsDocument(t *testing.T) {
+	markdown := "# 测试大纲\n\n## Arrival\n\nA quiet station.\n"
+	for _, test := range []struct {
+		name, contentType, value string
+		wantStatus               int
+	}{
+		{"text envelope", "text/markdown", `{"text":` + strconv.Quote(markdown) + `}`, http.StatusOK},
+		{"root string", "text/markdown", strconv.Quote(markdown), http.StatusOK},
+		{"MIME parameters", "Text/Markdown; charset=utf-8", `{"text":` + strconv.Quote(markdown) + `}`, http.StatusOK},
+		{"schema envelope", "text/markdown", `{"schema":"text/markdown","data":{"text":` + strconv.Quote(markdown) + `}}`, http.StatusOK},
+		{"invalid text", "text/markdown", `{"text":123}`, http.StatusUnprocessableEntity},
+		{"schema conflict", "text/markdown", `{"schema":"application/vnd.lazymind.writer+json","data":{"document_id":"test","blocks":[]}}`, http.StatusUnprocessableEntity},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			value := AttemptContext{AttemptID: "attempt-edited", SessionID: "session-edited", StepID: "write",
+				DeclaredInputTypes: map[string]string{"outline_document": "file"}}
+			handler, db, claim := remoteHandlerFixture(t, value)
+			now := time.Now().UTC()
+			path := filepath.Join(t.TempDir(), "outline_document.md")
+			if err := os.WriteFile(path, []byte(markdown), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			original, _ := json.Marshal(map[string]any{"path": path, "filename": "outline_document.md"})
+			for i, artifact := range []orm.WorkflowHumanArtifact{
+				{ID: "original", ContentType: "file", Value: original},
+				{ID: "edited", ContentType: test.contentType, Value: json.RawMessage(test.value)},
+			} {
+				artifact.SessionID, artifact.Slot, artifact.CreatedAt = value.SessionID, "outline_document", now
+				if err := db.Create(&artifact).Error; err != nil {
+					t.Fatal(err)
+				}
+				if err := db.Create(&orm.WorkflowSlotRevision{ID: artifact.ID, SessionID: value.SessionID,
+					SlotID: "outline_document", Slot: "outline_document", Revision: i + 1,
+					Selected: i == 1, HumanArtifactID: &artifact.ID, CreatedAt: now}).Error; err != nil {
+					t.Fatal(err)
+				}
+			}
+			read := func(revision, hash string) *httptest.ResponseRecorder {
+				value.Inputs = map[string]any{"outline_document": map[string]any{
+					"source_type": "artifact", "source_revision_id": revision, "content_hash": hash}}
+				handler.Contexts = staticContextLoader{value: value}
+				req := httptest.NewRequest(http.MethodGet, "/inputs/outline_document", nil)
+				req.Header.Set("Authorization", "Bearer test-token")
+				req.Header.Set("X-Workflow-Lease-Token", claim.LeaseToken)
+				req = mux.SetURLVars(req, map[string]string{"attempt_id": value.AttemptID, "material_id": "outline_document"})
+				rec := httptest.NewRecorder()
+				handler.Input(rec, req)
+				return rec
+			}
+			check := func(rec *httptest.ResponseRecorder, status int) {
+				t.Helper()
+				if rec.Code != status {
+					t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+				}
+				var envelope remoteEnvelope
+				if err := json.Unmarshal(rec.Body.Bytes(), &envelope); err != nil {
+					t.Fatal(err)
+				}
+				if status != http.StatusOK {
+					if envelope.OK || envelope.Data != nil || envelope.Error["code"] != "ATTEMPT_INPUT_INVALID" {
+						t.Fatalf("invalid document response=%#v", envelope)
+					}
+					return
+				}
+				data := envelope.Data.(map[string]any)
+				decoded, err := base64.StdEncoding.DecodeString(data["content_base64"].(string))
+				if err != nil || string(decoded) != markdown || data["name"] != "outline_document.md" ||
+					int(data["size"].(float64)) != len([]byte(markdown)) {
+					t.Fatalf("document input=%#v decoded=%q err=%v", data, decoded, err)
+				}
+				if data["resource_id"] == "edited" && data["mime_type"] != "text/markdown" {
+					t.Fatalf("edited Markdown MIME=%v", data["mime_type"])
+				}
+			}
+			// Reading the original bound revision must still work after an edit is selected.
+			check(read("original", ""), http.StatusOK)
+			sum := sha256.Sum256([]byte(test.value))
+			check(read("edited", "sha256:"+hex.EncodeToString(sum[:])), test.wantStatus)
+			if test.wantStatus == http.StatusOK {
+				if err := db.Model(&orm.WorkflowHumanArtifact{}).Where("id = ?", "edited").
+					Update("value", json.RawMessage(`{"text":"changed"}`)).Error; err != nil {
+					t.Fatal(err)
+				}
+				if rec := read("edited", "sha256:"+hex.EncodeToString(sum[:])); rec.Code != http.StatusConflict ||
+					!strings.Contains(rec.Body.String(), "ATTEMPT_INPUT_CHANGED") {
+					t.Fatalf("changed input status=%d body=%s", rec.Code, rec.Body.String())
+				}
+			}
+		})
+	}
+}
+
+func TestRemoteHandlerPreservesNonMarkdownArtifactEnvelopes(t *testing.T) {
+	for _, test := range []struct{ name, contentType, value string }{
+		{"text", "text", `{"text":"approved brief"}`},
+		{"json", "json", `{"data":{"text":"not a Markdown document"}}`},
+		{"writer IR", "json", `{"schema":"application/vnd.lazymind.writer+json","data":{"document_id":"test","blocks":[]}}`},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			value := AttemptContext{AttemptID: "attempt-input", SessionID: "session-input", StepID: "write"}
+			handler, db, _ := remoteHandlerFixture(t, value)
+			humanID := "human-input"
+			if err := db.Create(&orm.WorkflowHumanArtifact{ID: humanID, SessionID: value.SessionID,
+				Slot: "input", ContentType: test.contentType, Value: json.RawMessage(test.value)}).Error; err != nil {
+				t.Fatal(err)
+			}
+			if err := db.Create(&orm.WorkflowSlotRevision{ID: "revision-input", SessionID: value.SessionID,
+				Slot: "input", HumanArtifactID: &humanID, Revision: 1}).Error; err != nil {
+				t.Fatal(err)
+			}
+			result, failure := handler.readAttemptInput(context.Background(), "input", map[string]any{
+				"source_type": "artifact", "source_revision_id": "revision-input"})
+			if failure != nil {
+				t.Fatal(failure)
+			}
+			decoded, err := base64.StdEncoding.DecodeString(result["content_base64"].(string))
+			if err != nil || string(decoded) != test.value || result["name"] != "input.json" || result["mime_type"] != "application/json" {
+				t.Fatalf("input=%#v decoded=%q err=%v", result, decoded, err)
+			}
+		})
 	}
 }
 

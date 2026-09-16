@@ -73,6 +73,7 @@ const SelfEvolutionObservationPage = lazy(() => import("@/modules/selfEvolution"
 })));
 const WorkflowDetailPage = lazy(() => import("@/modules/workflow/pages/detail"));
 const BuiltinWorkflowDetailPage = lazy(() => import("@/modules/workflow/pages/builtin-detail"));
+const ConversationGroupPage = lazy(() => import("@/modules/chat/conversationOrganizer/GroupPage"));
 
 export default function AppRouter() {
   const { i18n } = useTranslation();
@@ -151,6 +152,7 @@ export default function AppRouter() {
             <Route path="home" element={<Home />} />
             {/* Conversation detail URLs survive a full browser reload. */}
             <Route path="home/:conversationId" element={<Home />} />
+            <Route path="groups/:groupId" element={<ConversationGroupPage />} />
             <Route path="cases" element={<ShowcaseGalleryPage />} />
             <Route path="cases/:caseId" element={<ShowcaseDetailPage />} />
           </Route>
@@ -189,11 +191,11 @@ export default function AppRouter() {
           />
           <Route path="cloud-documents" element={<CloudDocumentsLayout />}>
             <Route index element={<CloudDocumentsPage />} />
+            <Route path="mail" element={<EmailConnectionPage />} />
             <Route path="local" element={<LocalDataSourcePage />} />
             <Route path="feishu" element={<FeishuAccountPage />} />
             <Route path="wechat-official-account" element={<WeChatOfficialAccountPage />} />
             <Route path="google-drive" element={<GoogleDriveConnectionPage />} />
-            <Route path="mail" element={<EmailConnectionPage />} />
             <Route path="docs/feishu-setup" element={<FeishuSetupGuide />} />
             <Route path="docs/github-setup" element={<GitHubSetupGuide />} />
             <Route path="docs/wechat-official-account-setup" element={<WeChatSetupGuide />} />
@@ -207,6 +209,7 @@ export default function AppRouter() {
           <Route path="model-providers/tools" element={<Navigate to="/settings?section=system_tools" replace />} />
           <Route path="model-providers/external-services" element={<Navigate to="/settings?section=system_tools" replace />} />
           <Route path="model-providers/cloud-documents" element={<Navigate to="/cloud-documents" replace />} />
+          <Route path="model-providers/cloud-documents/mail" element={<Navigate to="/cloud-documents/mail" replace />} />
           <Route path="model-providers/cloud-documents/local" element={<Navigate to="/cloud-documents/local" replace />} />
           <Route path="model-providers/cloud-documents/feishu" element={<Navigate to="/cloud-documents/feishu" replace />} />
           <Route path="model-providers/cloud-documents/wechat-official-account" element={<Navigate to="/cloud-documents/wechat-official-account" replace />} />

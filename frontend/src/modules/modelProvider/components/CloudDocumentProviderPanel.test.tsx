@@ -1,7 +1,6 @@
 import { render, screen } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 
-import type { CloudDocumentProvidersVm } from "../hooks/useCloudDocumentProviders";
 import CloudDocumentProviderPanel from "./CloudDocumentProviderPanel";
 
 const labels: Record<string, string> = {
@@ -10,11 +9,9 @@ const labels: Record<string, string> = {
   "modelProvider.cloudDocuments.authPending": "待授权",
 };
 
-function createVm(
-  overrides: Partial<CloudDocumentProvidersVm> = {},
-): CloudDocumentProvidersVm {
+function createVm(overrides: Record<string, unknown> = {}) {
   return {
-    t: ((key: string) => labels[key] || key) as CloudDocumentProvidersVm["t"],
+    t: (key: string) => labels[key] || key,
     loading: false,
     canCreateLocalSource: false,
     localSourceCount: 0,
@@ -24,8 +21,8 @@ function createVm(
     isGoogleDriveAuthValid: false,
     isWeChatOfficialAccountAuthValid: false,
     hasWeChatOfficialAccount: false,
-    isMailConnected: false,
-    mailConnectionLabel: "",
+    isMailAuthValid: false,
+    mailAccounts: [],
     isFeishuSetupReady: true,
     isNotionSetupReady: true,
     isGitHubSetupReady: true,
@@ -40,7 +37,7 @@ function createVm(
     handleOpenNotionSetup: vi.fn(),
     handleOpenGitHubSetup: vi.fn(),
     ...overrides,
-  } as unknown as CloudDocumentProvidersVm;
+  } as never;
 }
 
 describe("CloudDocumentProviderPanel", () => {
@@ -71,7 +68,8 @@ describe("CloudDocumentProviderPanel", () => {
           isGitHubAuthValid: true,
           isGoogleDriveAuthValid: true,
           isWeChatOfficialAccountAuthValid: true,
-          isMailConnected: true,
+          isMailAuthValid: true,
+          mailAccounts: ["mail@example.com"],
         })}
       />,
     );

@@ -137,16 +137,17 @@ type rewriteExecuteGate struct {
 	release            chan struct{}
 }
 type rewriteServer struct {
-	executeGate    *rewriteExecuteGate
-	url            string
-	mu             sync.Mutex
-	requests       []rewriteRequest
-	inspectCalls   int
-	manifests      map[string]rewriteManifest
-	beforeExecute  func()
-	resultOverride map[string]any
-	failureStatus  int
-	failureCode    string
+	executeGate       *rewriteExecuteGate
+	url               string
+	mu                sync.Mutex
+	requests          []rewriteRequest
+	inspectCalls      int
+	manifests         map[string]rewriteManifest
+	beforeExecute     func()
+	resultOverride    map[string]any
+	argumentsOverride map[string]any
+	failureStatus     int
+	failureCode       string
 }
 
 func newRewriteServer(t *testing.T, f rewriteFixture) *rewriteServer {
@@ -217,7 +218,11 @@ func newRewriteServer(t *testing.T, f rewriteFixture) *rewriteServer {
 			return
 		}
 		if req.Phase == "preview" {
-			if !reflect.DeepEqual(source, f.source) || !reflect.DeepEqual(req.Arguments, rewriteCompatibilityArguments(f)) {
+			expectedArguments := rewriteCompatibilityArguments(f)
+			if server.argumentsOverride != nil {
+				expectedArguments = server.argumentsOverride
+			}
+			if !reflect.DeepEqual(source, f.source) || !reflect.DeepEqual(req.Arguments, expectedArguments) {
 				t.Errorf("preview content/args=%#v / %#v", source, req.Arguments)
 			}
 			llm, ok := req.LLMConfig["llm"].(map[string]any)
@@ -1010,6 +1015,17 @@ func TestDocumentRewriteOpenAPITypes(t *testing.T) {
 		obj, _ := value.(map[string]any)
 		if ref, ok := obj["$ref"].(string); ok {
 			obj, _ = schemas[strings.TrimPrefix(ref, "#/components/schemas/")].(map[string]any)
+		}
+		// Keep the legacy assertions intact inside the additive input union.
+		if branches, ok := obj["oneOf"].([]any); ok {
+			for _, raw := range branches {
+				branch, _ := raw.(map[string]any)
+				properties, _ := branch["properties"].(map[string]any)
+				if properties["instruction"] != nil && properties["selection"] != nil {
+					obj = branch
+					break
+				}
+			}
 		}
 		return obj
 	}

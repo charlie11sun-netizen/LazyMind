@@ -5,8 +5,10 @@ import {
   useMemo,
   useRef,
   useState,
+  type CSSProperties,
 } from "react";
 import {
+  ApiOutlined,
   CheckOutlined,
   DownOutlined,
   ReloadOutlined,
@@ -15,6 +17,11 @@ import {
 import { Popover, Spin, Tooltip, message } from "antd";
 import { useTranslation } from "react-i18next";
 import { CHAT_OPEN_MODEL_SELECTOR_EVENT } from "@/modules/chat/constants/chat";
+import { getProviderLogoUrl } from "@/modules/modelProvider/providerBranding";
+import {
+  THINKING_DEPTH_VALUES,
+  type ThinkingDepth,
+} from "@/modules/chat/store/chatThink";
 import {
   chatModelSelectionKey,
   toChatModelSelectionRequest,
@@ -37,6 +44,9 @@ interface ChatModelSelectorProps {
   conversationId?: string;
   disabled?: boolean;
   disabledReason?: string;
+  thinkingDepth?: ThinkingDepth;
+  thinkingDepthDisabled?: boolean;
+  onThinkingDepthChange?: (depth: ThinkingDepth) => void;
   onSavingChange?: (saving: boolean) => void;
   onSelectionChange?: (
     request: ChatModelSelectionRequest,
@@ -104,10 +114,19 @@ const ChatModelSelector = ({
   conversationId,
   disabled = false,
   disabledReason,
+  thinkingDepth,
+  thinkingDepthDisabled = false,
+  onThinkingDepthChange,
   onSavingChange,
   onSelectionChange,
 }: ChatModelSelectorProps) => {
   const { t } = useTranslation();
+  const depthLabels: Record<ThinkingDepth, string> = {
+    low: t("chat.thinkingDepthLabels.low"),
+    medium: t("chat.thinkingDepthLabels.medium"),
+    high: t("chat.thinkingDepthLabels.high"),
+    max: t("chat.thinkingDepthLabels.max"),
+  };
   const normalizedConversationId = isRealConversationId(conversationId)
     ? conversationId
     : undefined;
@@ -116,11 +135,16 @@ const ChatModelSelector = ({
   const [catalog, setCatalog] = useState<ChatModelCatalog | null>(null);
   const [loadStatus, setLoadStatus] = useState<LoadStatus>("loading");
   const [open, setOpen] = useState(false);
+  const [modelsExpanded, setModelsExpanded] = useState(false);
+  const [previewDepth, setPreviewDepth] = useState(thinkingDepth ?? "medium");
   const [saving, setSaving] = useState(false);
   const [switchError, setSwitchError] = useState("");
   const [searchQuery, setSearchQuery] = useState("");
   const [announcement, setAnnouncement] = useState("");
   const disabledReasonId = useId();
+  const modelListId = useId();
+  const combined = thinkingDepth !== undefined;
+  const showModelList = !combined || modelsExpanded;
   const loadSequenceRef = useRef(0);
   const saveSequenceRef = useRef(0);
   const savingRef = useRef(false);
@@ -239,33 +263,46 @@ const ChatModelSelector = ({
     saving ||
     loadStatus === "loading" ||
     (loadStatus === "ready" && catalog?.switch_allowed === false);
+  const depthDisabled = thinkingDepthDisabled || saving || !onThinkingDepthChange;
+  const triggerDisabled = controlDisabled && (!combined || depthDisabled);
 
   useEffect(() => {
-    if (disabled) {
+    setPreviewDepth(thinkingDepth ?? "medium");
+  }, [thinkingDepth, open]);
+
+  useEffect(() => {
+    if (disabled && (!combined || thinkingDepthDisabled)) {
       setOpen(false);
       setSearchQuery("");
+      setModelsExpanded(false);
     }
-  }, [disabled]);
+  }, [combined, disabled, thinkingDepthDisabled]);
 
   const closeAndRestoreFocus = useCallback(() => {
     setOpen(false);
     setSearchQuery("");
+    setModelsExpanded(false);
     requestAnimationFrame(() => triggerRef.current?.focus());
   }, []);
 
   useEffect(() => {
-    if (!open || loadStatus !== "ready") return;
+    if (!open) return;
     const frame = requestAnimationFrame(() => {
-      const searchInput = menuRef.current?.querySelector<HTMLInputElement>(
-        ".chat-model-selector-search input",
+      const searchInput = showModelList
+        ? menuRef.current?.querySelector<HTMLInputElement>(
+            ".chat-model-selector-search input",
+          )
+        : null;
+      const slider = menuRef.current?.querySelector<HTMLInputElement>(
+        'input[type="range"]:not([disabled])',
       );
       const firstAction = menuRef.current?.querySelector<HTMLElement>(
         "button:not([disabled])",
       );
-      (searchInput ?? firstAction)?.focus();
+      (searchInput ?? slider ?? firstAction)?.focus();
     });
     return () => cancelAnimationFrame(frame);
-  }, [loadStatus, open]);
+  }, [loadStatus, open, showModelList]);
 
   useEffect(() => {
     const handleOpenRequest = (event: Event) => {
@@ -278,6 +315,7 @@ const ChatModelSelector = ({
         message.warning(switchBlockedReason);
         return;
       }
+      setModelsExpanded(true);
       setOpen(true);
     };
     window.addEventListener(CHAT_OPEN_MODEL_SELECTOR_EVENT, handleOpenRequest);
@@ -343,6 +381,18 @@ const ChatModelSelector = ({
     currentSelection?.availability === "unavailable"
       ? `${selectionLabel} · ${t("chat.modelSelectorUnavailable")}`
       : selectionLabel;
+  const compactModelLabel =
+    currentSelection?.mode === "auto"
+      ? "Auto"
+      : currentSelection?.model_name || currentModel?.name || triggerLabel;
+  const depthIndex = THINKING_DEPTH_VALUES.indexOf(previewDepth);
+
+  const commitDepth = (index: number) => {
+    const next = THINKING_DEPTH_VALUES[index];
+    if (!depthDisabled && next && next !== thinkingDepth) {
+      onThinkingDepthChange?.(next);
+    }
+  };
 
   const applySelection = useCallback(
     async (
@@ -350,7 +400,7 @@ const ChatModelSelector = ({
       optimisticSelection: ChatModelSelection,
       successLabel: string,
     ) => {
-      if (!catalog || savingRef.current) return;
+      if (!catalog || controlDisabled || savingRef.current) return;
       const isSameSelection =
         catalog.selection.mode === request.mode &&
         (request.mode === "auto" ||
@@ -426,6 +476,7 @@ const ChatModelSelector = ({
       catalog,
       closeAndRestoreFocus,
       commitSelection,
+      controlDisabled,
       normalizedConversationId,
       t,
     ],
@@ -461,7 +512,9 @@ const ChatModelSelector = ({
     <div
       className="chat-model-selector-menu"
       role="dialog"
-      aria-label={t("chat.modelSelectorDialogLabel")}
+      aria-label={t(
+        combined ? "chat.modelThinkingSelectorLabel" : "chat.modelSelectorDialogLabel",
+      )}
       aria-busy={saving || loadStatus === "loading"}
       ref={menuRef}
       onKeyDown={(event) => {
@@ -471,6 +524,94 @@ const ChatModelSelector = ({
         }
       }}
     >
+      {combined && !modelsExpanded ? (
+        <div className="chat-model-thinking-panel" data-depth={previewDepth}>
+          <div className="chat-model-thinking-header">
+            <button
+              type="button"
+              className="chat-model-thinking-choice"
+              aria-label={t("chat.modelSelectorChoose")}
+              aria-expanded={modelsExpanded}
+              aria-controls={showModelList ? modelListId : undefined}
+              disabled={controlDisabled}
+              title={controlDisabled ? switchBlockedReason : triggerLabel}
+              onClick={() => {
+                setModelsExpanded((current) => !current);
+                setSearchQuery("");
+              }}
+            >
+              <span className="chat-model-thinking-current-depth">
+                {depthLabels[previewDepth]}
+                <DownOutlined aria-hidden="true" />
+              </span>
+              <span className="chat-model-thinking-current-model">
+                {compactModelLabel}
+              </span>
+            </button>
+            <button
+              type="button"
+              className="chat-model-thinking-reset"
+              aria-label={t("chat.thinkingDepthReset")}
+              title={t("chat.thinkingDepthReset")}
+              disabled={depthDisabled || previewDepth === "medium"}
+              onClick={() => {
+                setPreviewDepth("medium");
+                commitDepth(1);
+              }}
+            >
+              <ReloadOutlined aria-hidden="true" />
+            </button>
+          </div>
+          <div
+            className="chat-thinking-depth-control"
+            data-disabled={depthDisabled}
+            style={{
+              "--depth-progress": `${depthIndex / (THINKING_DEPTH_VALUES.length - 1) * 100}%`,
+              "--depth-thumb-position": `calc(${depthIndex / (THINKING_DEPTH_VALUES.length - 1) * 100}% + ${13 - 26 * depthIndex / (THINKING_DEPTH_VALUES.length - 1)}px)`,
+            } as CSSProperties}
+          >
+            <span className="chat-thinking-depth-track" aria-hidden="true" />
+            <span className="chat-thinking-depth-thumb" aria-hidden="true" />
+            <input
+              className="chat-thinking-depth-slider"
+              type="range"
+              min={0}
+              max={THINKING_DEPTH_VALUES.length - 1}
+              step={1}
+              value={depthIndex}
+              aria-label={t("chat.thinkingDepth")}
+              aria-valuetext={depthLabels[previewDepth]}
+              disabled={depthDisabled}
+              onChange={(event) =>
+                setPreviewDepth(THINKING_DEPTH_VALUES[Number(event.target.value)])
+              }
+              onPointerDown={(event) =>
+                event.currentTarget.setPointerCapture(event.pointerId)
+              }
+              onPointerUp={(event) => commitDepth(Number(event.currentTarget.value))}
+              onPointerCancel={() => setPreviewDepth(thinkingDepth)}
+              onKeyUp={(event) => {
+                if (event.key.startsWith("Arrow") ||
+                  ["Home", "End", "PageUp", "PageDown"].includes(event.key)) {
+                  commitDepth(Number(event.currentTarget.value));
+                }
+              }}
+              onBlur={(event) => commitDepth(Number(event.currentTarget.value))}
+            />
+          </div>
+          <div className="chat-thinking-depth-stops" aria-hidden="true">
+            {THINKING_DEPTH_VALUES.map((depth) => (
+              <span
+                key={depth}
+                className={depth === previewDepth ? "is-current" : undefined}
+              >
+                {depthLabels[depth]}
+              </span>
+            ))}
+          </div>
+        </div>
+      ) : null}
+      <div id={modelListId} hidden={!showModelList}>
       {loadStatus === "loading" ? (
         <div className="chat-model-selector-state" role="status">
           <Spin size="small" />
@@ -498,7 +639,7 @@ const ChatModelSelector = ({
                 aria-label={t("chat.modelSelectorSearchLabel")}
                 placeholder={t("chat.modelSelectorSearchPlaceholder")}
                 value={searchQuery}
-                disabled={saving}
+                disabled={controlDisabled}
                 onChange={(event) => setSearchQuery(event.target.value)}
               />
             </label>
@@ -514,9 +655,25 @@ const ChatModelSelector = ({
               aria-label={`Auto，${t("chat.modelSelectorAutoDescription")}`}
               data-current={currentSelection?.mode === "auto"}
               title={t("chat.modelSelectorAutoDescription")}
-              disabled={saving || !catalog.auto_available}
+              disabled={controlDisabled || !catalog.auto_available}
               onClick={chooseAuto}
             >
+              <span className="chat-model-option-icon" aria-hidden="true">
+                <svg
+                  width="20"
+                  height="20"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth="1.7"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  focusable="false"
+                >
+                  <path d="M20 8A9 9 0 0 0 3.3 7M3 3v4h4M4 16a9 9 0 0 0 16.7 1M21 21v-4h-4" />
+                  <path d="m8.5 16 3.5-9 3.5 9M10 12.5h4" />
+                </svg>
+              </span>
               <strong>Auto</strong>
               {!catalog.auto_available ? (
                 <small className="chat-model-option-unavailable">
@@ -545,6 +702,7 @@ const ChatModelSelector = ({
                       ) : null}
                     </div>
                     {provider.models.map((model) => {
+                      const logoUrl = getProviderLogoUrl(provider.name);
                       const isCurrent =
                         currentSelection?.mode === "fixed" &&
                         (currentSelection.model_id
@@ -581,9 +739,16 @@ const ChatModelSelector = ({
                           key={model.id}
                           aria-pressed={isCurrent}
                           data-current={isCurrent}
-                          disabled={saving || !isModelAvailable(model)}
+                          disabled={controlDisabled || !isModelAvailable(model)}
                           onClick={() => chooseModel(provider, model)}
                         >
+                          <span className="chat-model-option-icon" aria-hidden="true">
+                            {logoUrl ? (
+                              <img src={logoUrl} alt="" width={20} height={20} />
+                            ) : (
+                              <ApiOutlined />
+                            )}
+                          </span>
                           <span className="chat-model-option-copy">
                             <strong>{model.name}</strong>
                             {model.group_name &&
@@ -644,6 +809,7 @@ const ChatModelSelector = ({
           ) : null}
         </>
       ) : null}
+      </div>
     </div>
   );
 
@@ -652,22 +818,34 @@ const ChatModelSelector = ({
       ref={triggerRef}
       type="button"
       className={`chat-model-selector-trigger${
-        controlDisabled ? " is-disabled" : ""
-      }`}
-      aria-label={t("chat.modelSelectorTriggerLabel", { model: triggerLabel })}
+        triggerDisabled ? " is-disabled" : ""
+      }${combined ? " is-combined" : ""}`}
+      aria-label={t(
+        combined ? "chat.modelThinkingSelectorTriggerLabel" : "chat.modelSelectorTriggerLabel",
+        { model: triggerLabel, depth: thinkingDepth ? depthLabels[thinkingDepth] : "" },
+      )}
+      data-depth={thinkingDepth}
+      title={triggerLabel}
       aria-haspopup="dialog"
       aria-expanded={open}
-      aria-disabled={controlDisabled}
-      aria-describedby={controlDisabled ? disabledReasonId : undefined}
+      aria-disabled={triggerDisabled}
+      aria-describedby={triggerDisabled ? disabledReasonId : undefined}
       onClick={(event) => {
-        if (!controlDisabled) return;
+        if (!triggerDisabled) return;
         event.preventDefault();
         event.stopPropagation();
         message.warning(switchBlockedReason);
       }}
     >
       {loadStatus === "loading" ? <Spin size="small" /> : null}
-      <span>{triggerLabel}</span>
+      <span className="chat-model-selector-trigger-model">
+        {combined ? compactModelLabel : triggerLabel}
+      </span>
+      {thinkingDepth ? (
+        <span className="chat-model-selector-trigger-depth">
+          {depthLabels[thinkingDepth]}
+        </span>
+      ) : null}
       <DownOutlined aria-hidden="true" />
     </button>
   );
@@ -679,16 +857,19 @@ const ChatModelSelector = ({
         content={content}
         destroyOnHidden
         open={open}
-        overlayClassName="chat-model-selector-popover"
+        overlayClassName={`chat-model-selector-popover${combined && !modelsExpanded ? " is-compact" : ""}`}
         placement="topLeft"
         trigger="click"
         onOpenChange={(nextOpen: boolean) => {
-          if (nextOpen && controlDisabled) return;
-          if (!nextOpen) setSearchQuery("");
+          if (nextOpen && triggerDisabled) return;
+          if (!nextOpen) {
+            setSearchQuery("");
+            setModelsExpanded(false);
+          }
           setOpen(nextOpen);
         }}
       >
-        <Tooltip title={controlDisabled ? switchBlockedReason : undefined}>
+        <Tooltip title={triggerDisabled ? switchBlockedReason : undefined}>
           <span className="chat-model-selector-trigger-wrap">{trigger}</span>
         </Tooltip>
       </Popover>
@@ -696,7 +877,7 @@ const ChatModelSelector = ({
         {announcement}
       </span>
       <span id={disabledReasonId} className="chat-model-selector-live">
-        {controlDisabled ? switchBlockedReason : ""}
+        {triggerDisabled ? switchBlockedReason : ""}
       </span>
     </div>
   );

@@ -23,6 +23,7 @@ it('offers a newly registered Provider from supplied capabilities without adding
 vi.mock('./FilePreviewDrawer', () => ({ FilePreviewDrawer: () => null }));
 vi.mock('@/modules/chat/components/MarkdownViewer', () => ({ default: ({ children }: { children: string }) => createElement('div', null, children) }));
 const publicationApi = vi.hoisted(() => ({
+  getPublicationForArtifact: vi.fn(async () => ({ data: { data: {} } })),
   listDocumentProviders: vi.fn(async () => ({ data: { data: { providers: [{ id: 'future-provider', capabilities: ['create', 'replace'] }] } } })),
   publishDocument: vi.fn(async (..._args: unknown[]) => ({ data: { data: { artifact_id: 'saved-artifact', revision: 4, draft_version: 1, provider: 'future-provider', provider_synced: true, artifact_saved: true } } })),
 }));
@@ -49,11 +50,10 @@ it('connects an arbitrary slot to the generic publication API using the server d
     document: { representation: 'markdown', schema: 'text/markdown', editable: true, capabilities: ['save', 'publish_document'] } };
   render(createElement(SlotEditingContext.Provider, { value: { setEditing: vi.fn(), registerFlush: () => () => {}, registerFooterAction } },
     createElement(SlotRenderer, { slot, sessionId: 'unknown-session', onRefresh: vi.fn() })));
-  await waitFor(() => expect(action).toBeDefined());
+  await waitFor(() => expect(action?.disabled).toBe(false));
   expect(action?.flushBeforeAction).toBe(true);
   act(() => action!.onClick());
-  await waitFor(() => expect(confirm).toHaveBeenCalled());
-  await act(async () => { await confirm.mock.calls[confirm.mock.calls.length - 1][0].onOk(); });
+  expect(confirm).not.toHaveBeenCalled();
   await waitFor(() => expect(publicationApi.publishDocument).toHaveBeenCalledTimes(1));
   const sent = publicationApi.publishDocument.mock.calls[0];
   expect(sent[0]).toBe('unknown-artifact');

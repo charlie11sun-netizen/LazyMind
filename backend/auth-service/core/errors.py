@@ -116,6 +116,7 @@ class ErrorCodes:
         1000826,
         'this mailbox account is already connected',
     )
+    MAIL_AUTH_CODE_INVALID: ErrorTuple = (400, 1000827, 'mailbox authorization code is invalid')
     MAIL_PROVIDER_AUTH_MODE_INVALID: ErrorTuple = (
         400,
         1000828,
@@ -123,14 +124,16 @@ class ErrorCodes:
     )
     WECHAT_OFFICIAL_ACCOUNT_SERVICE_ACCOUNT_ONLY: ErrorTuple = (
         400,
-        1000827,
+        1000831,
         'WeChat Official Account only supports service_account connections',
     )
     CLOUD_CONNECTION_VERIFICATION_REQUIRED: ErrorTuple = (
         409,
-        1000829,
+        1000832,
         'cloud connection must be verified before it can be enabled',
     )
+    MAIL_SERVER_UNREACHABLE: ErrorTuple = (400, 1000829, 'mailbox server unreachable')
+    MAIL_SMTP_VERIFY_FAILED: ErrorTuple = (400, 1000830, 'mailbox SMTP login failed')
 
     JWT_SECRET_REQUIRED: ErrorTuple = (500, 1000901, 'JWT signing secret is not configured')
     CLOUD_PROVIDER_HTTP_ERROR: ErrorTuple = (502, 1000902, 'cloud provider returned an HTTP error')
@@ -191,8 +194,10 @@ _EXCEPTION_PREFIXES: tuple[tuple[str, ErrorTuple], ...] = (
     ('feishu user info failed', ErrorCodes.FEISHU_USER_INFO_FAILED),
     ('invalid ciphertext', ErrorCodes.CLOUD_CIPHERTEXT_INVALID),
     ('Google Drive only supports oauth_user connections in LazyMind', ErrorCodes.GOOGLE_DRIVE_OAUTH_USER_ONLY),
+    ('mailbox authorization code is invalid', ErrorCodes.MAIL_AUTH_CODE_INVALID),
+    ('mailbox server unreachable', ErrorCodes.MAIL_SERVER_UNREACHABLE),
     ('mailbox IMAP login failed', ErrorCodes.MAIL_IMAP_LOGIN_FAILED),
-    ('mailbox SMTP login failed', ErrorCodes.MAIL_IMAP_LOGIN_FAILED),
+    ('mailbox SMTP login failed', ErrorCodes.MAIL_SMTP_VERIFY_FAILED),
     (
         'LAZYMIND_AUTH_CLOUD_SECRET_KEY is required for cloud oauth credential encryption',
         ErrorCodes.CLOUD_CRYPTO_UNAVAILABLE,

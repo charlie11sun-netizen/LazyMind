@@ -16,9 +16,10 @@ function preferredFormat(): WriterCopyFormat {
 }
 
 export function useDocumentCopy({
-  enabled, editingKey, sessionId, slotId, listIndex = -1, revision, document, sourceKey,
+  pendingReview = false, enabled, editingKey, sessionId, slotId, listIndex = -1, revision, document, sourceKey,
 }: {
   sourceKey?: string;
+  pendingReview?: boolean;
   enabled: boolean;
   editingKey?: string;
   sessionId?: string;
@@ -32,6 +33,8 @@ export function useDocumentCopy({
   const tabActive = useContext(WorkflowPanelTabActiveContext);
   const [format, setFormat] = useState(preferredFormat);
   const [busy, setBusy] = useState(false);
+  const [copied, setCopied] = useState(false);
+  useEffect(() => { if (!copied) return; const timer = window.setTimeout(() => setCopied(false), 1800); return () => window.clearTimeout(timer); }, [copied]);
   const pending = useRef(false);
   const current = useRef({ document, revision, getSnapshot });
   current.current = { document, revision, getSnapshot };
@@ -58,7 +61,7 @@ export function useDocumentCopy({
         }
         try {
           await navigator.clipboard.writeText(result.content);
-          message.success(t('chat.writerCopy.success'));
+          setCopied(true);
         } catch {
           Modal.confirm({
             title: t('chat.writerCopy.manualTitle'),
@@ -68,7 +71,7 @@ export function useDocumentCopy({
             cancelText: t('common.cancel'),
             onOk: async () => {
               await navigator.clipboard.writeText(result.content);
-              message.success(t('chat.writerCopy.success'));
+              setCopied(true);
             },
           });
         }
@@ -80,7 +83,8 @@ export function useDocumentCopy({
       }
     };
     return registerFooterAction(`${editingKey}:copy`, {
-      label: t('chat.writerCopy.copyContent'),
+      label: busy ? t('chat.writerLocal.preparing') : copied ? t('chat.writerCopy.success') : t('chat.writerCopy.copyContent'),
+      statusText: pendingReview ? t('chat.writerLocal.pendingSuggestions') : undefined,
       dedupKey: sourceKey ? JSON.stringify(['copy', sessionId, sourceKey]) : undefined,
       icon: 'copy',
       order: 20,
@@ -93,5 +97,5 @@ export function useDocumentCopy({
         onClick: () => { void copy(value); },
       })),
     });
-  }, [busy, editingKey, enabled, format, listIndex, registerFooterAction, sessionId, slotId, sourceKey, t, tabActive]);
+  }, [busy, copied, pendingReview, editingKey, enabled, format, listIndex, registerFooterAction, sessionId, slotId, sourceKey, t, tabActive]);
 }

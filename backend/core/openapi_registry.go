@@ -115,7 +115,7 @@ type documentActionErrorOpenAPIData struct {
 	ArtifactSaved  *bool  `json:"artifact_saved,omitempty"`
 	Retryable      *bool  `json:"retryable,omitempty"`
 
-	Code string `json:"code" enum:"IDENTITY_REQUIRED,PERMISSION_DENIED,ARTIFACT_NOT_FOUND,REVISION_REQUIRED,REVISION_CONFLICT,DRAFT_VERSION_REQUIRED,DRAFT_VERSION_CONFLICT,SESSION_NOT_EDITABLE,DOCUMENT_ACTION_INVALID,DOCUMENT_ACTION_UNSUPPORTED,MODEL_CONFIG_REQUIRED,SELECTION_STALE,SELECTION_AMBIGUOUS,ARTIFACT_IN_USE,DOCUMENT_ACTION_FAILED,DOCUMENT_ACTION_RESULT_INVALID,DOCUMENT_ACTION_SAVE_FAILED,CROSS_REFERENCE_SELECTION_INVALID,CROSS_REFERENCE_TARGET_NOT_FOUND,PUBLICATION_NOT_FOUND,PUBLICATION_IN_PROGRESS,PUBLICATION_STATE_CONFLICT,PUBLICATION_IDEMPOTENCY_CONFLICT,PUBLICATION_ALREADY_BOUND,PUBLICATION_OUTCOME_UNKNOWN,PROVIDER_SYNC_LOCAL_CONFLICT,PROVIDER_SYNC_LOCAL_PERSIST_FAILED,PROVIDER_CREDENTIALS_UNAVAILABLE,PROVIDER_BINDING_CONFLICT"`
+	Code string `json:"code" enum:"IDENTITY_REQUIRED,PERMISSION_DENIED,ARTIFACT_NOT_FOUND,REVISION_REQUIRED,REVISION_CONFLICT,DRAFT_VERSION_REQUIRED,DRAFT_VERSION_CONFLICT,SESSION_NOT_EDITABLE,DOCUMENT_ACTION_INVALID,DOCUMENT_ACTION_UNSUPPORTED,MODEL_CONFIG_REQUIRED,SELECTION_STALE,SELECTION_AMBIGUOUS,ARTIFACT_IN_USE,DOCUMENT_ACTION_FAILED,DOCUMENT_CONVERSION_FAILED,DOCUMENT_PROVIDERS_UNAVAILABLE,DOCUMENT_ACTION_RESULT_INVALID,DOCUMENT_ACTION_SAVE_FAILED,CROSS_REFERENCE_SELECTION_INVALID,CROSS_REFERENCE_TARGET_NOT_FOUND,PUBLICATION_NOT_FOUND,PUBLICATION_IN_PROGRESS,PUBLICATION_STATE_CONFLICT,PUBLICATION_RECOVERY_CLOSED,PUBLICATION_IDEMPOTENCY_CONFLICT,PUBLICATION_ALREADY_BOUND,PUBLICATION_OUTCOME_UNKNOWN,PROVIDER_SYNC_LOCAL_CONFLICT,PROVIDER_SYNC_LOCAL_PERSIST_FAILED,PROVIDER_CREDENTIALS_UNAVAILABLE,PROVIDER_BINDING_CONFLICT"`
 }
 type documentActionErrorOpenAPIResponse struct {
 	Code    int                            `json:"code"`
@@ -130,6 +130,11 @@ type documentPublicationReadResponse struct {
 	Code    int                                `json:"code"`
 	Message string                             `json:"message"`
 	Data    workflow.DocumentPublicationStatus `json:"data"`
+}
+type documentPublicationLookupResponse struct {
+	Code    int                                `json:"code"`
+	Message string                             `json:"message"`
+	Data    workflow.DocumentPublicationLookup `json:"data"`
 }
 type documentPublicationResultResponse struct {
 	Code    int                            `json:"code"`
@@ -352,7 +357,7 @@ func (b *schemaBuilder) schemaForType(t reflect.Type) map[string]any {
 		return map[string]any{"oneOf": []any{b.schemaForType(reflect.TypeOf(workflow.DocumentRewritePreviewRequest{})), b.schemaForType(reflect.TypeOf(workflow.DocumentConvertPreviewRequest{})), b.schemaForType(reflect.TypeOf(workflow.DocumentNumberingPreviewRequest{})), b.schemaForType(reflect.TypeOf(workflow.DocumentCrossReferencePreviewRequest{}))}, "discriminator": map[string]any{"propertyName": "action"}}
 	}
 	if t == reflect.TypeOf(documentActionPreviewOpenAPIData{}) {
-		return map[string]any{"oneOf": []any{b.schemaForType(reflect.TypeOf(workflow.DocumentRewritePreviewResult{})), b.schemaForType(reflect.TypeOf(workflow.DocumentConvertResult{})), b.schemaForType(reflect.TypeOf(workflow.DocumentNumberingResult{})), b.schemaForType(reflect.TypeOf(workflow.DocumentCrossReferenceTargetsResult{})), b.schemaForType(reflect.TypeOf(workflow.DocumentCrossReferencePreviewResult{}))}}
+		return map[string]any{"oneOf": []any{b.schemaForType(reflect.TypeOf(workflow.DocumentRewritePreviewResult{})), b.schemaForType(reflect.TypeOf(workflow.DocumentRewriteRangesResult{})), b.schemaForType(reflect.TypeOf(workflow.DocumentConvertResult{})), b.schemaForType(reflect.TypeOf(workflow.DocumentNumberingResult{})), b.schemaForType(reflect.TypeOf(workflow.DocumentCrossReferenceTargetsResult{})), b.schemaForType(reflect.TypeOf(workflow.DocumentCrossReferencePreviewResult{}))}}
 	}
 	if t == nil {
 		return nil
@@ -484,6 +489,27 @@ func (b *schemaBuilder) inlineSchemaForType(t reflect.Type) map[string]any {
 }
 
 func inlineSpecialSchema(t reflect.Type) map[string]any {
+	if t == reflect.TypeOf(workflow.DocumentRewritePreviewInput{}) {
+		text := map[string]any{"type": "string", "minLength": 1}
+		branches := []any{map[string]any{"type": "object", "additionalProperties": false, "required": []string{"instruction", "selection"}, "properties": map[string]any{"instruction": text, "selection": inlineSpecialSchema(reflect.TypeOf(workflow.DocumentRewriteSelection{}))}}}
+		for _, kind := range []string{"markdown", "ir"} {
+			fields := map[string]any{"selected_text": text}
+			required := []string{"selected_text"}
+			if kind == "ir" {
+				fields["node_id"] = text
+				required = []string{"node_id"}
+			}
+			item := map[string]any{"type": "object", "additionalProperties": false, "properties": fields, "required": required}
+			var items any = item
+			if kind == "markdown" {
+				offsets := map[string]any{"selected_text": text, "start": map[string]any{"type": "integer", "minimum": 0}, "end": map[string]any{"type": "integer", "minimum": 1}}
+				items = map[string]any{"oneOf": []any{item, map[string]any{"type": "object", "additionalProperties": false, "properties": offsets, "required": []string{"selected_text", "start", "end"}}}}
+			}
+			branches = append(branches, map[string]any{"type": "object", "additionalProperties": false, "required": []string{"instruction", "type", "selection_ranges"}, "properties": map[string]any{"instruction": text, "type": map[string]any{"type": "string", "enum": []string{kind}}, "selection_ranges": map[string]any{"type": "array", "minItems": 1, "items": items}}})
+		}
+		return map[string]any{"oneOf": branches}
+	}
+
 	if t == reflect.TypeOf(workflow.DocumentConvertSnapshot{}) {
 		return map[string]any{"oneOf": []any{map[string]any{"type": "string"}, map[string]any{"type": "object", "additionalProperties": true}}, "description": "Inline Markdown text or Writer IR object; never a file locator."}
 	}
@@ -1195,21 +1221,40 @@ type deleteModelProviderGroupOpenAPIResponse struct {
 	ID string `json:"id"`
 }
 
+type listRemoteGroupModelsOpenAPIItem struct {
+	ID             string  `json:"id"`
+	Name           string  `json:"name"`
+	ModelType      string  `json:"model_type"`
+	MaxInputTokens *string `json:"max_input_tokens,omitempty"`
+	Added          bool    `json:"added"`
+}
+
+type listRemoteGroupModelsOpenAPIResponse struct {
+	URL    string                             `json:"url"`
+	Models []listRemoteGroupModelsOpenAPIItem `json:"models"`
+}
+
 type addModelProviderGroupModelOpenAPIRequest struct {
-	Name      string `json:"name"`
-	ModelType string `json:"model_type"`
+	Name           string  `json:"name"`
+	ModelType      string  `json:"model_type"`
+	MaxInputTokens *string `json:"max_input_tokens,omitempty" desc:"Optional override. When omitted, LLM/VLM windows are resolved from config/model_context_windows.yaml by model name and unknown names fall back to 128K."`
 }
 
 type addModelProviderGroupModelOpenAPIResponse struct {
-	ID                       string `json:"id"`
-	UserModelProviderID      string `json:"user_model_provider_id"`
-	UserModelProviderGroupID string `json:"user_model_provider_group_id"`
-	Name                     string `json:"name"`
-	ModelType                string `json:"model_type"`
-	ProviderName             string `json:"provider_name"`
-	GroupName                string `json:"group_name"`
-	BaseURL                  string `json:"base_url"`
-	IsDefault                bool   `json:"is_default"`
+	ID                       string  `json:"id"`
+	UserModelProviderID      string  `json:"user_model_provider_id"`
+	UserModelProviderGroupID string  `json:"user_model_provider_group_id"`
+	Name                     string  `json:"name"`
+	ModelType                string  `json:"model_type"`
+	ProviderName             string  `json:"provider_name"`
+	GroupName                string  `json:"group_name"`
+	BaseURL                  string  `json:"base_url"`
+	IsDefault                bool    `json:"is_default"`
+	MaxInputTokens           *string `json:"max_input_tokens,omitempty" desc:"Stored LLM input context window, for example 512, 128K, or 1M" nullable:"true"`
+}
+
+type updateModelProviderGroupModelOpenAPIRequest struct {
+	MaxInputTokens string `json:"max_input_tokens" desc:"LLM input context window, for example 512, 128K, or 1M"`
 }
 
 type listModelProviderGroupModelsOpenAPIItem struct {
@@ -1243,6 +1288,7 @@ type selectedModelOpenAPIItem struct {
 	ProviderName             string  `json:"provider_name"`
 	GroupName                string  `json:"group_name"`
 	BaseURL                  string  `json:"base_url"`
+	IsDefault                bool    `json:"is_default" desc:"True when the selection was copied from catalog YAML"`
 	IsEditable               bool    `json:"is_editable" desc:"Whether the selected model supports image editing"`
 	MaxInputTokens           *string `json:"max_input_tokens" desc:"Maximum selected catalog LLM, VLM, or embedding-model input context window, for example 512, 128K, or 1M; null for other, custom, or unknown models" nullable:"true"`
 }
@@ -2682,6 +2728,8 @@ func registeredCoreOperations() []openAPIOperation {
 		{Method: "GET", Path: "/conversations/{conversation_id}/workflow-sessions:latest", Summary: "Read Workflow artifacts with document descriptors", Tags: []string{"workflow"}, Responses: map[int]openAPIResponse{200: resp("Workflow artifact read result", workflowSessionReadResponse{})}},
 		{Method: "GET", Path: "/workflow-sessions/{session_id}/artifacts", Summary: "Read Workflow artifacts with document descriptors", Tags: []string{"workflow"}, Responses: map[int]openAPIResponse{200: resp("Workflow artifact read result", workflowArtifactListReadResponse{})}},
 		{Method: "GET", Path: "/document-publications/{operation_id}", Summary: "Read an owned publication outcome", Tags: []string{"workflow"}, PathParams: documentPublicationPath{}, Responses: map[int]openAPIResponse{200: resp("Publication status", documentPublicationReadResponse{}), 404: resp("Publication not found", documentActionErrorOpenAPIResponse{})}},
+		{Method: "GET", Path: "/workflow-artifacts/{artifact_id}/publication", Summary: "Find the blocking or latest owned document publication", Tags: []string{"workflow"}, Responses: map[int]openAPIResponse{200: resp("Publication lookup", documentPublicationLookupResponse{}), 404: resp("Artifact not found", documentActionErrorOpenAPIResponse{})}},
+		{Method: "POST", Path: "/document-publications/{operation_id}:recover", Summary: "Recover local publication tracking without repeating a provider write", Tags: []string{"workflow"}, PathParams: documentPublicationPath{}, RequestBody: jsonBodyOf(workflow.DocumentPublicationRecoveryRequest{}, true), Responses: map[int]openAPIResponse{200: resp("Recovered publication status", documentPublicationReadResponse{}), 400: resp("Explicit recovery confirmation required", documentActionErrorOpenAPIResponse{}), 404: resp("Publication not found", documentActionErrorOpenAPIResponse{}), 409: resp("Publication state changed", documentActionErrorOpenAPIResponse{})}},
 		{Method: "POST", Path: "/document-publications/{operation_id}:cancel", Summary: "Cancel a publication before its external write", Tags: []string{"workflow"}, PathParams: documentPublicationPath{}, Responses: map[int]openAPIResponse{200: resp("Canceled publication", documentPublicationReadResponse{}), 404: resp("Publication not found", documentActionErrorOpenAPIResponse{}), 409: resp("Write already started", documentActionErrorOpenAPIResponse{})}},
 		{Method: "POST", Path: "/document-publications/{operation_id}:retry-local", Summary: "Save a confirmed publication without repeating the provider write", Tags: []string{"workflow"}, PathParams: documentPublicationPath{}, Responses: map[int]openAPIResponse{200: resp("Saved publication", documentPublicationResultResponse{}), 404: resp("Publication not found", documentActionErrorOpenAPIResponse{}), 409: resp("Local baseline changed", documentActionErrorOpenAPIResponse{}), 500: resp("Local persistence failed", documentActionErrorOpenAPIResponse{})}},
 		{Method: "PATCH", Path: "/workflow-artifacts/{artifact_id}", Summary: "Save an Artifact with revision and draft preconditions", Tags: []string{"workflow"}, RequestBody: jsonBodyOf(documentArtifactPatchRequest{}, true), Responses: map[int]openAPIResponse{200: resp("Saved artifact", workflowArtifactReadResponse{}), 400: resp("Draft baseline required", documentActionErrorOpenAPIResponse{}), 409: resp("Artifact baseline changed", documentActionErrorOpenAPIResponse{})}},
@@ -4109,6 +4157,15 @@ func registeredCoreOperations() []openAPIOperation {
 		},
 		{
 			Method:      "GET",
+			Path:        "/model_providers/{model_provider_id}/groups/{group_id}/remote_models",
+			Summary:     "List models advertised by a connection group",
+			Description: "Calls the group's OpenAI-compatible /v1/models endpoint using the stored Base URL and API key. Each item includes an inferred model_type and whether it is already added to the group.",
+			Tags:        []string{"model_providers"},
+			PathParams:  modelProviderGroupByIDPathParams{},
+			Responses:   map[int]openAPIResponse{200: resp("Remote models list", listRemoteGroupModelsOpenAPIResponse{})},
+		},
+		{
+			Method:      "GET",
 			Path:        "/model_providers/{model_provider_id}/groups/{group_id}/models",
 			Summary:     "List models under a connection group",
 			Description: "Lists non-deleted user_model_provider_group_models for the group. Each item includes is_default (true when copied from default_models seeding; false for user-added models) and nullable max_input_tokens, the catalog model's maximum input context window expressed as a string such as 512, 128K, or 1M. Custom or unknown models return null.",
@@ -4120,11 +4177,21 @@ func registeredCoreOperations() []openAPIOperation {
 			Method:      "POST",
 			Path:        "/model_providers/{model_provider_id}/groups/{group_id}/models",
 			Summary:     "Add custom model under a connection group",
-			Description: "Creates a user_model_provider_group_models row with is_default false (custom model name and model_type). Name must be unique within the group among active rows. provider_name and base_url are taken from the user provider and group. Response group_name is user_model_provider_groups.name (not stored on the model row).",
+			Description: "Creates a user_model_provider_group_models row with is_default false (custom model name and model_type). Name must be unique within the group among active rows. For llm and vlm, max_input_tokens from the request is stored when provided; otherwise it is resolved from config/model_context_windows.yaml by model name and unknown names fall back to 128K. provider_name and base_url are taken from the user provider and group. Response group_name is user_model_provider_groups.name (not stored on the model row).",
 			Tags:        []string{"model_providers"},
 			PathParams:  modelProviderGroupByIDPathParams{},
 			RequestBody: jsonBodyOf(addModelProviderGroupModelOpenAPIRequest{}, true),
 			Responses:   map[int]openAPIResponse{200: resp("Created group model", addModelProviderGroupModelOpenAPIResponse{})},
+		},
+		{
+			Method:      "PATCH",
+			Path:        "/model_providers/{model_provider_id}/groups/{group_id}/models/{model_id}",
+			Summary:     "Update a connection group model",
+			Description: "Updates max_input_tokens for a custom (non-catalog) LLM. The field is required. Values use a positive integer or K/M suffix such as 512, 128K, or 1M and must be at most 16 characters. Catalog models keep the YAML value and cannot be patched.",
+			Tags:        []string{"model_providers"},
+			PathParams:  modelProviderGroupModelPathParams{},
+			RequestBody: jsonBodyOf(updateModelProviderGroupModelOpenAPIRequest{}, true),
+			Responses:   map[int]openAPIResponse{200: resp("Updated group model", listModelProviderGroupModelsOpenAPIItem{})},
 		},
 		{
 			Method:      "DELETE",

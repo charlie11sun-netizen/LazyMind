@@ -10,7 +10,7 @@ import { axiosInstance } from '@/components/request';
 import { coreApiUrl } from '@/runtime/apiBase';
 import './WriterDownloadFormat.scss';
 
-export type WriterDownloadFormat = 'markdown' | 'lmd' | 'latex';
+export type WriterDownloadFormat = 'markdown' | 'lmd' | 'latex' | 'text';
 export type WriterDownloadSourceFormat = 'markdown' | 'lmd' | 'writer_document';
 
 function markdownTitleText(value: string): string {
@@ -67,7 +67,7 @@ function writerFilenameStem(value: string): string {
 
 export function writerDownloadFilename(
   title: string,
-  extension: 'md' | 'lmd' | 'tex',
+  extension: 'md' | 'lmd' | 'tex' | 'txt',
   fallback = 'document',
 ): string {
   const basename = writerFilenameStem(title) || writerFilenameStem(fallback) || 'document';
@@ -282,7 +282,7 @@ function triggerDownload(source: WriterDownloadSource, blob?: Blob): void {
   }
 }
 
-async function downloadSource(
+export async function downloadSource(
   source: WriterDownloadSource,
   format: WriterDownloadFormat,
 ): Promise<void> {
@@ -321,7 +321,7 @@ export function WriterDownloadFormatDialog({
 
   const handleConfirm = useCallback(async () => {
     const format = selectedFormat;
-    const source = sources[format];
+    const source = sources[format as keyof typeof sources];
     if (!source) return;
     setDownloading(format);
     setError(false);

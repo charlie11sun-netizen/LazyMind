@@ -56,7 +56,10 @@ def writer_schema(name: str) -> str:
 def inspect_document(value: Any, schema: str = '') -> dict[str, Any]:
     """Identify Markdown or Writer IR without rendering or changing it."""
     declared_schema = str(schema or '').strip()
+    display_source = None
     if isinstance(value, Mapping) and 'data' in value:
+        meta = value.get('meta')
+        display_source = meta.get('writer_source') if isinstance(meta, Mapping) else None
         declared_schema = declared_schema or str(value.get('schema_name') or '')
         value = value['data']
 
@@ -72,7 +75,13 @@ def inspect_document(value: Any, schema: str = '') -> dict[str, Any]:
         is_markdown = markdown_declared or bool(_MARKDOWN_DOCUMENT_RE.search(value))
         if not is_markdown:
             return _non_document_inspection()
-        return _document_inspection('markdown', 'text/markdown', False)
+        result = _document_inspection('markdown', 'text/markdown', False)
+        if display_source:
+            from .source_display import project_source_display
+            context = project_source_display(value, display_source)
+            if context:
+                result['render_context'] = context
+        return result
 
     if not isinstance(value, Mapping):
         return _non_document_inspection()

@@ -1,4 +1,4 @@
-import type { ApiCoreWorkflowArtifactsArtifactIdDocumentActionsExecutePostRequest, ApiCoreWorkflowArtifactsArtifactIdDocumentActionsPreviewPostRequest, DocumentPublishRequest, DocumentPublishResult, DocumentArtifactPatchRequest, DocumentProviderCatalog, WorkflowArtifactReadResponse, DocumentActionPreviewOpenAPIResponse, DocumentRewriteExecuteOpenAPIResponse } from "@/api/generated/core-client";
+import type { ApiCoreWorkflowArtifactsArtifactIdDocumentActionsExecutePostRequest, ApiCoreWorkflowArtifactsArtifactIdDocumentActionsPreviewPostRequest, DocumentPublishRequest, DocumentPublishResult, DocumentPublicationStatus, DocumentPublicationLookup, DocumentPublicationRecoveryRequest, DocumentArtifactPatchRequest, DocumentProviderCatalog, WorkflowArtifactReadResponse, DocumentActionPreviewOpenAPIResponse, DocumentRewriteExecuteOpenAPIResponse } from "@/api/generated/core-client";
 import {
   Configuration,
   type BatchChatJob,
@@ -343,6 +343,7 @@ export interface RewriteSelectionPreviewRequest {
 }
 
 export interface RewriteSelectionPreview {
+  results?: Array<Pick<RewriteSelectionPreview, 'target' | 'preview' | 'patch'>>;
   status: 'ready';
   action: 'rewrite_selection';
   base_revision: number;
@@ -352,6 +353,8 @@ export interface RewriteSelectionPreview {
     type: 'block';
     block_type: string;
     node_id?: string;
+    target_start?: number;
+    target_end?: number;
     el?: string;
     index?: number;
     group?: string;
@@ -405,6 +408,8 @@ export interface ExecuteArtifactActionResult {
   artifact: RewriteSelectionPreview['artifact'];
 }
 
+type PublicationRequestOptions = RawAxiosRequestConfig & { silentError?: boolean };
+
 // Workflow Session API.
 export function WorkflowSessionApi() {
   return {
@@ -413,6 +418,21 @@ export function WorkflowSessionApi() {
     },
     publishDocument(artifactId: string, body: DocumentPublishRequest, options?: RawAxiosRequestConfig) {
       return axiosInstance.post<{ data: DocumentPublishResult }>(`${coreApiBaseUrl}/workflow-artifacts/${encodeURIComponent(artifactId)}/document-actions:execute`, body, options);
+    },
+    getPublicationForArtifact(artifactId: string, options?: PublicationRequestOptions) {
+      return axiosInstance.get<{ data: DocumentPublicationLookup }>(`${coreApiBaseUrl}/workflow-artifacts/${encodeURIComponent(artifactId)}/publication`, options);
+    },
+    readPublication(operationId: string, options?: PublicationRequestOptions) {
+      return axiosInstance.get<{ data: DocumentPublicationStatus }>(`${coreApiBaseUrl}/document-publications/${encodeURIComponent(operationId)}`, options);
+    },
+    cancelPublication(operationId: string, options?: PublicationRequestOptions) {
+      return axiosInstance.post<{ data: DocumentPublicationStatus }>(`${coreApiBaseUrl}/document-publications/${encodeURIComponent(operationId)}:cancel`, undefined, options);
+    },
+    recoverPublication(operationId: string, body: DocumentPublicationRecoveryRequest, options?: PublicationRequestOptions) {
+      return axiosInstance.post<{ data: DocumentPublicationStatus }>(`${coreApiBaseUrl}/document-publications/${encodeURIComponent(operationId)}:recover`, body, options);
+    },
+    retryPublicationLocal(operationId: string, options?: PublicationRequestOptions) {
+      return axiosInstance.post<{ data: DocumentPublishResult }>(`${coreApiBaseUrl}/document-publications/${encodeURIComponent(operationId)}:retry-local`, undefined, options);
     },
     saveDocumentArtifact(artifactId: string, body: DocumentArtifactPatchRequest, options?: RawAxiosRequestConfig) {
       return axiosInstance.patch<WorkflowArtifactReadResponse>(`${coreApiBaseUrl}/workflow-artifacts/${encodeURIComponent(artifactId)}`, body,

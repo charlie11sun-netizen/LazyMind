@@ -929,6 +929,20 @@ export function updateWriterBlockContent(
   return result.changed ? { ...document, blocks: result.blocks } : document;
 }
 
+export function isWriterFormulaSpan(span: WriterSpan): boolean {
+  const style = span.style ?? span.stype;
+  return Boolean(style && !Array.isArray(style) && (style.math_source || style['notion:rich_text_type'] === 'equation'));
+}
+
+export function updateWriterFormulaSpan(document: WriterDocument, nodeId: string, index: number, source: string): WriterDocument {
+  const result = replaceBlockInTree(document.blocks, nodeId, block => {
+    if (block.editable === false || !block.spans?.[index] || !isWriterFormulaSpan(block.spans[index])) return block;
+    const spans = block.spans.map((span, position) => position === index ? { ...span, text: source } : span);
+    return { ...block, spans, content: spans.map(span => span.text).join('') };
+  });
+  return result.changed ? { ...document, blocks: result.blocks } : document;
+}
+
 const WRITER_CODE_LANGUAGE_MENU_TEXT = [
   'Plain text',
   'JavaScript',

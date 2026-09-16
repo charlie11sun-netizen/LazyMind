@@ -15,10 +15,11 @@ type DocumentInspectRequest struct {
 }
 
 type DocumentInspection struct {
-	IsDocument     *bool            `json:"is_document"`
-	Representation *string          `json:"representation"`
-	Schema         *string          `json:"schema"`
-	Features       map[string]*bool `json:"features"`
+	IsDocument     *bool                  `json:"is_document"`
+	Representation *string                `json:"representation"`
+	Schema         *string                `json:"schema"`
+	Features       map[string]*bool       `json:"features"`
+	RenderContext  *DocumentRenderContext `json:"render_context,omitempty"`
 }
 
 // InspectDocument uses the read-only Algorithm contract, without workflow or credential context.

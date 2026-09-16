@@ -16,10 +16,11 @@ const IRSchema = "application/vnd.lazymind.writer+json"
 const maxDocumentBytes = 20 << 20
 
 type Descriptor struct {
-	Representation string   `json:"representation"`
-	Schema         string   `json:"schema"`
-	Editable       bool     `json:"editable"`
-	Capabilities   []string `json:"capabilities" required:"true"`
+	Representation string                      `json:"representation"`
+	Schema         string                      `json:"schema"`
+	Editable       bool                        `json:"editable"`
+	Capabilities   []string                    `json:"capabilities" required:"true"`
+	RenderContext  *algo.DocumentRenderContext `json:"render_context,omitempty"`
 }
 
 type ProjectionError struct {
@@ -37,8 +38,8 @@ func unreadable() *ProjectionError { return &ProjectionError{Code: "DOCUMENT_REA
 
 // Project never rewrites the carrier. hint is read lazily, only when generic text
 // needs its pinned workflow presentation metadata to establish Markdown intent.
-func Project(ctx context.Context, raw json.RawMessage, contentType string, writable bool, hint func() (bool, error)) (*Descriptor, *ProjectionError) {
-	content, projectionError := InspectContent(ctx, raw, contentType, hint)
+func Project(ctx context.Context, raw json.RawMessage, contentType string, writable bool, hint func() (bool, error), targets ...json.RawMessage) (*Descriptor, *ProjectionError) {
+	content, projectionError := InspectContent(ctx, raw, contentType, hint, targets...)
 	if content == nil {
 		return nil, projectionError
 	}
@@ -47,7 +48,7 @@ func Project(ctx context.Context, raw json.RawMessage, contentType string, writa
 	if writable {
 		capabilities = append(capabilities, "save")
 	}
-	return &Descriptor{Representation: content.Representation, Schema: content.Schema, Editable: writable, Capabilities: capabilities}, nil
+	return &Descriptor{Representation: content.Representation, Schema: content.Schema, Editable: writable, Capabilities: capabilities, RenderContext: content.RenderContext}, nil
 }
 
 // Content is the confirmed logical document, never a file locator. Action
@@ -56,14 +57,16 @@ type Content struct {
 	Value          json.RawMessage
 	Representation string
 	Schema         string
+	RenderContext  *algo.DocumentRenderContext
 }
 
-func InspectContent(ctx context.Context, raw json.RawMessage, contentType string, hint func() (bool, error)) (*Content, *ProjectionError) {
+func InspectContent(ctx context.Context, raw json.RawMessage, contentType string, hint func() (bool, error), targets ...json.RawMessage) (*Content, *ProjectionError) {
 	value, schema, candidate, projectionError := prepare(raw, contentType, hint)
 	if projectionError != nil || !candidate {
 		return nil, projectionError
 	}
-	result, status, err := algo.InspectDocument(ctx, algo.DocumentInspectRequest{Artifact: value, Schema: schema})
+	artifact := inspectionArtifact(raw, value, contentType, targets)
+	result, status, err := algo.InspectDocument(ctx, algo.DocumentInspectRequest{Artifact: artifact, Schema: schema})
 	if err != nil {
 		if status == 422 {
 			return nil, Invalid()
@@ -82,7 +85,10 @@ func InspectContent(ctx context.Context, raw json.RawMessage, contentType string
 	if schema == "" && *result.Representation != "ir" {
 		return nil, nil
 	}
-	return &Content{Value: value, Representation: *result.Representation, Schema: *result.Schema}, nil
+	if result.RenderContext != nil && !result.RenderContext.ValidFor(value) {
+		return nil, Unavailable()
+	}
+	return &Content{Value: value, Representation: *result.Representation, Schema: *result.Schema, RenderContext: result.RenderContext}, nil
 }
 
 func schemaName(value string) string {

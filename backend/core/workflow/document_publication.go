@@ -368,7 +368,7 @@ func ClaimDocumentPublicationWrite(ctx context.Context, db *gorm.DB, owner, id s
 		return tx.Model(op).Updates(map[string]any{"status": "write_started", "updated_at": time.Now().UTC()}).Error
 	})
 }
-func finishPublicationBeforeWrite(ctx context.Context, db *gorm.DB, owner, id, status string) error {
+func finishPublicationBeforeWrite(ctx context.Context, db *gorm.DB, owner, id, status, errorCode string) error {
 	return common.TransactionWithSQLiteBusyRetry(ctx, db, func(tx *gorm.DB) error {
 		op, err := publicationLockedOperation(ctx, tx, owner, id)
 		if err != nil {
@@ -396,14 +396,14 @@ func finishPublicationBeforeWrite(ctx context.Context, db *gorm.DB, owner, id, s
 				return err
 			}
 		}
-		return tx.Model(op).Updates(map[string]any{"status": status, "updated_at": time.Now().UTC()}).Error
+		return tx.Model(op).Updates(map[string]any{"status": status, "error_code": errorCode, "updated_at": time.Now().UTC()}).Error
 	})
 }
 func CancelDocumentPublication(ctx context.Context, db *gorm.DB, owner, id string) error {
-	return finishPublicationBeforeWrite(ctx, db, owner, id, "canceled")
+	return finishPublicationBeforeWrite(ctx, db, owner, id, "canceled", "")
 }
 func FailDocumentPublicationBeforeWrite(ctx context.Context, db *gorm.DB, owner, id string) error {
-	return finishPublicationBeforeWrite(ctx, db, owner, id, "failed_no_write")
+	return finishPublicationBeforeWrite(ctx, db, owner, id, "failed_no_write", "")
 }
 func MarkDocumentPublicationUnknown(ctx context.Context, db *gorm.DB, owner, id string) error {
 	return common.TransactionWithSQLiteBusyRetry(ctx, db, func(tx *gorm.DB) error {

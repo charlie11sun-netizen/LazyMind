@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 
 	"gopkg.in/yaml.v3"
@@ -29,7 +30,7 @@ func (r *Repository) DescribeArtifact(ctx context.Context, owner string, artifac
 	writable := allowSave && artifact.Selected && artifact.Validity == "effective" && DocumentSessionEditable(&session)
 	artifact.Document, artifact.DocumentError = document.Project(ctx, artifact.Value, artifact.ContentType, writable, func() (bool, error) {
 		return r.PinnedMarkdownHint(ctx, &session, artifact.SlotID)
-	})
+	}, r.writerDisplayTarget(ctx, &session, artifact))
 	if artifact.Document != nil && writable {
 		err := artifactgraph.CheckConsumers(ctx, r.db, session.ID, artifact.ID)
 		if errors.Is(err, artifactgraph.ErrArtifactInUse) {
@@ -55,6 +56,31 @@ func (r *Repository) DescribeArtifact(ctx context.Context, owner string, artifac
 			artifact.Document.Capabilities = append(artifact.Document.Capabilities, "publish_document")
 		}
 	}
+}
+
+// Imported Writer Markdown uses a separate target artifact until first publish.
+// This mirrors the existing shared Writer target, for display only. Historical
+// and unrelated artifacts do not inherit the currently selected source.
+func (r *Repository) writerDisplayTarget(ctx context.Context, session *orm.WorkflowSession, artifact *Artifact) json.RawMessage {
+	if session.WorkflowID != "writer-workflow" || !artifact.Selected || artifact.Validity != "effective" || artifact.ListIndex != nil {
+		return nil
+	}
+	if artifact.SlotID != "source_document" && artifact.SlotID != "draft_document" && artifact.SlotID != "flat_draft_document" {
+		return nil
+	}
+	var target orm.WorkflowSlotRevision
+	if err := r.db.WithContext(ctx).Where("session_id = ? AND slot_id = ? AND selected = ? AND validity = ?", session.ID, "target_document", true, "effective").First(&target).Error; err != nil {
+		return nil
+	}
+	raw, ct, _, _, err := r.resolveArtifact(ctx, target)
+	if err != nil {
+		return nil
+	}
+	resolved, err := document.ReadArtifactValue(raw, ct)
+	if err != nil {
+		return nil
+	}
+	return document.ArtifactData(resolved)
 }
 
 func DocumentSessionEditable(session *orm.WorkflowSession) bool {
