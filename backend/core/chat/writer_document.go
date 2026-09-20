@@ -22,6 +22,7 @@ import (
 	"lazymind/core/doc"
 	"lazymind/core/modelconfig"
 	"lazymind/core/store"
+	"lazymind/core/subagent"
 	"lazymind/core/workflow"
 
 	"gorm.io/gorm"
@@ -484,6 +485,16 @@ func SaveWriterDocument(w http.ResponseWriter, r *http.Request) {
 	common.ReplyOK(w, reply)
 }
 
+type writerWriteBackResponseWriter struct {
+	http.ResponseWriter
+	statusCode int
+}
+
+func (w *writerWriteBackResponseWriter) WriteHeader(status int) {
+	w.statusCode = status
+	w.ResponseWriter.WriteHeader(status)
+}
+
 // WriteBackWriterDocument writes the active IR or Markdown draft to the selected
 // provider and saves the provider-confirmed IR as a new revision.
 func WriteBackWriterDocument(w http.ResponseWriter, r *http.Request) {
@@ -518,6 +529,35 @@ func WriteBackWriterDocument(w http.ResponseWriter, r *http.Request) {
 		common.ReplyErr(w, "writer session not found", 404)
 		return
 	}
+	provider := strings.TrimSpace(body.Provider)
+	syncedRevision := 0
+	startedAt := time.Now().UnixMilli()
+	responseWriter := &writerWriteBackResponseWriter{ResponseWriter: w, statusCode: http.StatusOK}
+	w = responseWriter
+	notifyWriteBack := func(status string) {
+		if subagent.EventHooks == nil || session.ConversationID == "" {
+			return
+		}
+		// Both automatic and manual calls report through the existing conversation stream.
+		subagent.EventHooks.CallConversationEvent(
+			context.Background(), store.State(), session.ConversationID, "", "writer_document_write_back",
+			map[string]any{
+				"session_id": sessionID, "slot_id": slot, "provider": provider,
+				"base_revision": body.BaseRevision, "revision": syncedRevision,
+				"status": status, "started_at": startedAt,
+			},
+		)
+	}
+	notifyWriteBack("loading")
+	defer func() {
+		status := "error"
+		if responseWriter.statusCode == http.StatusConflict {
+			status = "conflict"
+		} else if responseWriter.statusCode < 400 && syncedRevision > 0 {
+			status = "success"
+		}
+		notifyWriteBack(status)
+	}()
 	draft, err := loadSelectedWriterArtifact(r.Context(), db, sessionID, slot)
 	if err != nil {
 		common.ReplyErr(w, "writer session not found", 404)
@@ -538,7 +578,6 @@ func WriteBackWriterDocument(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	provider := strings.TrimSpace(body.Provider)
 	if provider == "" {
 		provider = writerDocumentProvider(draft.Value)
 		if target, err := loadSelectedWriterArtifact(r.Context(), db, sessionID, "target_document"); provider == "" && err == nil {
@@ -552,6 +591,9 @@ func WriteBackWriterDocument(w http.ResponseWriter, r *http.Request) {
 	key := legacyWriterPublicationKey(owner, sessionID, slot, body)
 	request := workflow.DocumentPublishRequest{Action: "publish_document", BaseRevision: &body.BaseRevision, BaseDraftVersion: body.BaseDraftVersion, Input: &workflow.DocumentPublishInput{Provider: provider, Mode: "replace", IdempotencyKey: key, Template: body.Template}}
 	result, operation, err := workflow.PublishDocumentArtifact(r.Context(), db, owner, draft.Revision.ID, request, nil)
+	if err == nil && result != nil && result.Status == "synced" && result.ProviderSynced && result.ArtifactSaved {
+		syncedRevision = result.Revision
+	}
 	workflow.ReplyDocumentPublication(w, result, operation, err)
 }
 
