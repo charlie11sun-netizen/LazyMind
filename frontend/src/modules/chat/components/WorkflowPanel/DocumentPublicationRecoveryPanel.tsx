@@ -10,12 +10,13 @@ const terminal = new Set(['succeeded','failed_no_write','canceled','outcome_unkn
 export function DocumentPublicationRecoveryPanel({ artifactId, slotId, itemIndex, refreshKey, publishing, readOnly, canApplyLocal, onAvailability, onResolved, onPublished, onTarget }: {
   artifactId: string; slotId: string; itemIndex: number; refreshKey: number; publishing: boolean; readOnly?: boolean;
   canApplyLocal: () => boolean; onAvailability: (allowed: boolean) => void; onResolved: () => void;
-  onPublished?: (url: string | undefined) => void;
+  onPublished?: (url: string | undefined, provider?: string) => void;
   onTarget?: (url: string) => void;
 }) {
   const {t}=useTranslation();
   const [operation,setOperation]=useState<DocumentPublicationStatus>();
   const [loaded,setLoaded]=useState(false);
+  const [needsRefresh,setNeedsRefresh]=useState(false);
   const [busy,setBusy]=useState(false);
   const [error,setError]=useState('');
   const [now,setNow]=useState(Date.now());
@@ -27,29 +28,39 @@ export function DocumentPublicationRecoveryPanel({ artifactId, slotId, itemIndex
   callbacks.current={canApplyLocal,onAvailability,onResolved,onPublished,onTarget};
   const silent={silentError:true};
 
+  const readNeedsRefresh=useCallback(async(next?:DocumentPublicationStatus)=>{
+    if(next?.status!=='succeeded' || !next.artifact_id || next.artifact_id===artifactId || next.source_slot_id!==slotId || next.item_index!==itemIndex) return false;
+    // A different ID can also be a newer local edit after publication.
+    const artifact=await WorkflowSessionApi().getDocumentArtifact(artifactId,{silentError:true});
+    if(!artifact.data.ok || artifact.data.result.artifact_id!==artifactId || typeof artifact.data.result.selected!=='boolean') throw new Error('invalid artifact response');
+    return !artifact.data.result.selected;
+  },[artifactId,slotId,itemIndex]);
+
   const load=useCallback(async()=>{
     const current=++generation.current;
     setBusy(true);setError('');
     try {
       const response=await WorkflowSessionApi().getPublicationForArtifact(artifactId,{silentError:true});
-      if(alive.current && current===generation.current){setOperation(response.data.data.operation);setLoaded(true);setNow(Date.now());}
+      const next=response.data.data.operation;
+      const stale=await readNeedsRefresh(next);
+      if(alive.current && current===generation.current){setOperation(next);setNeedsRefresh(stale);setLoaded(true);setNow(Date.now());}
     } catch {
       if(alive.current && current===generation.current){setLoaded(false);setError('loadFailed');}
     } finally {if(alive.current && current===generation.current)setBusy(false);}
-  },[artifactId]);
+  },[artifactId,readNeedsRefresh]);
   useEffect(()=>{
     alive.current=true;
     return ()=>{alive.current=false;generation.current++;dialog.current?.destroy();};
   },[]);
   useEffect(()=>{void load();},[load,refreshKey]);
   useEffect(()=>{
-    callbacks.current.onAvailability(loaded && !busy && !error && (!operation || terminal.has(operation.status)));
-  },[loaded,busy,error,operation]);
+    callbacks.current.onAvailability(loaded && !busy && !error && !needsRefresh && (!operation || terminal.has(operation.status)));
+  },[loaded,busy,error,operation,needsRefresh]);
   useEffect(()=>{
     if(loaded && !error && operation && operation.source_slot_id===slotId && operation.item_index===itemIndex) {
-      const url=documentPublicationUrl(operation.target_url);
+      const url=documentPublicationUrl(operation.target_url,operation.provider);
       if(url)callbacks.current.onTarget?.(url);
-      if(operation.status==='succeeded')callbacks.current.onPublished?.(url);
+      if(operation.status==='succeeded')callbacks.current.onPublished?.(url,operation.provider);
     }
   },[loaded,error,operation,slotId,itemIndex]);
   useEffect(()=>{
@@ -73,8 +84,9 @@ export function DocumentPublicationRecoveryPanel({ artifactId, slotId, itemIndex
         status=(await api.readPublication(operation.operation_id,silent)).data.data;
       } else if(action==='cancel') status=(await api.cancelPublication(operation.operation_id,silent)).data.data;
       else status=(await api.recoverPublication(operation.operation_id,{action,confirmed:action!=='check',reason},silent)).data.data;
+      const stale=await readNeedsRefresh(status);
       if(alive.current && current===generation.current){
-        setOperation(status);setLoaded(true);setNow(Date.now());
+        setOperation(status);setNeedsRefresh(stale);setLoaded(true);setNow(Date.now());
         if(terminal.has(status.status))callbacks.current.onResolved();
       }
     } catch (failure) {
@@ -94,16 +106,17 @@ export function DocumentPublicationRecoveryPanel({ artifactId, slotId, itemIndex
   const expired=operation?.status==='write_started' && operation.recovery_after && new Date(operation.recovery_after).getTime()<=now;
   if(!loaded && !error)return null;
   if(!operation && !error)return null;
-  const target=documentPublicationUrl(operation?.target_url);
+  const target=documentPublicationUrl(operation?.target_url,operation?.provider);
   const hasFooterTarget=Boolean(onTarget && operation?.source_slot_id===slotId && operation?.item_index===itemIndex);
   if(operation && terminal.has(operation.status) && operation.status!=='succeeded' && !error) {
     return target && !hasFooterTarget ? <a className='document-publication-recovery__link' href={target} target='_blank' rel='noreferrer'>{t('chat.writerIR.openCloudDocument')}</a> : null;
   }
   if(operation?.status==='succeeded' && !error) {
-    const needsRefresh=operation.artifact_id && operation.artifact_id!==artifactId && operation.source_slot_id===slotId && operation.item_index===itemIndex;
-    if(onPublished && !needsRefresh)return null;
+    const needsLink=operation.provider==='wechat' && !target;
+    if(onPublished && !needsRefresh && !needsLink)return null;
     return <Space>
-      {!onPublished && (target ? <a href={target} target='_blank' rel='noreferrer'>{t('chat.writerIR.openCloudDocument')}</a> : <span>{t('chat.writerIR.writeBackSuccess')}</span>)}
+      {!onPublished && (target ? <a href={target} target='_blank' rel='noreferrer'>{t('chat.writerIR.openCloudDocument')}</a> : <span>{t(needsLink?'chat.writerIR.wechatDraftLinkUnavailable':'chat.writerIR.writeBackSuccess')}</span>)}
+      {needsLink && <Button size='small' type='link' disabled={busy || publishing} onClick={()=>void load()}>{t('chat.writerIR.refreshWechatDraftLink')}</Button>}
       {needsRefresh && <Button size='small' type='link' disabled={disabled} onClick={()=>callbacks.current.onResolved()}>{label('updateDraft')}</Button>}
     </Space>;
   }

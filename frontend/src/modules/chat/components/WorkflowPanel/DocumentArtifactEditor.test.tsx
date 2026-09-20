@@ -1,4 +1,4 @@
-vi.mock('./useWriterProviderAvailability', () => ({ useWriterProviderAvailability: () => ({ states: { feishu: 'ready' }, refresh: vi.fn() }) }));
+vi.mock('./useWriterProviderAvailability', () => ({ useWriterProviderAvailability: () => ({ states: { feishu: 'ready', github: 'ready', wechat: 'ready', obsidian: 'ready', notion: 'ready' }, refresh: vi.fn() }) }));
 import { act, fireEvent, cleanup, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import i18n from '@/i18n';
@@ -6,7 +6,7 @@ import type { SlotRevision } from '@/modules/chat/store/workflowPanel';
 import { DocumentArtifactEditor } from './DocumentArtifactEditor';
 import { SlotEditingContext, type SlotFooterAction } from './slotEditingContext';
 
-const api = vi.hoisted(() => ({ previewDocumentAction: vi.fn(), listDocumentProviders: vi.fn(), publishDocument: vi.fn(), getPublicationForArtifact: vi.fn(async()=>({data:{data:{}}})) }));
+const api = vi.hoisted(() => ({ getDocumentArtifact: vi.fn(), convertDocument: vi.fn(), saveDocumentArtifact: vi.fn(), previewDocumentAction: vi.fn(), listDocumentProviders: vi.fn(), publishDocument: vi.fn(), getPublicationForArtifact: vi.fn(async()=>({data:{data:{}}})) }));
 const download = vi.hoisted(() => vi.fn());
 const confirm = vi.hoisted(() => vi.fn());
 vi.mock('@/modules/chat/utils/request', async (importOriginal) => ({
@@ -18,11 +18,13 @@ vi.mock('antd', async (importOriginal) => ({
 }));
 
 vi.mock('./MarkdownArtifactEditor', () => ({
-  MarkdownArtifactEditor: ({ markdown }: { markdown: string }) => <article>{markdown}</article>,
+  MarkdownArtifactEditor: ({ markdown, sourceRevision, onSave }: { markdown: string; sourceRevision: number; onSave: (text: string, revision: number, mode: 'draft') => Promise<unknown> }) => <>
+    <article>{markdown}</article>
+    <button onClick={() => void onSave('# Updated draft', sourceRevision, 'draft')}>save draft fixture</button>
+  </>,
 }));
 vi.mock('./WriterIRControl', () => ({ WriterIRControl: () => null }));
 vi.mock('./ArtifactRewriteDialog', () => ({ ArtifactRewriteDialog: () => null }));
-vi.mock('./useDocumentCopy', () => ({ useDocumentCopy: () => {} }));
 vi.mock('./WriterDownloadFormat', () => ({
   downloadSource: download,
   WriterDownloadFormatDialog: () => null,
@@ -31,6 +33,30 @@ vi.mock('./WriterDownloadFormat', () => ({
 }));
 
 afterEach(() => { cleanup(); vi.clearAllMocks(); });
+
+it('copies LaTeX using the saved draft version before a parent refresh', async () => {
+  const writeText = vi.fn().mockResolvedValue(undefined);
+  Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText } });
+  api.convertDocument.mockResolvedValue({ data: { code: 0, data: { format: 'latex', content: 'converted fixture' } } });
+  api.saveDocumentArtifact.mockResolvedValue({ data: { ok: true, result: {
+    artifact_id: 'copy-fixture', revision: 3, draft_version: 8, value: { text: '# Updated draft' },
+  } } });
+  let action: SlotFooterAction | undefined;
+  const slot = { artifact_id: 'copy-fixture', slot_id: 'draft_document', revision: 3, draft_version: 7,
+    artifact_value: { text: '# Draft' }, document: { representation: 'markdown', editable: true, capabilities: ['save', 'convert_document'] } } as SlotRevision;
+  render(<SlotEditingContext.Provider value={{ setEditing: vi.fn(), registerFlush: () => () => {},
+    registerFooterAction: (_key, next) => { if (next?.icon === 'copy') action = next; return () => {}; },
+  }}><DocumentArtifactEditor slot={slot} sessionId='session' /></SlotEditingContext.Provider>);
+  await waitFor(() => expect(action).toBeDefined());
+  act(() => action!.menu!.find(item => item.key === 'latex')!.onClick());
+  await waitFor(() => expect(writeText).toHaveBeenCalledTimes(1));
+  expect(api.convertDocument).toHaveBeenLastCalledWith('session', 'draft_document', -1, 3, 'latex', '# Draft', 7);
+  fireEvent.click(screen.getByRole('button', { name: 'save draft fixture' }));
+  await waitFor(() => expect(screen.getByRole('article')).toHaveTextContent('# Updated draft'));
+  act(() => action!.onClick());
+  await waitFor(() => expect(writeText).toHaveBeenCalledTimes(2));
+  expect(api.convertDocument).toHaveBeenLastCalledWith('session', 'draft_document', -1, 3, 'latex', '# Updated draft', 8);
+});
 
 describe('document artifact display', () => {
   it('shows the failed publication stage returned by the backend', async () => {
@@ -121,26 +147,99 @@ it('confirms the existing publication target before an overwrite', async () => {
   expect(api.publishDocument).toHaveBeenCalledTimes(1);
 });
 
-it('shows the returned cloud document link in the footer immediately after a successful publication', async () => {
+it.each([
+  ['feishu', { uri: 'https://example.test/published-document' }, 'https://example.test/published-document'],
+  ['feishu', { uri: 'feishu:/~docx/FixtureDocumentToken', doc_id: 'FixtureDocumentToken' }, 'https://feishu.cn/docx/FixtureDocumentToken'],
+  ['feishu', { uri: 'feishu@FixtureSpace:/~node/FixtureWikiToken', doc_id: 'FixtureDocumentToken' }, 'https://feishu.cn/wiki/FixtureWikiToken'],
+  ['feishu', { doc_id: 'FixtureDocumentToken' }, 'https://feishu.cn/docx/FixtureDocumentToken'],
+  ['notion', { uri: 'notion:/~page/12345678-1234-1234-1234-123456789abc', doc_id: '12345678-1234-1234-1234-123456789abc' }, 'https://www.notion.so/12345678123412341234123456789abc'],
+  ['feishu', { uri: 'https://example.feishu.cn/wiki/fixture-document' }, 'https://example.feishu.cn/wiki/fixture-document'],
+  ['notion', { uri: 'notion:/~page/fixture', meta: { browser_url: 'https://www.notion.so/fixture-document' } }, 'https://www.notion.so/fixture-document'],
+  ['github', { uri: 'github://repo/note.md', meta: { browser_url: 'https://github.com/example/docs/blob/main/note.md' } }, 'https://github.com/example/docs/blob/main/note.md'],
+  ['github', { uri: 'github://repo/note.md', meta: { browser_url: 'https://github.com/example/docs/blob/main/note.md', pull_request_url: 'https://github.com/example/docs/pull/7' } }, 'https://github.com/example/docs/pull/7'],
+  ['github', { uri: 'githubwiki://example/docs/note', meta: { browser_url: 'https://github.com/example/docs/wiki/Note' } }, 'https://github.com/example/docs/wiki/Note'],
+  ['wechat', { uri: 'wechat://draft/fixture', meta: { browser_url: 'https://mp.weixin.qq.com/s?tempkey=fixture-preview' } }, 'https://mp.weixin.qq.com/s?tempkey=fixture-preview'],
+  ['obsidian', { uri: 'obsidian://vlt_fixture/note.md', meta: { local_path: '/Users/test/My Vault/中文 #1.md' } }, 'obsidian://open?path=%2FUsers%2Ftest%2FMy%20Vault%2F%E4%B8%AD%E6%96%87%20%231.md'],
+])('shows the returned %s document link in the footer immediately after publication', async (provider, target, url) => {
   await i18n.changeLanguage('zh-CN');
-  api.listDocumentProviders.mockResolvedValue({ data: { data: { providers: [{ id: 'feishu' }] } } });
+  api.listDocumentProviders.mockResolvedValue({ data: { data: { providers: [{ id: provider }] } } });
   api.publishDocument.mockResolvedValue({ data: { data: { artifact_id: 'saved', revision: 2, draft_version: 1,
-    document: '# Draft', provider_synced: true, artifact_saved: true, target_document: { uri: 'https://example.test/published-document' } } } });
+    document: '# Draft', provider_synced: true, artifact_saved: true, target_document: { adapter: provider, ...target } } } });
   let action: SlotFooterAction | undefined;
+  const onRefresh = vi.fn();
   const slot = { artifact_id: 'publication-link', slot_id: 'draft_document', revision: 1, artifact_value: { text: '# Draft' },
     document: { representation: 'markdown', editable: true, capabilities: ['save', 'publish_document'] } } as SlotRevision;
   render(<SlotEditingContext.Provider value={{ setEditing: vi.fn(), registerFlush: () => () => {},
     registerFooterAction: (_key, next) => { if (next?.icon === 'write-back') action = next; return () => {}; },
-  }}><DocumentArtifactEditor slot={slot} sessionId='fixture' /></SlotEditingContext.Provider>);
+  }}><DocumentArtifactEditor slot={slot} sessionId='fixture' onRefresh={onRefresh} /></SlotEditingContext.Provider>);
   await waitFor(() => expect(action?.disabled).toBe(false));
   await act(async () => action!.onClick());
-  await waitFor(() => expect(action?.statusLink).toEqual({ href: 'https://example.test/published-document', label: '打开云文档' }));
+  await waitFor(() => expect(action?.statusLink).toEqual({ href: url, label: '打开云文档' }));
   expect(action?.statusText).toBe('已写回云文档');
   expect(screen.queryByRole('alert')).not.toBeInTheDocument();
   expect(confirm).not.toHaveBeenCalled();
+  expect(onRefresh).toHaveBeenCalledTimes(1);
+  expect(api.publishDocument).toHaveBeenCalledTimes(1);
 });
 
-it.each(['https://example.test/published-document', 'javascript:alert(1)', 'https://user:password@example.test/document'])('restores a safe success link without a recovery banner: %s', async url => {
+it.each(['success', 'failure'])('shows the requested platform throughout publication and clears it after %s', async outcome => {
+  await i18n.changeLanguage('zh-CN');
+  localStorage.clear();
+  api.listDocumentProviders.mockResolvedValue({ data: { data: { providers: [{ id: 'feishu' }, { id: 'notion' }, { id: 'github' }] } } });
+  let finish!: (response: unknown) => void;
+  let fail!: (error: unknown) => void;
+  api.publishDocument.mockImplementation(() => new Promise((resolve, reject) => { finish = resolve; fail = reject; }));
+  let action: SlotFooterAction | undefined;
+  const onRefresh = vi.fn();
+  const slot = { artifact_id: 'feishu-bound', slot_id: 'draft_document', revision: 1, draft_version: 1,
+    provider: 'feishu', provider_document_id: 'feishu-document', write_back_ready: true,
+    artifact_value: { text: '# Draft' }, document: { representation: 'markdown', editable: true, capabilities: ['save', 'publish_document'] } } as SlotRevision;
+  render(<SlotEditingContext.Provider value={{ setEditing: vi.fn(), registerFlush: () => () => {},
+    registerFooterAction: (_key, next) => { if (next?.icon === 'write-back') action = next; return () => {}; },
+  }}><DocumentArtifactEditor slot={slot} sessionId='fixture' onRefresh={onRefresh} /></SlotEditingContext.Provider>);
+  await waitFor(() => expect(action?.disabled).toBe(false));
+  act(() => action!.menu!.find(item => item.key === 'notion')!.onClick());
+  expect(api.publishDocument).toHaveBeenCalledWith('feishu-bound', expect.objectContaining({ input: expect.objectContaining({ provider: 'notion' }) }), expect.anything());
+  expect(action?.label).toBe('正在写入Notion…');
+  expect(action?.disabled).toBe(true);
+  const success = { data: { data: { artifact_id: 'notion-published', revision: 2, draft_version: 1,
+    provider_synced: true, artifact_saved: true, document: '# Draft', target_document: { uri: 'https://example.test/notion' } } } };
+  await act(async () => {
+    if (outcome === 'success') finish(success);
+    else fail({ response: { data: { data: { code: 'DOCUMENT_CONVERSION_FAILED' } } } });
+  });
+  await waitFor(() => expect(action?.disabled).toBe(false));
+  expect(action?.label).toBe('发布');
+  expect(onRefresh).toHaveBeenCalledTimes(outcome === 'success' ? 1 : 0);
+  if (outcome === 'failure') expect(action?.statusText).toContain('Notion');
+  act(() => action!.menu!.find(item => item.key === 'github')!.onClick());
+  expect(action?.label).toBe('正在写入GitHub…');
+  expect(api.publishDocument.mock.calls[1][1].input.provider).toBe('github');
+  await act(async () => finish(success));
+  await waitFor(() => expect(action?.disabled).toBe(false));
+  expect(action?.label).toBe('发布');
+  expect(confirm).not.toHaveBeenCalled();
+});
+
+it.each([
+  ['feishu', 'feishu:/~docx/FixtureDoc', 'FixtureDoc', 'https://feishu.cn/docx/FixtureDoc'],
+  ['feishu', undefined, 'FixtureDoc', 'https://feishu.cn/docx/FixtureDoc'],
+  ['notion', 'notion:/~page/12345678-1234-1234-1234-123456789abc', '12345678-1234-1234-1234-123456789abc', 'https://www.notion.so/12345678123412341234123456789abc'],
+])('restores the existing %s slot target without publishing again', async (provider, uri, id, expected) => {
+  await i18n.changeLanguage('zh-CN');
+  api.listDocumentProviders.mockResolvedValue({ data: { data: { providers: [{ id: provider }] } } });
+  api.getPublicationForArtifact.mockResolvedValueOnce({ data: { data: {} } });
+  let action: SlotFooterAction | undefined;
+  const slot = { artifact_id: 'existing-binding', slot_id: 'draft_document', revision: 1, provider, provider_document_id: id,
+    write_back_url: uri, artifact_value: { text: '# Draft' }, document: { representation: 'markdown', editable: true, capabilities: ['save', 'publish_document'] } } as SlotRevision;
+  render(<SlotEditingContext.Provider value={{ setEditing: vi.fn(), registerFlush: () => () => {},
+    registerFooterAction: (_key, next) => { if (next?.icon === 'write-back') action = next; return () => {}; },
+  }}><DocumentArtifactEditor slot={slot} sessionId='fixture' /></SlotEditingContext.Provider>);
+  await waitFor(() => expect(action?.statusLink?.href).toBe(expected));
+  expect(api.publishDocument).not.toHaveBeenCalled();
+});
+
+it.each(['https://example.test/published-document', 'https://github.com/example/docs/pull/7', 'https://mp.weixin.qq.com/', 'obsidian://open?path=%2FUsers%2Ftest%2FVault%2Fnote.md', 'javascript:alert(1)', 'https://user:password@example.test/document'])('restores a safe success link without a recovery banner: %s', async url => {
   await i18n.changeLanguage('zh-CN');
   api.listDocumentProviders.mockResolvedValue({ data: { data: { providers: [{ id: 'feishu' }] } } });
   api.getPublicationForArtifact.mockResolvedValueOnce({ data: { data: { operation: { operation_id: 'completed-operation', status: 'succeeded',
@@ -153,7 +252,7 @@ it.each(['https://example.test/published-document', 'javascript:alert(1)', 'http
     registerFooterAction: (_key, next) => { if (next?.icon === 'write-back') action = next; return () => {}; },
   }}><DocumentArtifactEditor slot={slot} sessionId='fixture' /></SlotEditingContext.Provider>);
   await waitFor(() => expect(action?.disabled).toBe(false));
-  expect(action?.statusLink).toEqual(url === 'https://example.test/published-document' ? { href: url, label: '打开云文档' } : undefined);
+  expect(action?.statusLink).toEqual(url.includes('javascript:') || url.includes('password@') ? undefined : { href: url, label: '打开云文档' });
   expect(action?.statusText).toBe('已写回云文档');
   expect(screen.queryByRole('alert')).not.toBeInTheDocument();
   expect(screen.queryByText('上次云文档发布')).not.toBeInTheDocument();
@@ -182,4 +281,47 @@ it.each(['outcome_unknown_released', 'confirmed_detached', 'outcome_unknown'])('
     expect(action?.disabled).toBe(true);
   } else expect(screen.queryByRole('button', { name: '发布状态' })).not.toBeInTheDocument();
   expect(api.publishDocument).not.toHaveBeenCalled();
+});
+
+it('blocks stale publication buttons and menus until the refreshed draft is loaded', async () => {
+ await i18n.changeLanguage('zh-CN');
+ api.listDocumentProviders.mockResolvedValue({data:{data:{providers:[{id:'feishu'},{id:'obsidian'}]}}});
+ api.getPublicationForArtifact.mockResolvedValue({data:{data:{operation:{operation_id:'op',status:'succeeded',artifact_id:'latest',provider:'feishu',source_slot_id:'draft_document',item_index:-1,actions:[]}}}});
+ api.getDocumentArtifact.mockResolvedValue({data:{ok:true,result:{artifact_id:'stale',selected:false}}});
+ api.publishDocument.mockResolvedValue({data:{data:{artifact_id:'next',revision:4,draft_version:1,document:'# Latest',provider_synced:true,artifact_saved:true}}});
+ let action: SlotFooterAction | undefined;
+ const slot={artifact_id:'stale',slot_id:'draft_document',revision:2,draft_version:1,artifact_value:{text:'# Stale'},document:{representation:'markdown',editable:true,capabilities:['save','publish_document']}} as SlotRevision;
+ const onRefresh=vi.fn();
+ const context={setEditing:vi.fn(),registerFlush:()=>()=>{},registerFooterAction:(_key:string,next:SlotFooterAction|null)=>{if(next?.icon==='write-back')action=next;return ()=>{};}};
+ const view=(current:SlotRevision)=><SlotEditingContext.Provider value={context}><DocumentArtifactEditor slot={current} sessionId='fixture' onRefresh={onRefresh}/></SlotEditingContext.Provider>;
+ const rendered=render(view(slot));
+ await screen.findByRole('button',{name:'更新成稿'});
+ await waitFor(()=>expect(action?.disabled).toBe(true));
+ await act(async()=>{action!.onClick();action!.menu!.find(item=>item.key==='obsidian')!.onClick();});
+ expect(api.publishDocument).not.toHaveBeenCalled();
+ fireEvent.click(screen.getByRole('button',{name:'更新成稿'}));
+ expect(onRefresh).toHaveBeenCalledTimes(1);
+ rendered.rerender(view({...slot,artifact_id:'latest',revision:3,draft_version:7,artifact_value:{text:'# Latest'}}));
+ await waitFor(()=>expect(action?.disabled).toBe(false));
+ await act(async()=>action!.menu!.find(item=>item.key==='obsidian')!.onClick());
+ expect(api.publishDocument).toHaveBeenCalledWith('latest',expect.objectContaining({base_revision:3,base_draft_version:7,input:expect.objectContaining({provider:'obsidian'})}),expect.anything());
+ api.getPublicationForArtifact.mockResolvedValue({data:{data:{}}});
+});
+it('retains the accepted publication version through a delayed older parent snapshot', async () => {
+ api.getPublicationForArtifact.mockResolvedValue({data:{data:{}}});
+ api.listDocumentProviders.mockResolvedValue({data:{data:{providers:[{id:'feishu'},{id:'obsidian'}]}}});
+ api.publishDocument.mockResolvedValue({data:{data:{artifact_id:'published',revision:3,draft_version:1,document:'# Published',provider_synced:true,artifact_saved:true}}});
+ let action: SlotFooterAction | undefined;
+ const slot={artifact_id:'initial',slot_id:'draft_document',revision:1,draft_version:1,artifact_value:{text:'# Initial'},document:{representation:'markdown',editable:true,capabilities:['save','publish_document']}} as SlotRevision;
+ const context={setEditing:vi.fn(),registerFlush:()=>()=>{},registerFooterAction:(_key:string,next:SlotFooterAction|null)=>{if(next?.icon==='write-back')action=next;return ()=>{};}};
+ const view=(current:SlotRevision)=><SlotEditingContext.Provider value={context}><DocumentArtifactEditor slot={current} sessionId='fixture'/></SlotEditingContext.Provider>;
+ const rendered=render(view(slot));
+ await waitFor(()=>expect(action?.disabled).toBe(false));
+ await act(async()=>action!.menu!.find(item=>item.key==='feishu')!.onClick());
+ await waitFor(()=>expect(action?.disabled).toBe(false));
+ expect(api.getPublicationForArtifact).toHaveBeenLastCalledWith('published',expect.anything());
+ rendered.rerender(view({...slot,artifact_id:'delayed',revision:2,artifact_value:{text:'# Delayed'}}));
+ expect(screen.getByRole('article')).toHaveTextContent('# Published');
+ await act(async()=>action!.menu!.find(item=>item.key==='obsidian')!.onClick());
+ expect(api.publishDocument).toHaveBeenLastCalledWith('published',expect.objectContaining({base_revision:3,base_draft_version:1}),expect.anything());
 });

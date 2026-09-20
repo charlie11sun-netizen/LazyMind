@@ -303,12 +303,19 @@ def write_document(
     }
 
 
+def _provider_locator_matches(user_input: str):
+    # Existing Writer sessions retain requests serialized before mention chips
+    # had text separators ("AI Writerobsidian://..."). Keep those locators usable
+    # without rewriting the stored request or guessing arbitrary URI prefixes.
+    return _PROVIDER_LOCATOR_RE.finditer((user_input or '').removeprefix('AI Writer'))
+
+
 def _provider_targets(
     user_input: str, *, stage: str | None = None
 ) -> list[TargetDocument]:
     targets: list[TargetDocument] = []
     seen: set[str] = set()
-    for match in _PROVIDER_LOCATOR_RE.finditer(user_input or ''):
+    for match in _provider_locator_matches(user_input):
         locator = match.group(0).rstrip(').,;!?]}，。；！？】》」』')
         if locator in seen:
             continue
@@ -325,7 +332,7 @@ def _provider_targets(
 
 def find_provider_locator(user_input: str) -> str:
     """Return the first locator handled by a registered Writer provider."""
-    for match in _PROVIDER_LOCATOR_RE.finditer(user_input or ''):
+    for match in _provider_locator_matches(user_input):
         locator = match.group(0).rstrip(').,;!?]}，。；！？】》」』')
         try:
             match_writer_provider(locator)
@@ -365,7 +372,7 @@ def _source_document_target(user_input: str, *, stage: str = 'final') -> TargetD
 
 
 def _provider_create_target(user_input: str) -> tuple[str, TargetDocument] | None:
-    for match in _PROVIDER_LOCATOR_RE.finditer(user_input or ''):
+    for match in _provider_locator_matches(user_input):
         locator = match.group(0).rstrip(').,;!?]}，。；！？】》」』')
         try:
             target = resolve_writer_create_target(locator)

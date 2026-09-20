@@ -1,5 +1,6 @@
-// Shared editor language chunks require the Prism global during module evaluation.
+// Initialize Prism and its grammars before shared editor chunks evaluate them.
 import "prismjs";
+import "./modules/chat/components/MarkdownViewer/syntaxHighlight";
 import { createRoot } from "react-dom/client";
 import App from "./App";
 import GlobalErrorBoundary from "./components/GlobalErrorBoundary";

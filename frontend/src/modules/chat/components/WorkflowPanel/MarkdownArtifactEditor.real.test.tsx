@@ -10,22 +10,23 @@ vi.mock('@mdxeditor/editor',async()=>{
   return <actual.MDXEditor {...props} ref={(editor)=>{capture.editor=editor;if(typeof ref==='function')ref(editor);else if(ref)ref.current=editor;}} />;
  })};
 });
-it.each([false,true])('preserves unsaved source edits when returning to rich text (reopening more menu: %s)',async(viaPreview)=>{
- const original='Old https://example.org A & B.\n';
+it.each([false,true])('keeps source read-only and allows rich editing after returning (reopening more menu: %s)',async(viaPreview)=>{
+ const original='Old [https://example.org](https://example.org) A & B.\n';
  const onSave=vi.fn(async(markdown:string)=>({markdown,revision:2}));
  const {container,getByRole}=render(<MarkdownArtifactEditor markdown={original} sourceRevision={1} onSave={onSave} />);
  await waitFor(()=>expect(container.querySelector('[contenteditable=true]')).toHaveTextContent('Old'));
  container.querySelector('details.writer-document-options')?.setAttribute('open', '');
  fireEvent.click(getByRole('button',{name:'chat.writerSource.source'}));
- const source=original.replace('Old','Source')+'\nAdded in source.\n\n';
- fireEvent.change(getByRole('textbox',{name:'chat.writerSource.source'}),{target:{value:source}});
+ const source=original;
+ expect(getByRole('textbox',{name:'chat.writerSource.source'})).toHaveAttribute('readonly');
+ fireEvent.change(getByRole('textbox',{name:'chat.writerSource.source'}),{target:{value:source+'Attempted source edit'}});
  if(viaPreview){ container.querySelector('details.writer-document-options')?.removeAttribute('open'); container.querySelector('details.writer-document-options')?.setAttribute('open', ''); }
  fireEvent.click(getByRole('button',{name:'chat.writerLocal.backToDocument'}));
- await waitFor(()=>expect(container.querySelector('[contenteditable=true]')).toHaveTextContent('Source'));
- await act(async()=>capture.editor!.setMarkdown(source.replace('Source','Rich')));
+ await waitFor(()=>expect(container.querySelector('[contenteditable=true]')).toHaveTextContent('Old'));
+ await act(async()=>capture.editor!.setMarkdown(source.replace('Old','Rich')));
  await act(async()=>capture.change?.(capture.editor!.getMarkdown(),false));
  await waitFor(()=>expect(onSave).toHaveBeenCalled(),{timeout:2500});
- expect(onSave.mock.calls[0][0]).toBe(source.replace('Source','Rich'));
+ expect(onSave.mock.calls[0][0]).toBe(source.replace('Old','Rich'));
 });
 vi.mock('react-i18next',()=>({initReactI18next:{type:'3rdParty',init:()=>undefined},useTranslation:()=>({t:(key:string)=>key})}));
 vi.mock('./ArtifactRewriteDialog',()=>({ArtifactRewriteInlineDiff:()=>null}));
@@ -75,29 +76,30 @@ it('preserves returned URL and ampersand spelling across another rich save',asyn
  expect(onSave.mock.calls[1][0]).toBe('First edit https://example.org A & B.\n');
 });
 
-it('keeps a newer source baseline when an older rich save finishes',async()=>{
+it('keeps a newer rich edit after viewing source while an older save finishes',async()=>{
  let release: (()=>void) | undefined;
  let count=0;
  const onSave=vi.fn(async(markdown:string)=>{
    if(++count===1)await new Promise<void>(resolve=>{release=resolve;});
    return {markdown,revision:count+1};
  });
- const {container,getByRole}=render(<MarkdownArtifactEditor markdown={'Old https://example.org\n'} sourceRevision={1} onSave={onSave} />);
+ const {container,getByRole}=render(<MarkdownArtifactEditor markdown={'Old [https://example.org](https://example.org)\n'} sourceRevision={1} onSave={onSave} />);
  await waitFor(()=>expect(container.querySelector('[contenteditable=true]')).toHaveTextContent('Old'));
- await act(async()=>capture.editor!.setMarkdown('First https://example.org'));
+ await act(async()=>capture.editor!.setMarkdown('First [https://example.org](https://example.org)'));
  await act(async()=>capture.change?.(capture.editor!.getMarkdown(),false));
  await waitFor(()=>expect(onSave).toHaveBeenCalledTimes(1),{timeout:2500});
  container.querySelector('details.writer-document-options')?.setAttribute('open', '');
  fireEvent.click(getByRole('button',{name:'chat.writerSource.source'}));
- const source='Source https://example.org\n\nAdded https://other.example.org\n';
- fireEvent.change(getByRole('textbox',{name:'chat.writerSource.source'}),{target:{value:source}});
+ const source='First [https://example.org](https://example.org)\n';
+ expect(getByRole('textbox',{name:'chat.writerSource.source'})).toHaveAttribute('readonly');
+ fireEvent.change(getByRole('textbox',{name:'chat.writerSource.source'}),{target:{value:source+'Attempted source edit'}});
  fireEvent.click(getByRole('button',{name:'chat.writerLocal.backToDocument'}));
- await waitFor(()=>expect(container.querySelector('[contenteditable=true]')).toHaveTextContent('Source'));
- await act(async()=>capture.editor!.setMarkdown(source.replace('Source','Second')));
+ await waitFor(()=>expect(container.querySelector('[contenteditable=true]')).toHaveTextContent('First'));
+ await act(async()=>capture.editor!.setMarkdown(source.replace('First','Second')));
  await act(async()=>capture.change?.(capture.editor!.getMarkdown(),false));
  await act(async()=>release!());
  await waitFor(()=>expect(onSave).toHaveBeenCalledTimes(2),{timeout:2500});
- expect(onSave.mock.calls[1][0]).toBe(source.replace('Source','Second'));
+ expect(onSave.mock.calls[1][0]).toBe(source.replace('First','Second'));
 });
 
 it.each([
@@ -106,20 +108,27 @@ it.each([
  {original:'\nOld plain\n\n',source:'Old plain',viaPreview:false},
  {original:'Old plain\n',source:'Old plain\n\n',viaPreview:true},
  {original:'First\n\nSecond\n',source:'First\n\n\nSecond\n',viaPreview:false},
-])('saves explicit source whitespace after switching back to rich: %j',async({original,source,viaPreview})=>{
+])('ignores source whitespace changes and preserves the original on return: %j',async({original,source,viaPreview})=>{
  const onSave=vi.fn(async(markdown:string)=>({markdown,revision:2}));
  const {container,getByRole}=render(<MarkdownArtifactEditor markdown={original} sourceRevision={1} onSave={onSave} />);
  await waitFor(()=>expect(container.querySelector('[contenteditable=true]')).not.toBeNull());
  container.querySelector('details.writer-document-options')?.setAttribute('open', '');
  fireEvent.click(getByRole('button',{name:'chat.writerSource.source'}));
+ expect(getByRole('textbox',{name:'chat.writerSource.source'})).toHaveAttribute('readonly');
  fireEvent.change(getByRole('textbox',{name:'chat.writerSource.source'}),{target:{value:source}});
  if(viaPreview){ container.querySelector('details.writer-document-options')?.removeAttribute('open'); container.querySelector('details.writer-document-options')?.setAttribute('open', ''); }
- fireEvent.click(getByRole('button',{name:'chat.writerLocal.backToDocument'}));
- await waitFor(()=>expect(onSave).toHaveBeenCalledTimes(1),{timeout:2500});
- expect(onSave.mock.calls[0][0]).toBe(source);
+ vi.useFakeTimers();
+ try {
+  fireEvent.click(getByRole('button',{name:'chat.writerLocal.backToDocument'}));
+  await act(async()=>vi.advanceTimersByTimeAsync(1500));
+  expect(onSave).not.toHaveBeenCalled();
+  container.querySelector('details.writer-document-options')?.setAttribute('open', '');
+  fireEvent.click(getByRole('button',{name:'chat.writerSource.source'}));
+  expect(getByRole('textbox',{name:'chat.writerSource.source'})).toHaveValue(original);
+ } finally {vi.useRealTimers();}
 });
 
-it.each([false,true])('does not save a reverted source edit or an unchanged mode switch: %s',async(revert)=>{
+it.each([false,true])('does not save attempted source changes or an unchanged mode switch: %s',async(revert)=>{
  const original='Old plain\n';
  const onSave=vi.fn(async(markdown:string)=>({markdown,revision:2}));
  const {container,getByRole}=render(<MarkdownArtifactEditor markdown={original} sourceRevision={1} onSave={onSave} />);
@@ -138,21 +147,20 @@ it.each([false,true])('does not save a reverted source edit or an unchanged mode
  } finally {vi.useRealTimers();}
 });
 
-it('keeps rich normalization tracked after saving only source margins',async()=>{
- const original='Old https://example.org A & B.\n';
- const source=original+'\n';
+it('preserves link and text spelling after inspecting read-only source',async()=>{
+ const original='Old [https://example.org](https://example.org) A & B.\n';
+ const source=original;
  let revision=1;
  const onSave=vi.fn(async(markdown:string)=>({markdown,revision:++revision}));
  const {container,getByRole}=render(<MarkdownArtifactEditor markdown={original} sourceRevision={1} onSave={onSave} />);
  await waitFor(()=>expect(container.querySelector('[contenteditable=true]')).toHaveTextContent('Old'));
  container.querySelector('details.writer-document-options')?.setAttribute('open', '');
  fireEvent.click(getByRole('button',{name:'chat.writerSource.source'}));
- fireEvent.change(getByRole('textbox',{name:'chat.writerSource.source'}),{target:{value:source}});
+ fireEvent.change(getByRole('textbox',{name:'chat.writerSource.source'}),{target:{value:source+'Attempted source edit'}});
  fireEvent.click(getByRole('button',{name:'chat.writerLocal.backToDocument'}));
- await waitFor(()=>expect(onSave).toHaveBeenCalledTimes(1),{timeout:2500});
- expect(onSave.mock.calls[0][0]).toBe(source);
+ expect(onSave).not.toHaveBeenCalled();
  await act(async()=>capture.editor!.setMarkdown(source.replace('Old','New')));
  await act(async()=>capture.change?.(capture.editor!.getMarkdown(),false));
- await waitFor(()=>expect(onSave).toHaveBeenCalledTimes(2),{timeout:2500});
- expect(onSave.mock.calls[1][0]).toBe(source.replace('Old','New'));
+ await waitFor(()=>expect(onSave).toHaveBeenCalledTimes(1),{timeout:2500});
+ expect(onSave.mock.calls[0][0]).toBe(source.replace('Old','New'));
 });

@@ -57,10 +57,10 @@ it('maps cross-paragraph DOM selections to distinct Unicode source positions',()
  for(const item of ranges)expect(Array.from(source).slice(item.start,item.end).join('')).toBe(item.selected_text);
  root.remove();
 });
-it('rejects selection crossing a heading',()=>{
+it('captures a heading between selected paragraphs',()=>{
  const root=document.createElement('div');root.innerHTML='<p>First.</p><h2>Heading</h2><p>Last.</p>';document.body.append(root);
  const range=document.createRange();range.selectNodeContents(root);globalThis.getSelection()!.removeAllRanges();globalThis.getSelection()!.addRange(range);
- expect(selectedMarkdownParagraph(root,true)?.supported).toBe(false);root.remove();
+ expect(selectedMarkdownParagraph(root,true)).toMatchObject({supported:true,text:'First.\n\nHeading\n\nLast.'});root.remove();
 });
 it('captures multiple IR paragraphs and rejects a read-only member',()=>{
  const root=document.createElement('div');root.innerHTML='<div data-node-id="one"><p data-writer-block-content>First.</p></div><div data-node-id="two"><p data-writer-block-content>Last.</p></div>';document.body.append(root);
@@ -91,10 +91,21 @@ it.each(['editing','reading'])('rejects IR selections crossing empty structures 
   expect(selectedIRParagraphs(root,value)).toBeNull();root.remove();
  }
 });
-it('allows a multi-paragraph selection that starts at the end of a heading, but rejects actual heading text', () => {
+it('includes heading text only when the selection actually intersects it', () => {
  const root=document.createElement('div');root.innerHTML='<h1>Title</h1><p>First</p><p>Last</p>';document.body.append(root);
  const heading=root.querySelector('h1')!.firstChild!,last=root.querySelectorAll('p')[1].firstChild!;
  const range=document.createRange();range.setStart(heading,5);range.setEnd(last,4);const selection=window.getSelection()!;selection.removeAllRanges();selection.addRange(range);
  expect(selectedMarkdownParagraph(root,true)).toMatchObject({supported:true,text:'First\n\nLast'});
- range.setStart(heading,4);expect(selectedMarkdownParagraph(root,true)?.supported).toBe(false);selection.removeAllRanges();root.remove();
+ range.setStart(heading,4);expect(selectedMarkdownParagraph(root,true)).toMatchObject({supported:true,text:'e\n\nFirst\n\nLast'});selection.removeAllRanges();root.remove();
+});
+
+it('captures IR headings and list items without including unselected descendants', () => {
+ const root=document.createElement('div');
+ root.innerHTML='<div data-node-id="h"><h2 data-writer-block-content>Heading</h2><div data-node-id="p"><p data-writer-block-content>Body</p></div></div><div data-node-id="li"><p data-writer-block-content>Item</p><div data-node-id="child"><p data-writer-block-content>Child</p></div></div>';
+ document.body.append(root);
+ const range=document.createRange();range.setStart(root.querySelector('h2')!.firstChild!,0);range.setEnd(root.querySelector('[data-node-id="li"] > p')!.firstChild!,4);
+ const selection=window.getSelection()!;selection.removeAllRanges();selection.addRange(range);
+ const value={document_id:'fixture',blocks:[{node_id:'h',type:'heading',content:'Heading',children:[{node_id:'p',type:'paragraph',content:'Body'}]},{node_id:'li',type:'list_item',content:'Item',children:[{node_id:'child',type:'list_item',content:'Child'}]}]};
+ expect(selectedIRParagraphs(root,value)?.nodeSelections).toEqual([{node_id:'h',selected_text:'Heading'},{node_id:'p',selected_text:'Body'},{node_id:'li',selected_text:'Item'}]);
+ selection.removeAllRanges();root.remove();
 });

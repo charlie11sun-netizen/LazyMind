@@ -215,7 +215,9 @@ func SyncWriterDocument(w http.ResponseWriter, r *http.Request) {
 	}
 	key := legacyWriterPublicationKey(owner, sessionID, slotID, body)
 	request := workflow.DocumentPublishRequest{Action: "publish_document", BaseRevision: &body.BaseRevision, BaseDraftVersion: body.BaseDraftVersion, Input: &workflow.DocumentPublishInput{Provider: provider, Mode: "replace", IdempotencyKey: key}}
-	result, operation, err := workflow.PublishDocumentArtifact(r.Context(), db, owner, current.ID, request, &workflow.DocumentPublicationOptions{Candidate: body.RevisedDocument, SkipUnchangedDraft: body.Mode == "draft"})
+	result, operation, err := workflow.PublishDocumentArtifact(r.Context(), db, owner, current.ID, request, &workflow.DocumentPublicationOptions{
+		Candidate: body.RevisedDocument, SkipUnchangedDraft: body.Mode == "draft", AllowLegacyProviderDocument: true,
+	})
 	workflow.ReplyDocumentPublication(w, result, operation, err)
 }
 
@@ -259,9 +261,10 @@ func RenderWriterDocument(w http.ResponseWriter, r *http.Request) {
 		common.ReplyErr(w, "active "+slot+" not found", http.StatusNotFound)
 		return
 	}
+	artifact := writerRenderArtifact(draft.Value)
 	response, status, err := algo.InvokeDocumentAction(ctx, algo.DocumentActionInvokeRequest{
 		Reference: "builtin:document.render_document.v1", Phase: "preview",
-		Artifact:  draft.Value,
+		Artifact:  artifact,
 		Arguments: map[string]any{},
 	})
 	if err != nil {
@@ -356,7 +359,16 @@ func SaveWriterDocument(w http.ResponseWriter, r *http.Request) {
 		}
 		return
 	}
-	editedArtifact, err := json.Marshal(map[string]json.RawMessage{"data": body.Document})
+	document := body.Document
+	var structuredDocument map[string]any
+	if json.Unmarshal(document, &structuredDocument) == nil {
+		document, err = normalizeWriterDocumentForSync(document)
+		if err != nil {
+			common.ReplyErr(w, "invalid document", http.StatusBadRequest)
+			return
+		}
+	}
+	editedArtifact, err := json.Marshal(map[string]json.RawMessage{"data": document})
 	if err != nil {
 		common.ReplyErr(w, "invalid document", http.StatusBadRequest)
 		return
@@ -1123,6 +1135,9 @@ func writerArtifactData(value json.RawMessage, requireLMD bool) (json.RawMessage
 	if data := record["data"]; len(data) > 0 {
 		return data, nil
 	}
+	if text := record["text"]; len(text) > 0 {
+		return text, nil
+	}
 	if len(record["document_id"]) > 0 || len(record["uri"]) > 0 || len(record["doc_id"]) > 0 {
 		return value, nil
 	}
@@ -1146,6 +1161,21 @@ func writerArtifactData(value json.RawMessage, requireLMD bool) (json.RawMessage
 		return nil, fmt.Errorf("read writer artifact: %w", err)
 	}
 	return writerArtifactData(content, false)
+}
+
+func writerRenderArtifact(value json.RawMessage) json.RawMessage {
+	var record map[string]json.RawMessage
+	if json.Unmarshal(value, &record) != nil || len(record["text"]) == 0 {
+		return value
+	}
+	artifact, err := json.Marshal(map[string]json.RawMessage{
+		"schema": json.RawMessage(`"text/markdown"`),
+		"data":   record["text"],
+	})
+	if err != nil {
+		return value
+	}
+	return artifact
 }
 
 func loadWriterWriteBackArtifact(value json.RawMessage) (*writerWriteBackArtifact, error) {

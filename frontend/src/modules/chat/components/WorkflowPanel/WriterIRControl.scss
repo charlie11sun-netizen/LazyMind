@@ -3,11 +3,10 @@
   --writer-ir-border: #dbe3ee;
   --writer-ir-muted: #64748b;
   --writer-ir-page-max-width: 780px;
-  --writer-ir-page-padding: 18px;
   container: writer-ir / inline-size;
   display: grid;
-  grid-template-columns: 32px minmax(0, 1fr);
-  column-gap: 8px;
+  grid-template-columns: minmax(0, 1fr);
+  column-gap: 0;
   align-items: start;
   min-width: 0;
   color: #1e293b;
@@ -17,7 +16,6 @@
 
 .writer-ir--width-wide {
   --writer-ir-page-max-width: 1080px;
-  --writer-ir-page-padding: 6px;
 }
 
 .writer-ir--outline-open {
@@ -198,6 +196,29 @@
 
 .writer-ir__main {
   min-width: 0;
+  grid-column: 1;
+}
+
+.writer-ir__main--source {
+  display: flex;
+  flex-direction: column;
+  align-self: stretch;
+  min-height: 0;
+  overflow: hidden;
+
+  > .writer-source-input {
+    min-height: 240px;
+    resize: none;
+    font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+  }
+}
+
+.writer-ir--source {
+  height: 100%;
+  grid-template-rows: minmax(0, 1fr);
+}
+
+.writer-ir--outline-open > .writer-ir__main {
   grid-column: 2;
 }
 
@@ -205,7 +226,7 @@
   position: sticky;
   top: 0;
   min-width: 0;
-  min-height: 34px;
+  min-height: 30px;
   max-height: calc(100vh - 100px);
   grid-column: 1;
 }
@@ -239,7 +260,8 @@
 }
 
 .writer-ir .writer-ir__outline-toggle--collapsed {
-  margin-top: 4px;
+  min-height: 26px;
+  flex-shrink: 0;
   color: #2563eb;
 }
 
@@ -354,6 +376,7 @@
 }
 
 .writer-ir__document[contenteditable='true'] .writer-ir__heading[data-writer-heading-placeholder] {
+  min-block-size: 1lh;
   position: relative;
   display: block;
   font-size: revert;
@@ -951,7 +974,11 @@
   box-sizing: border-box;
   width: min(100%, var(--writer-ir-page-max-width));
   margin: 0 auto;
-  padding: 6px var(--writer-ir-page-padding) 28px;
+  padding: 6px 0 28px;
+}
+
+.writer-ir__document > .writer-ir__block {
+  margin-inline: 0;
 }
 
 .writer-ir__document--editable {
@@ -1073,7 +1100,7 @@ th.writer-ir__table-cell {
 
 @container writer-ir (max-width: 680px) {
   .writer-ir__outline-rail,
-  .writer-ir__main {
+  .writer-ir--outline-open > .writer-ir__main {
     grid-column: 1 / -1;
   }
 
@@ -1950,11 +1977,6 @@ th.writer-ir__table-cell {
   .writer-ir__notice {
     align-items: flex-start;
     flex-direction: column;
-  }
-
-  .writer-ir__document {
-    padding-right: 4px;
-    padding-left: 4px;
   }
 
   .writer-ir__title,

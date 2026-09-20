@@ -1,10 +1,12 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { SlotRevision } from '@/modules/chat/store/workflowPanel';
+import { SlotEditingContext, type SlotFooterAction } from './slotEditingContext';
 
 const workflowApi = vi.hoisted(() => ({
   getSlots: vi.fn(),
   syncWriterDocument: vi.fn(),
+  convertDocument: vi.fn(),
 }));
 
 vi.mock('@/modules/chat/utils/request', async (importOriginal) => ({
@@ -85,6 +87,10 @@ describe('inline Writer draft baseline lifecycle', () => {
   });
 
   it('uses the returned draft version for the next provider save on the same mount', async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText } });
+    workflowApi.convertDocument.mockResolvedValue({ data: { code: 0, data: { format: 'latex', content: 'converted fixture' } } });
+    let copy: SlotFooterAction | undefined;
     const slot: SlotRevision = {
       slot_id: 'provider_document',
       revision: 1,
@@ -97,15 +103,21 @@ describe('inline Writer draft baseline lifecycle', () => {
       change_source: 'human',
     };
     render(
-      <SlotRenderer
+      <SlotEditingContext.Provider value={{ setEditing: vi.fn(), registerFlush: () => () => {},
+        registerFooterAction: (_key, action) => { if (action?.icon === 'copy') copy = action; return () => {}; },
+      }}><SlotRenderer
         slot={slot}
         expectedType='text'
         sessionId='writer-session'
         slotId='provider_document'
-      />,
+      /></SlotEditingContext.Provider>,
     );
 
     const save = await screen.findByRole('button', { name: 'save provider draft' });
+    await waitFor(() => expect(copy).toBeDefined());
+    act(() => copy!.menu!.find(item => item.key === 'latex')!.onClick());
+    await waitFor(() => expect(writeText).toHaveBeenCalledTimes(1));
+    expect(workflowApi.convertDocument).toHaveBeenLastCalledWith('writer-session', 'provider_document', -1, 1, 'latex', expect.any(Object), 1);
     fireEvent.click(save);
     await waitFor(() => expect(workflowApi.syncWriterDocument).toHaveBeenNthCalledWith(
       1,
@@ -116,6 +128,9 @@ describe('inline Writer draft baseline lifecycle', () => {
       { silentError: true },
     ));
 
+    act(() => copy!.onClick());
+    await waitFor(() => expect(writeText).toHaveBeenCalledTimes(2));
+    expect(workflowApi.convertDocument).toHaveBeenLastCalledWith('writer-session', 'provider_document', -1, 2, 'latex', expect.any(Object), 1);
     fireEvent.click(save);
     await waitFor(() => expect(workflowApi.syncWriterDocument).toHaveBeenNthCalledWith(
       2,

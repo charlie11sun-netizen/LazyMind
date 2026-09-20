@@ -189,6 +189,19 @@ describe('ArtifactRewriteDialog', () => {
         ? { node_id: 'p1', selected_text: 'Selected text' } : { selected_text: 'Selected text' }],
     });
   });
+
+  it('explains ambiguous selections inside a numeric API error envelope', async () => {
+    renderDialog(vi.fn().mockRejectedValue({
+      response: { data: { code: 2000107, message: 'Conflict', data: {
+        code: 'SELECTION_AMBIGUOUS', match_count: 2,
+      } } },
+    }));
+    fireEvent.change(screen.getByRole('textbox'), { target: { value: 'Make it clearer' } });
+    fireEvent.click(screen.getByRole('button', { name: 'chat.artifactRewrite.preview' }));
+    expect(await screen.findByText('chat.artifactRewrite.errors.ambiguous')).toBeVisible();
+    expect(screen.queryByText('chat.artifactRewrite.errors.previewFailed')).not.toBeInTheDocument();
+  });
+
   it('does not submit an empty or whitespace-only instruction', () => {
     const requestPreview = renderDialog();
     const input = screen.getByRole('textbox');
@@ -204,11 +217,11 @@ describe('ArtifactRewriteDialog', () => {
     expect(requestPreview).not.toHaveBeenCalled();
   });
 
-  it('prepares a selected preset without submitting and clears its selected state after a custom edit', () => {
+  it.each(['concise', 'fluent', 'formal'])('prepares the full %s instruction without submitting and clears its selected state after a custom edit', key => {
     const requestPreview = renderDialog();
-    const preset = screen.getByRole('button', { name: 'chat.writerLocal.concise' });
+    const preset = screen.getByRole('button', { name: `chat.writerLocal.${key}` });
     fireEvent.click(preset);
-    expect(screen.getByRole('textbox')).toHaveValue('chat.writerLocal.concise');
+    expect(screen.getByRole('textbox')).toHaveValue(`chat.writerLocal.${key}Instruction`);
     expect(preset).toHaveAttribute('aria-pressed', 'true');
     expect(requestPreview).not.toHaveBeenCalled();
     expect(fireEvent.keyDown(preset, { key: 'Enter' })).toBe(true);

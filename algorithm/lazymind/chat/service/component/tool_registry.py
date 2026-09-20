@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import inspect
+import json
 import re
 from dataclasses import dataclass
 from typing import Any, Callable, Literal
@@ -23,11 +24,9 @@ from lazyllm.tools.tools.search import (
 
 from lazymind.chat.engine.tools import (
     ExternalDatabaseToolkit,
-    LocalFileToolkit,
     WriterCreateToolkit,
     WriterRevisionToolkit,
     MailToolkit,
-    calculator,
     image_editor,
     image_generator,
     SkillManagementToolkit,
@@ -37,8 +36,9 @@ from lazymind.chat.engine.tools import (
     video_generator,
     video_to_gif,
     vision_extractor,
-    vocab_learn,
 )
+from lazymind.chat.engine.tools.calculator import calculator
+from lazymind.chat.engine.tools.vocab_learn import vocab_learn
 from lazymind.chat.engine.tools.memory import MemoryTools
 from lazymind.chat.engine.tools.lazy_kb import KBToolkit, kb_tmp_search
 from lazymind.model_config import get_model_role_runtime_identity, is_model_role_available
@@ -140,9 +140,16 @@ def _video_generator_prompt_appendix() -> SystemPromptAppendix:
 RETRIEVAL_CITATION_OUTPUT_APPENDIX: SystemPromptAppendix = {
     'output_contract': (
         '# Retrieval evidence citation rules (mandatory)\n'
-        'For any used retrieval result containing `ref`, copy that `ref` exactly after its supported claim. '
-        'Never invent or rewrite refs. If relevant knowledge-base and external results both contain `ref`, '
-        'cite at least one result from each category.',
+        'For every claim in the final answer that relies on retrieval or page-fetch evidence, '
+        'cite the supporting `ref` exactly once at the end of the paragraph that uses it. '
+        'Do not insert a ref after every sentence. Never invent or rewrite '
+        'refs, and never replace them with markdown footnotes or '
+        'raw URLs. Do not cite a result that was not used. Prefer `ref` values from pages whose full '
+        'content was fetched over unused search snippets. '
+        'If the answer does not rely on retrieval evidence, do not add a citation merely because '
+        'search or fetch tools ran. '
+        'When a claim uses both knowledge-base and external evidence, cite a supporting `ref` from '
+        'each of those categories that was actually used.',
     ),
 }
 EXTERNAL_SEARCH_CONTENT_APPENDIX: SystemPromptAppendix = {
@@ -173,12 +180,12 @@ ATTACHED_FILES_TOOL_POLICY_APPENDIX: SystemPromptAppendix = {
         '`vision_extractor`, or a Host attachment importer. Prefer this for images when the task is '
         'visual (edit, generate, workflow) or you only need the file location.\n'
         '- `read_user_attachment(filename, turn=N)`: transitional compatibility reader. '
-        'Prefer `grep(target, pattern)` and `read_file(target, offset, limit)` for document text; '
+        'Prefer `search_file_resource(target, pattern)` and `read_file_resource(target, offset, limit)` for document text; '
         'image descriptions remain available through this compatibility tool.\n'
         'Supported uploads: images, pdf/doc/docx/pptx, and common plain-text/code/config files.\n'
         '- Default to the current turn (marked 当前轮次) when the user says '
         '"this image / 这张图 / 这个文件" without naming a turn.\n'
-        '- For uploaded whitelist documents, prefer `kb_tmp_search` then `read_file`. '
+        '- For uploaded whitelist documents, prefer `kb_tmp_search` then `read_file_resource`. '
         'For knowledge-base questions about indexed documents, use `kb_*` tools.',
     ),
 }
@@ -284,9 +291,36 @@ KNOWLEDGE_SEARCH_TOOL_POLICY_APPENDIX: SystemPromptAppendix = {
         "insufficient, prefer `AcademicSearchToolkit` over general web search tools.\n"
     ),
 }
+DOCUMENT_PREVIEW_CHAT_TOOL_POLICY_APPENDIX: SystemPromptAppendix = {
+    'tool_policy': (
+        '# Document Preview Chat Rules\n'
+        'This conversation is embedded in a knowledge-base document preview. The knowledge-base '
+        'filter identifies the open document; unlike an explicit knowledge-base selection in the '
+        'main Chat, it does not require a search on every turn. When the user selected text, for a '
+        'request that directly transforms, '
+        'translates, explains, defines, summarizes, or rewrites that selection, use the supplied '
+        'Selected text and Surrounding passage directly. Do not call a knowledge-base search tool '
+        'for such a request. The selected text is the operation target; the surrounding passage is '
+        'context only. Search the selected document only when the user explicitly asks for other '
+        'occurrences, broader document context, verification against the document, or information '
+        'that is not present in the supplied passage.'
+    ),
+}
 WEB_SEARCH_TOOL_POLICY_APPENDIX: SystemPromptAppendix = {
     'tool_policy': (
         '# Web Search Tool Rules\n'
+        'Use the injected current user date as the time reference; never guess the current year. '
+        'Unless the user specifies a time range, historical period, cutoff date, or version, '
+        'prefer the latest information that remains valid as of that date. Explicit user time '
+        'and version requirements take precedence. Choose a time range appropriate to the topic; '
+        'do not impose a fixed recent window or mechanically append today to every query. '
+        'Use only time-filter parameters supported by the available search tool; when useful, '
+        'include a year or date range in the query. Stable knowledge may use older authoritative '
+        'sources that remain valid. Distinguish publication dates, event dates, and applicable '
+        'versions; verify important facts in the page body rather than treating a recent repost '
+        'as a new event. If a default recent search provides insufficient evidence, gradually '
+        'widen the range without crossing explicit user time boundaries. When freshness cannot '
+        'be verified, state the evidence cutoff or uncertainty.\n'
         'When using `web_search`, the `query` must represent one search intent. '
         'If the user asks to search multiple unrelated keywords or topics, call '
         '`web_search` separately for each keyword/topic. Do not combine unrelated '
@@ -306,7 +340,7 @@ URL_FETCH_TOOL_POLICY_APPENDIX: SystemPromptAppendix = {
         'Listed links are navigation candidates, not read or citable sources. '
         'When `content_truncated=true`, treat the page text as incomplete and do not conclude that omitted content '
         'is absent. When the URL is a PDF, url_fetch ingests it as a file resource and returns file_id; '
-        'read the document with grep then read_file(offset, limit), never from url_fetch page text.',
+        'read the document with search_file_resource then read_file_resource(offset, limit), never from url_fetch page text.',
     ),
     'output_contract': RETRIEVAL_CITATION_OUTPUT_APPENDIX['output_contract'],
 }
@@ -485,7 +519,12 @@ def _kb_prompt_appendix() -> SystemPromptAppendix:
     }
     agentic_config = lazyllm.globals.get('agentic_config') or {}
     if (agentic_config.get('filters') or {}).get('kb_id'):
-        appendix['tool_policy'] = KNOWLEDGE_SEARCH_TOOL_POLICY_APPENDIX['tool_policy']
+        policy = (
+            DOCUMENT_PREVIEW_CHAT_TOOL_POLICY_APPENDIX
+            if agentic_config.get('document_preview_chat')
+            else KNOWLEDGE_SEARCH_TOOL_POLICY_APPENDIX
+        )
+        appendix['tool_policy'] = policy['tool_policy']
     return appendix
 
 
@@ -779,14 +818,6 @@ DEFAULT_TOOLS: list[ToolConfig] = [
         description_en='Create, update, and delete skills.',
     ),
     ToolConfig(
-        name='local_fs',
-        label='本地文件',
-        description='在配置的本地路径内进行 glob 匹配、grep 搜索、文件读取和精确文本替换',
-        tool=LocalFileToolkit(), module='data',
-        label_en='Local Files',
-        description_en='Glob, grep, read, and perform exact text replacements within configured local paths.',
-    ),
-    ToolConfig(
         name='cloud_files', label='云文件', description='浏览、搜索和管理已连接的云文件系统',
         tool=_CLOUD_FILE_TOOLKIT,
         module='data', label_en='Cloud Files',
@@ -882,6 +913,7 @@ def _registration_key_source(tool: Any) -> Callable[[], Any] | None:
     if isinstance(tool, tuple) and len(tool) == 2 and callable(tool[1]):
         return tool[1]
     return None
+
 
 
 def tool_is_active(cfg: ToolConfig) -> bool:

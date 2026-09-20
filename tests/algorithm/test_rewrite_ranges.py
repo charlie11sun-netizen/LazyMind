@@ -1,4 +1,5 @@
 import json
+import re
 
 import pytest
 from fastapi import FastAPI
@@ -79,9 +80,52 @@ def test_route_returns_exact_patch_and_validates_config(monkeypatch):
         assert client.post('/api/chat/rewrite', json={**payload, field: 0}).status_code == 422
 
 
-@pytest.mark.parametrize('source', ['# 原文', '```\n原文\n```'])
+@pytest.mark.parametrize('source', ['> 原文', '```\n原文\n```', '| 原文 |\n| --- |\n| 内容 |'])
 def test_non_paragraph_selection_is_rejected(source):
     start = source.index('原文')
     with pytest.raises(rewrite.BadRequestError):
         selection.rewrite_ranges(source, [{'start': start, 'end': start + 2, 'content': '原文'}],
                                  '润色', generate=lambda _: pytest.fail('model called'))
+
+
+@pytest.mark.parametrize('source,quote', [
+    ('## 原文\n紧接正文。', '原文'),
+    ('原文\n====\n\n保持正文。', '原文'),
+    ('3. 原文\n4. 保持。', '原文'),
+    ('- [x] 原文\n- [ ] 保持。', '原文'),
+    ('- 父项保持\n  - 😀**原文**\n  - 保持子项\n- 尾项', '原文'),
+    ('- 原文\n  延续原文。\n\n  保持第二段。', '原文'),
+])
+def test_heading_and_list_text_preserve_structure_and_unselected_blocks(source, quote):
+    start = source.index(quote)
+    result = selection.rewrite_ranges(source, [{'start': start, 'end': start + len(quote), 'content': quote}],
+                                      '润色', generate=response)
+    candidate = selection.apply_paragraph_results(source, result['results'])
+    assert candidate == source.replace('原文', '表述')
+    assert selection.markdown_structure(candidate) == selection.markdown_structure(source)
+    assert result['results'][0]['block_type'] in {'heading', 'list_item'}
+
+
+def test_mixed_selection_returns_separate_heading_paragraph_and_list_items():
+    source = '# 原文\n正文原文\n\n1. 原文\n2. 其他\n   - 子项原文'
+    ranges = [{'start': match.start(), 'end': match.end(), 'content': '原文'}
+              for match in re.finditer('原文', source)]
+    result = selection.rewrite_ranges(source, ranges, '润色', generate=response)
+    assert [item['block_type'] for item in result['results']] == ['heading', 'paragraph', 'list_item', 'list_item']
+    assert selection.apply_paragraph_results(source, result['results']) == source.replace('原文', '表述')
+
+
+@pytest.mark.parametrize('replacement', ['## 新标题', '- 新条目', '拆分\n\n两段', '[修改链接](https://evil.example)'])
+def test_structured_polish_rejects_generated_structure_or_protected_link_changes(replacement):
+    source = '- [原文](https://example.org)'
+    start = source.index('原文')
+    with pytest.raises(rewrite.UnprocessableContentError):
+        selection.rewrite_ranges(source, [{'start': start, 'end': start + 2, 'content': '原文'}], '润色',
+                                 generate=lambda _: json.dumps({'results': [{'id': '0', 'content': replacement}]}))
+
+
+def test_task_selection_does_not_rewrite_its_checkbox_marker():
+    source = '- [x] x'
+    result = selection.rewrite_ranges(source, [{'start': 6, 'end': 7, 'content': 'x'}], '润色',
+                                     generate=lambda _: json.dumps({'results': [{'id': '0', 'content': 'changed'}]}))
+    assert selection.apply_paragraph_results(source, result['results']) == '- [x] changed'

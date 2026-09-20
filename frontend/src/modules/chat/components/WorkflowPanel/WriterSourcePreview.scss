@@ -38,6 +38,8 @@
 .writer-markdown-editor__main--source { display: flex; flex-direction: column; min-height: 0; overflow: hidden; }
 .writer-markdown-editor__main--source > .writer-source-controls, .writer-markdown-editor__main--source > .writer-markdown-editor__display-toolbar { flex-shrink: 0; }
 .writer-markdown-editor__main--source { align-self: stretch; height: 100%; max-height: 100%; }
+.writer-markdown-editor__main--source > .writer-markdown-editor__surface,
+.writer-markdown-editor__main--source > .writer-markdown-editor__parse-fallback { display: none; }
 
 .writer-source__geometry { width: 100%; min-height: 320px; }
 .writer-source__model { max-width: 100%; height: auto; }

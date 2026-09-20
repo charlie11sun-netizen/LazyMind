@@ -4,6 +4,7 @@ import { Alert, Button } from 'antd';
 import { useTranslation } from 'react-i18next';
 import type { RewriteSelectionPreview } from '@/modules/chat/utils/request';
 import { ArtifactRewriteInlineDiff, renderInlineDiff } from './ArtifactRewriteDialog';
+import { captureRewriteScrollAnchor } from './rewriteScrollAnchor';
 
 /** Review stays in the document without trapping focus or blocking other edits. */
 export function ArtifactRewriteBatchPreview({ preview, targets, layer, footerHost, disabled, invalidIndices = [], onApply, onComplete, onCancel }: {
@@ -26,11 +27,13 @@ export function ArtifactRewriteBatchPreview({ preview, targets, layer, footerHos
   const title = t('chat.artifactRewrite.batchTitle', { count: pending.length });
   const apply = async (indices: number[]) => {
     if (running.current || disabled || !indices.length || indices.some(index => invalidIndices.includes(index))) return;
+    const restoreScroll = captureRewriteScrollAnchor(indices.map(index => targets?.[index]));
     running.current = true; setBusy(true); setFailed(false);
     try {
       await onApply(indices);
       setResolved(current => [...current, ...indices]);
       if (indices.length === pending.length) onComplete?.();
+      restoreScroll();
     } catch { setFailed(true); }
     finally { running.current = false; setBusy(false); }
   };

@@ -137,7 +137,7 @@ func validDocumentRewriteRangeResult(result DocumentRewriteRangesResult, argumen
 		for index, item := range items {
 			target := item.Target
 			block := expected[index]
-			if target.NodeID != nil || target.TargetStart == nil || target.TargetEnd == nil || *target.TargetStart != block.start || *target.TargetEnd != block.end || *item.Preview.OldText != block.raw {
+			if target.BlockType != block.blockType || target.NodeID != nil || target.TargetStart == nil || target.TargetEnd == nil || *target.TargetStart != block.start || *target.TargetEnd != block.end || *item.Preview.OldText != block.raw {
 				return false
 			}
 			rebuilt.WriteString(string(runes[cursor:block.start]))
@@ -145,7 +145,7 @@ func validDocumentRewriteRangeResult(result DocumentRewriteRangesResult, argumen
 			cursor = block.end
 		}
 		rebuilt.WriteString(string(runes[cursor:]))
-		return rebuilt.String() == candidate
+		return rebuilt.String() == candidate && reflect.DeepEqual(rewriteMarkdownStructure(source), rewriteMarkdownStructure(candidate))
 	}
 	var source, candidate map[string]any
 	if json.Unmarshal(content.Value, &source) != nil || json.Unmarshal(result.Artifact.Value, &candidate) != nil {

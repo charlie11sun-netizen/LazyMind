@@ -119,7 +119,7 @@ export default function EditableBlock({
         ||from<cursor||to<=from||markdown.slice(from,to)!==result.old_content
         ||result.target_start!==expected[index].start||result.target_end!==expected[index].end)throw new Error('Invalid paragraph result');
       nextMarkdown+=markdown.slice(cursor,from)+result.content;cursor=to;
-      return {target:{type:'block' as const,block_type:'paragraph',target_start:result.target_start,target_end:result.target_end},
+      return {target:{type:'block' as const,block_type:expected[index].kind,target_start:result.target_start,target_end:result.target_end},
         preview:{old_text:result.old_content,new_text:result.content},patch:{type:'string_replace_set' as const,payload:{}}};
     });
     nextMarkdown+=markdown.slice(cursor);

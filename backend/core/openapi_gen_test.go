@@ -68,6 +68,34 @@ func TestOpenAPISpecCoversAllRegisteredRoutes(t *testing.T) {
 	}
 }
 
+func TestLearningOpenAPIHasTypedBodiesAndErrors(t *testing.T) {
+	r := mux.NewRouter()
+	registerCoreRoutes(r)
+	raw, err := buildOpenAPISpecFromRouter(r)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var spec map[string]any
+	if err = json.Unmarshal(raw, &spec); err != nil {
+		t.Fatal(err)
+	}
+	for _, item := range []struct {
+		method, path string
+		body         bool
+	}{{"post", "/api/core/learning/content:resolve", true}, {"put", "/api/core/learning/datasets/{dataset_id}/capabilities", true}, {"post", "/api/core/learning/review/sessions", true}, {"post", "/api/core/learning/review/sessions/{session_id}/answers", true}, {"post", "/api/core/learning/preanalysis/tasks", true}, {"post", "/api/core/learning/preanalysis/tasks/{task_id}:cancel", false}} {
+		op := openAPIOperationForTest(t, spec, item.method, item.path)
+		if item.body && op["requestBody"] == nil {
+			t.Errorf("%s %s has no request body", item.method, item.path)
+		}
+		responses, _ := op["responses"].(map[string]any)
+		for _, code := range []string{"400", "401", "404", "409", "503"} {
+			if responses[code] == nil {
+				t.Errorf("%s %s missing error response %s", item.method, item.path, code)
+			}
+		}
+	}
+}
+
 func TestOpenAPISpecIncludesSkillMarketDelete(t *testing.T) {
 	r := mux.NewRouter()
 	registerCoreRoutes(r)
@@ -2004,6 +2032,23 @@ func TestOpenAPIArtifactMutationOperationsDeclareDraftBaseline(t *testing.T) {
 			required, _ := schema["required"].([]any)
 			if !slices.Contains(required, any("base_revision")) {
 				t.Fatalf("%s must require base_revision: %#v", tc.requestSchema, required)
+			}
+		}
+	}
+}
+
+func TestOpenAPISkillResponsesIncludeCapabilityFlags(t *testing.T) {
+	schemas := generatedOpenAPISchemas(t)
+	for _, name := range []string{"skillListItemOpenAPIResponse", "skillDetailOpenAPIResponse"} {
+		schema, ok := schemas[name].(map[string]any)
+		if !ok {
+			t.Fatalf("missing %s", name)
+		}
+		properties := schema["properties"].(map[string]any)
+		for _, flag := range []string{"auto_evo", "is_enabled"} {
+			field, ok := properties[flag].(map[string]any)
+			if !ok || field["type"] != "boolean" {
+				t.Errorf("%s.%s must be boolean", name, flag)
 			}
 		}
 	}

@@ -50,6 +50,7 @@ from .artifacts import (
     WRITER_IR_SCHEMA,
     _document_text,
     _document_value,
+    _inline_draft_sections,
     _json_dumps,
     _json_loads,
     _normalize_streamed_markdown_section,
@@ -1107,6 +1108,8 @@ def fill_markdown_media_placeholders(markdown: str, resolved_media_assets: Any) 
             asset = assets.get(asset_ids[0]) or {}
             path = str(asset.get('local_path') or asset.get('uri') or '')
             if path:
+                if not path.startswith(('https://', 'http://')):
+                    path = Path(path).as_posix()
                 return f'![{caption}]({path})'
         dropped.append(need_id)
         return ''
@@ -1909,6 +1912,10 @@ class WriterWritingCapabilities:
             _json_loads(section_instruction_json, {})
         )
         previous_blocks = _json_loads(previous_blocks_json, [])
+        if WriterDraftingTools._instruction_representation(instruction) == 'markdown':
+            previous_blocks = _inline_draft_sections(root, previous_blocks)
+        elif isinstance(previous_blocks, str):
+            previous_blocks = [previous_blocks]
         visual_plan_path = None
         if visual_plan_json:
             visual_plan_path = _write_input_artifact(
@@ -2635,6 +2642,7 @@ class WriterWritingCapabilities:
         outline_path = None
         if outline_json:
             outline_path = _write_document_input(root, 'outline', outline_json)
+        blocks_data = _inline_draft_sections(root, blocks_data)
         result = WriterDraftingTools(
             llm=None, artifact_store=str(root)
         ).generate_draft_document(

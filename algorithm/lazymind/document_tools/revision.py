@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 import re
+from pathlib import Path
 from typing import Any
 
 from lazyllm import AutoModel
@@ -15,6 +16,7 @@ from lazyllm.tools.writer.data_models import (
     WritingTask,
 )
 from lazyllm.tools.writer.tools import WriterQualityTools, WriterRevisionTools
+from lazyllm.tools.writer.utils.serialization import markdown_image_sources
 from .artifacts import (
     WRITER_BLOCK_SCHEMA,
     WRITER_IR_SCHEMA,
@@ -88,14 +90,47 @@ def modify_plan_needs_media(plan: dict[str, Any]) -> bool:
 
 
 def finalize_markdown_revision(
-    markdown: str, resolved_media_assets: Any = None
+    markdown: str, resolved_media_assets: Any = None, *, source: str | None = None,
 ) -> str:
     """Resolve media placeholders introduced by a Markdown revision."""
-    if resolved_media_assets is None:
-        return markdown
     from .writing import fill_markdown_media_placeholders
 
-    return fill_markdown_media_placeholders(markdown, resolved_media_assets)
+    library = resolved_media_assets or {}
+    needs = library.get('visual_need_asset_ids') or {}
+    assets = library.get('assets') or {}
+    images = markdown_image_sources(markdown)
+    existing = markdown_image_sources(source) if source is not None else set()
+    placeholders = {f'media-placeholder://{need_id}' for need_id in needs}
+    if source is not None:
+        unknown = images - existing - placeholders
+        if unknown:
+            raise ValueError(f'Unregistered revision images: {sorted(unknown)}')
+    for target in images:
+        if not target.startswith('media-placeholder://'):
+            continue
+        need_id = target.removeprefix('media-placeholder://')
+        asset_ids = needs.get(need_id) or []
+        asset = assets.get(asset_ids[0], {}) if asset_ids else {}
+        path = str(asset.get('local_path') or asset.get('uri') or '')
+        if not path or (not path.startswith(('https://', 'http://')) and not Path(path).is_file()):
+            raise ValueError(f'Revision image is unavailable: {need_id}')
+    filled = (fill_markdown_media_placeholders(markdown, library)
+              if any(target.startswith('media-placeholder://') for target in images) else markdown)
+    remaining = markdown_image_sources(filled)
+    if any(target.startswith('media-placeholder://') for target in remaining):
+        raise ValueError('Revision contains unresolved image placeholders.')
+    for need_id, asset_ids in needs.items():
+        if not asset_ids:
+            continue
+        asset = assets.get(asset_ids[0]) or {}
+        paths = {
+            value if value.startswith(('https://', 'http://')) else Path(value).as_posix()
+            for key in ('local_path', 'uri')
+            if (value := str(asset.get(key) or ''))
+        }
+        if not paths.intersection(remaining):
+            raise ValueError(f'Resolved revision image was not inserted: {need_id}')
+    return filled
 
 
 def generate_revision_set(
@@ -156,7 +191,7 @@ def apply_document_revision(
             {},
         )
         payload['revised_document'] = finalize_markdown_revision(
-            payload.get('revised_document') or '', media_assets
+            payload.get('revised_document') or '', media_assets, source=document
         )
         return {
             'payload': payload,

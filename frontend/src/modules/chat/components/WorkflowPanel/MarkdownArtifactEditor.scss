@@ -44,6 +44,10 @@
   text-align: left;
 }
 
+.writer-markdown-editor--chat.writer-markdown-editor--editable .writer-markdown-editor__surface .mdxeditor-root-contenteditable {
+  padding-inline-start: 60px;
+}
+
 .writer-markdown-editor--chat .mdxeditor-root-contenteditable strong,
 .writer-markdown-editor--chat .mdxeditor-root-contenteditable b {
   font-weight: 700;
@@ -56,8 +60,8 @@
 
 .writer-markdown-editor__document-layout {
   display: grid;
-  grid-template-columns: 32px minmax(0, 1fr);
-  column-gap: 8px;
+  grid-template-columns: minmax(0, 1fr);
+  column-gap: 0;
   align-items: start;
   min-width: 0;
   min-height: 0;
@@ -80,6 +84,10 @@
 .writer-markdown-editor__main {
   container: writer-markdown-editor-main / inline-size;
   min-width: 0;
+  grid-column: 1;
+}
+
+.writer-markdown-editor--outline-open .writer-markdown-editor__main {
   grid-column: 2;
 }
 
@@ -161,7 +169,7 @@
   position: sticky;
   top: 0;
   min-width: 0;
-  min-height: 34px;
+  min-height: 30px;
   max-height: 480px;
   grid-column: 1;
 }
@@ -204,7 +212,8 @@
 }
 
 .writer-markdown-editor .writer-markdown-editor__outline-toggle--collapsed {
-  margin-top: 4px;
+  min-height: 26px;
+  flex-shrink: 0;
   color: #2563eb;
 }
 
@@ -460,12 +469,25 @@
   }
 
   .writer-markdown-editor__outline-rail,
-  .writer-markdown-editor__main {
+  .writer-markdown-editor--outline-open .writer-markdown-editor__main {
     grid-column: 1 / -1;
   }
 
+  .writer-markdown-editor--outline-open .writer-markdown-editor__document-layout {
+    grid-template-rows: auto minmax(0, 1fr);
+  }
+
   .writer-markdown-editor__outline-rail {
-    display: none;
+    position: static;
+    max-height: none;
+    margin-bottom: 10px;
+  }
+
+  .writer-markdown-editor__outline {
+    max-height: 180px;
+    padding: 3px 4px 10px;
+    border-right: 0;
+    border-bottom: 1px solid #e5eaf0;
   }
 }
 
@@ -883,18 +905,16 @@
   width: min(100%, var(--writer-markdown-page-max-width));
   margin: 0 auto;
   min-height: 300px;
-  padding: 20px 24px;
+  padding: 6px 0 28px;
 }
 
-@container writer-markdown-editor (max-width: 680px) {
-  .writer-markdown-editor__surface .mdxeditor-root-contenteditable {
-    padding: 0;
-  }
+.writer-markdown-editor--editable:not(.writer-markdown-editor--chat) .writer-markdown-editor__surface .mdxeditor-root-contenteditable {
+  // Match the IR editor's compact block-control gutter.
+  padding-inline-start: 22px;
 }
 
-.writer-markdown-editor--editable .writer-markdown-editor__surface .mdxeditor-root-contenteditable {
-  // The editable adds 12px: leave a 64px control gutter and an 8px edge inset.
-  padding-inline-start: 60px;
+.writer-markdown-editor:not(.writer-markdown-editor--chat) .writer-markdown-editor__content {
+  padding: 0;
 }
 
 .writer-markdown-editor__surface a[href^='#block-'] {
@@ -906,70 +926,36 @@
 }
 
 .writer-markdown-editor--chat .writer-markdown-editor__surface a[data-writer-source-citation='true'] {
-  display: inline-flex;
+  display: inline-block;
   box-sizing: border-box;
-  max-width: min(240px, calc(100% - 8px));
-  min-height: 24px;
-  margin: 0 3px;
-  padding: 2px 7px 2px 4px;
-  border: 1px solid #e1e9f2;
-  border-radius: 999px;
-  color: #5f6f84;
-  background-color: #f5f7fa;
-  align-items: center;
-  justify-content: center;
-  gap: 4px;
+  max-width: min(220px, calc(100% - 8px));
+  margin: 0 0 0 4px;
+  padding: 1px 6px;
+  border: 0;
+  border-radius: 4px;
+  color: #5c6570;
+  background-color: #eceff3;
   overflow: hidden;
   font-size: 0;
-  line-height: 18px;
+  line-height: 1.5;
   text-decoration: none;
-  vertical-align: middle;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  vertical-align: baseline;
   cursor: pointer;
   user-select: none;
-  transition: border-color 150ms ease, background-color 150ms ease, color 150ms ease,
-    box-shadow 150ms ease;
-
-  &::before {
-    display: inline-flex;
-    width: 16px;
-    height: 16px;
-    border-radius: 50%;
-    color: #ffffff;
-    background-color: #58708d;
-    background-image: var(--writer-source-icon, none);
-    background-position: center;
-    background-size: 12px 12px;
-    background-repeat: no-repeat;
-    align-items: center;
-    justify-content: center;
-    content: attr(data-writer-source-initial);
-    font-size: 9px;
-    font-weight: 700;
-    line-height: 1;
-    flex: 0 0 auto;
-  }
-
-  &[data-writer-source-has-icon='true']::before {
-    color: transparent;
-    background-color: #ffffff;
-  }
+  transition: background-color 150ms ease, color 150ms ease;
 
   &::after {
-    min-width: 0;
-    overflow: hidden;
     content: attr(data-writer-source-label);
     font-size: 12px;
-    font-weight: 600;
-    line-height: 18px;
-    text-overflow: ellipsis;
-    white-space: nowrap;
+    font-weight: 400;
+    line-height: 1.5;
   }
 
   &:hover {
-    border-color: #aac8eb;
-    color: #2d6eaf;
-    background-color: #edf5ff;
-    box-shadow: 0 2px 8px rgb(45 110 175 / 14%);
+    color: #4a5562;
+    background-color: #e4e8ee;
   }
 
   &:focus-visible {

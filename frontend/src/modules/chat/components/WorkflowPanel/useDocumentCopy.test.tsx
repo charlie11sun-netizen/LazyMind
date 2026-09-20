@@ -12,10 +12,10 @@ vi.mock('antd', () => ({
   Modal: { confirm: mocks.confirm }, Input: { TextArea: () => <textarea /> },
 }));
 
-function Harness({ revision = 3, sourceKey }: { revision?: number; sourceKey?: string }) {
+function Harness({ revision = 3, draftVersion, sourceKey }: { revision?: number; draftVersion?: number; sourceKey?: string }) {
   useDocumentCopy({
     enabled: true, editingKey: 'editor', sessionId: 'session', slotId: 'custom_article',
-    revision, document: '# Stored', sourceKey,
+    revision, draftVersion, document: '# Stored', sourceKey,
   });
   return null;
 }
@@ -50,11 +50,20 @@ describe('document copy', () => {
     view.rerender(<Harness revision={4} />);
     act(() => action.onClick());
     await waitFor(() => expect(writeText).toHaveBeenCalledWith('converted content'));
-    expect(mocks.convert).toHaveBeenCalledWith('session', 'custom_article', -1, 4, 'markdown', '# Unsaved');
+    expect(mocks.convert).toHaveBeenCalledWith('session', 'custom_article', -1, 4, 'markdown', '# Unsaved', undefined);
     expect(flush).not.toHaveBeenCalled();
     expect(action.flushBeforeAction).toBeUndefined();
     expect(action.label).toContain('chat.writerCopy.success');
     expect(mocks.success).not.toHaveBeenCalled();
+  });
+
+  it.each(['markdown', 'latex', 'text'])('copies %s with the latest mutable draft baseline', async (format) => {
+    const view = render(<Harness revision={4} draftVersion={7} />, { wrapper });
+    view.rerender(<Harness revision={4} draftVersion={8} />);
+    act(() => action.menu?.find(item => item.key === format)?.onClick());
+    await waitFor(() => expect(writeText).toHaveBeenCalledWith('converted content'));
+    expect(mocks.convert).toHaveBeenLastCalledWith('session', 'custom_article', -1, 4, format, '# Unsaved', 8);
+    expect(flush).not.toHaveBeenCalled();
   });
 
   it('identifies shared read-only sources without merging independent editors', () => {

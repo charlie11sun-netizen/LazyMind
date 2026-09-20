@@ -20,6 +20,8 @@ from schemas.cloud_oauth import (
     CloudOAuthAuthorizeURLResponse,
     CloudOAuthCallbackBody,
     CloudOAuthCallbackResponse,
+    FeishuCLIConnectionMirrorBody,
+    ManagedConnectionMirrorBody,
 )
 from services.cloud_oauth_service import cloud_oauth_service
 
@@ -165,6 +167,48 @@ def get_connection(
     return cloud_oauth_service.get_connection(connection_id, user_id=str(user.id))
 
 
+@router.post('/connections/internal/managed:upsert', response_model=CloudConnectionResponse)
+def upsert_managed_connection(
+    body: ManagedConnectionMirrorBody,
+    _internal: None = Depends(require_internal_service_token),  # noqa: B008
+):
+    return cloud_oauth_service.upsert_managed_connection(
+        auth_connection_id=body.auth_connection_id,
+        owner_user_id=body.owner_user_id,
+        cloud_owner_user_id=body.cloud_owner_user_id,
+        provider=body.provider,
+        display_name=body.display_name,
+        provider_tenant_key=body.provider_tenant_key,
+        provider_workspace_id=body.provider_workspace_id,
+        provider_account_meta=body.provider_account_meta,
+        status=body.status,
+        capability_contract_version=body.capability_contract_version,
+        capabilities=body.capabilities,
+    )
+
+
+@router.post('/connections/internal/feishu-cli:upsert', response_model=CloudConnectionResponse)
+def upsert_feishu_cli_connection(
+    body: FeishuCLIConnectionMirrorBody,
+    _internal: None = Depends(require_internal_service_token),  # noqa: B008
+):
+    return cloud_oauth_service.upsert_feishu_cli_connection(
+        auth_connection_id=body.auth_connection_id,
+        owner_user_id=body.owner_user_id,
+        display_name=body.display_name,
+        provider_account_id=body.provider_account_id,
+        provider_tenant_key=body.provider_tenant_key,
+        provider_workspace_id=body.provider_workspace_id,
+        provider_account_meta=body.provider_account_meta,
+        profile_ref=body.profile_ref,
+        granted_scopes=body.granted_scopes,
+        credential_location=body.credential_location,
+        status=body.status,
+        capability_contract_version=body.capability_contract_version,
+        capabilities=body.capabilities,
+    )
+
+
 @router.delete('/connections/{connection_id}', response_model=CloudConnectionDeleteResponse)
 @permission_required('model.write')
 def delete_connection(
@@ -246,6 +290,15 @@ def list_target_cache_connections(
         provider=provider,
         limit=limit,
     )
+
+
+@router.get('/connections/internal/{connection_id}', response_model=CloudConnectionResponse)
+def get_connection_internal(
+    connection_id: str,
+    user_id: str,
+    _internal: None = Depends(require_internal_service_token),  # noqa: B008
+):
+    return cloud_oauth_service.get_connection_internal(connection_id, user_id=user_id)
 
 
 @router.get('/connections/{connection_id}/token', response_model=CloudConnectionTokenResponse)

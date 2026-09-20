@@ -22,6 +22,19 @@ vi.mock('@/components/request', () => ({
   BASE_URL: '',
 }));
 
+describe('WorkflowSessionApi.convertDocument', () => {
+  it.each([undefined, 0, 7])('preserves the optional draft baseline %s in the preview body', (draftVersion) => {
+    WorkflowSessionApi().convertDocument('session', 'draft_document', -1, 4, 'latex', '# Draft', draftVersion);
+    expect(postMock).toHaveBeenLastCalledWith(
+      '/api/core/workflow-sessions/session/slots/draft_document/items/idx/-1:action-preview',
+      { action: 'convert_document', base_revision: 4,
+        ...(draftVersion !== undefined ? { base_draft_version: draftVersion } : {}),
+        input: { output_format: 'latex', document: '# Draft' } },
+      { silentError: true },
+    );
+  });
+});
+
 describe('WorkflowSessionApi.saveWriterDocument', () => {
   beforeEach(() => {
     postMock.mockReset();

@@ -33,6 +33,7 @@ def test_v1_registry_has_exact_actions_phases_and_immutable_specs():
         "builtin:document.sync_document.v1": {"execute"},
         "builtin:document.convert_document.v1": {"preview", "execute"},
         "builtin:document.write_document.v1": {"execute"},
+        "builtin:document.wechat_draft_url.v1": {"preview"},
     }
     assert specs["builtin:document.sync_document.v1"]["execute"].external_side_effects
     assert all(

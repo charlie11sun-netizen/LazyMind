@@ -1,3 +1,4 @@
+vi.mock('./writerListNumberingPlugin', () => ({ writerListNumberingPlugin: () => ({}) }));
 vi.mock('./writerLocalSourcePlugin', () => ({ writerLocalSourcePlugin: () => ({}), writerLocalCodeEditor: {} }));
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { useState } from 'react';
@@ -365,6 +366,31 @@ describe('MarkdownArtifactEditor MDX compatibility', () => {
     await waitFor(() => expect(heading).toHaveAttribute('data-writer-heading-placeholder', 'chat.writerMarkdown.headingPlaceholders.h2'));
   });
 
+  it('keeps the empty-heading control visible above the heading in a compact gutter', async () => {
+    const { container } = render(<MarkdownArtifactEditor markdown='# Title' sourceRevision={1} onSave={async () => 1} />);
+    const editable = screen.getByTestId('markdown-editable');
+    const heading = document.createElement('h2');
+    heading.innerHTML = '<br>';
+    editable.append(heading);
+    const surface = container.querySelector<HTMLElement>('.writer-markdown-editor__surface')!;
+    vi.spyOn(surface, 'getBoundingClientRect').mockReturnValue({ ...rect(), width: 300, right: 400 });
+    vi.spyOn(heading, 'getBoundingClientRect').mockReturnValue({ ...rect(), left: 122, top: 200 });
+    const range = document.createRange();
+    range.selectNodeContents(heading);
+    range.collapse(true);
+    window.getSelection()?.addRange(range);
+    fireEvent.mouseUp(heading);
+
+    const root = container.querySelector<HTMLElement>('.writer-markdown-editor')!;
+    await waitFor(() => expect(root).toHaveClass('writer-markdown-editor--empty-heading-toolbar'));
+    const left = parseFloat(root.style.getPropertyValue('--writer-markdown-selection-toolbar-left'));
+    const top = parseFloat(root.style.getPropertyValue('--writer-markdown-selection-toolbar-top'));
+    expect(left).toBeGreaterThanOrEqual(0);
+    expect(left + 56).toBeLessThanOrEqual(300);
+    expect(top).toBeGreaterThanOrEqual(0);
+    expect(top + 26).toBeLessThanOrEqual(100);
+  });
+
   it('renders PDF text without passing HTML page comments to the MDX parser', () => {
     const { container } = render(
       <MarkdownArtifactEditor
@@ -418,9 +444,14 @@ describe('MarkdownArtifactEditor MDX compatibility', () => {
       />,
     );
 
-    expect(
-      screen.getByRole('button', { name: 'chat.writerIR.expandOutline' }),
-    ).toBeInTheDocument();
+    const expand = screen.getByRole('button', { name: 'chat.writerIR.expandOutline' });
+    const outline = document.getElementById(expand.getAttribute('aria-controls')!)!;
+    expect(outline).not.toBeVisible();
+    fireEvent.click(expand);
+    expect(outline).toBeVisible();
+    fireEvent.click(screen.getByRole('button', { name: 'chat.writerIR.collapseOutline' }));
+    expect(outline).not.toBeVisible();
+    expect(screen.getByRole('button', { name: 'chat.writerIR.expandOutline' })).toBeVisible();
   });
 
   it('renders plain-text JSON braces without changing inline or fenced code', () => {
@@ -559,7 +590,7 @@ describe('MarkdownArtifactEditor rewrite selection highlight', () => {
           citationId: '4.1',
           faviconUrl: 'https://www.google.com/s2/favicons?domain=docs.python.org&sz=64',
           href: 'https://docs.python.org/3/',
-          label: 'docs.python.org',
+          label: 'Python documentation',
           title: 'Python documentation',
         }]}
       />,
@@ -574,13 +605,12 @@ describe('MarkdownArtifactEditor rewrite selection highlight', () => {
     expect(sourceLink).toHaveAttribute('contenteditable', 'false');
     expect(sourceLink).toHaveAttribute('role', 'button');
     expect(sourceLink).toHaveAttribute('tabindex', '0');
-    expect(sourceLink).toHaveAttribute('data-writer-source-label', 'docs.python.org');
-    expect(sourceLink).toHaveAttribute('data-writer-source-initial', 'D');
-    expect(sourceLink).toHaveAttribute('data-writer-source-has-icon', 'true');
-    expect(sourceLink).toHaveAttribute('aria-label', 'chat.references docs.python.org');
+    expect(sourceLink).toHaveAttribute('data-writer-source-label', 'Python documentation');
+    expect(sourceLink).not.toHaveAttribute('data-writer-source-initial');
+    expect(sourceLink).not.toHaveAttribute('data-writer-source-has-icon');
+    expect(sourceLink).toHaveAttribute('aria-label', 'chat.references Python documentation');
     expect(sourceLink).not.toHaveAttribute('title');
-    expect(sourceLink?.style.getPropertyValue('--writer-source-icon'))
-      .toContain('docs.python.org');
+    expect(sourceLink?.style.getPropertyValue('--writer-source-icon')).toBe('');
     editableRoot!.addEventListener('click', linkEditorClick);
 
     fireEvent.mouseOver(sourceLink!);
@@ -1289,24 +1319,24 @@ it('does not publish initial editor normalization as a content edit', async () =
   expect(onContentChange.mock.calls.map(([value]) => value)).not.toContain(normalized);
 });
 
-it('keeps intentional whitespace edits made in source mode', async () => {
+it('does not publish attempted edits made in read-only source mode', async () => {
   const onContentChange = vi.fn();
   render(<MarkdownArtifactEditor markdown={'Alpha\n'} sourceRevision={1} onSave={async()=>1} onContentChange={onContentChange} />);
   document.querySelector('details.writer-document-options')?.setAttribute('open', '');
  fireEvent.click(screen.getByRole('button', {name:'chat.writerSource.source'}));
   const input = screen.getByRole('textbox', {name:'chat.writerSource.source'});
+  expect(input).toHaveAttribute('readonly');
   fireEvent.change(input, {target:{value:'\nAlpha\n\n'}});
-  await waitFor(() => expect(onContentChange).toHaveBeenLastCalledWith('\nAlpha\n\n'));
-  expect(input).toHaveValue('\nAlpha\n\n');
+  expect(onContentChange.mock.calls.map(([value]) => value)).not.toContain('\nAlpha\n\n');
 });
 
-it('carries an unsaved source edit into the rich editor when switching views', () => {
+it('ignores source edits when switching back to the rich editor', () => {
  const {container}=render(<MarkdownArtifactEditor markdown='Original paragraph' sourceRevision={1} onSave={async()=>1} />);
  document.querySelector('details.writer-document-options')?.setAttribute('open', '');
  fireEvent.click(screen.getByRole('button',{name:'chat.writerSource.source'}));
  fireEvent.change(screen.getByRole('textbox',{name:'chat.writerSource.source'}),{target:{value:'Changed paragraph'}});
  fireEvent.click(screen.getByRole('button',{name:'chat.writerLocal.backToDocument'}));
- expect(container.querySelector('.writer-markdown-editor__surface')).toHaveAttribute('data-markdown','Changed paragraph');
+ expect(container.querySelector('.writer-markdown-editor__surface')).toHaveAttribute('data-markdown','Original paragraph');
 });
 
 it('preserves source spelling across successive rich-text saves', async () => {

@@ -28,7 +28,7 @@ def preview_markdown(document: str, instruction: str, selections: list[dict], *,
     results = []
     for index, item in enumerate(generated['results']):
         results.append({
-            'target': {'type': 'block', 'block_type': 'paragraph',
+            'target': {'type': 'block', 'block_type': item['block_type'],
                        'target_start': item['target_start'], 'target_end': item['target_end']},
             'preview': {'old_text': item['old_content'], 'new_text': item['content']},
             'patch': {'type': 'string_replace_set', 'payload': {
@@ -97,6 +97,7 @@ def preview_ir(document: dict, instruction: str, selections: list[dict], context
             raise RuntimeError('Generated patch changed block type or numbering')
         if source_semantics(block.content) != source_semantics(updated.content):
             raise RuntimeError('Generated patch changed protected source syntax')
+
         def formulas(node):
             return [(span.text, {key: value for key, value in span.style.items()
                                  if key in {'math_source', 'notion:rich_text_type', 'notion:equation'}})

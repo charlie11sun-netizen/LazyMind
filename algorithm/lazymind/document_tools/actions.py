@@ -92,6 +92,15 @@ class SaveDocumentArguments(_StrictModel):
     numbering_update: dict[str, Any] | None = None
 
 
+class WeChatDraftURLArguments(_StrictModel):
+    media_id: str = Field(min_length=1)
+    article_index: int = Field(default=0, ge=0)
+
+
+class WeChatDraftURLResult(_StrictModel):
+    url: str
+
+
 class SyncDocumentArguments(_StrictModel):
     source_document: dict[str, Any]
     revised_document: dict[str, Any]
@@ -647,6 +656,25 @@ def _sync(*, context: DocumentActionContext, **arguments: Any) -> dict[str, Any]
     return sync_document(artifact_store=context.artifact_store, **arguments)
 
 
+def _wechat_draft_url(media_id: str, article_index: int, *,
+                      context: DocumentActionContext) -> dict[str, Any]:
+    from urllib.parse import urlsplit
+    from lazyllm.tools.writer.provider.wechat import WeChatClient, WeChatWriterProvider
+
+    client = WeChatClient(WeChatWriterProvider._access_token())
+    articles = WeChatWriterProvider._news_items(client.get_draft(media_id))
+    if article_index >= len(articles):
+        raise ValueError('WeChat draft article is unavailable.')
+    value = articles[article_index].get('url')
+    if not isinstance(value, str):
+        raise ValueError('WeChat draft preview URL is unavailable.')
+    url = urlsplit(value)
+    if (url.scheme not in {'http', 'https'} or url.netloc != 'mp.weixin.qq.com'
+            or not (url.path == '/s' or url.path.startswith('/s/'))):
+        raise ValueError('WeChat draft preview URL is unavailable.')
+    return {'url': value}
+
+
 def _convert(*, context: DocumentActionContext, **arguments: Any) -> dict[str, Any]:
     from .resources import convert_document
     snapshot = arguments.pop('document', None)
@@ -713,6 +741,10 @@ def _install_builtins() -> None:
             'builtin:document.sync_document.v1', 'sync_document', 1,
             'execute', SyncDocumentArguments, SyncDocumentResult, _sync,
             durable_side_effects=True, external_side_effects=True,
+        ),
+        DocumentActionSpec(
+            'builtin:document.wechat_draft_url.v1', 'wechat_draft_url', 1,
+            'preview', WeChatDraftURLArguments, WeChatDraftURLResult, _wechat_draft_url,
         ),
         DocumentActionSpec(
             'builtin:document.convert_document.v1', 'convert_document', 1,

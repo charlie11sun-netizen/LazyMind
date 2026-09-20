@@ -689,6 +689,10 @@ func TestDocumentDeliveryLegacySyncRejectsClientTargetSubstitution(t *testing.T)
 			if err := f.db.Model(&orm.WorkflowSession{}).Where("id = ?", "descriptor-session").Update("plugin_id", "writer-workflow").Error; err != nil {
 				t.Fatal(err)
 			}
+			if err := f.db.Model(&orm.WorkflowSlotRevision{}).Where("id = ?", "descriptor-artifact").
+				Updates(map[string]any{"slot_id": "draft_document", "slot": "draft_document"}).Error; err != nil {
+				t.Fatal(err)
+			}
 			document := map[string]any{"document_id": "local-ir", "blocks": []any{}, "provider_binding": map[string]any{"provider": "obsidian", "document_id": "remote-fixture", "uri": "fixture://remote/document"}}
 			s.source = document
 			s.result["persisted_document"] = document
@@ -697,7 +701,7 @@ func TestDocumentDeliveryLegacySyncRejectsClientTargetSubstitution(t *testing.T)
 			if err := f.db.Model(&orm.WorkflowHumanArtifact{}).Where("id = ?", "descriptor-artifact-human").Update("value", json.RawMessage(mustJSONRewrite(stored))).Error; err != nil {
 				t.Fatal(err)
 			}
-			if err := f.db.Create(&orm.DocumentPublicationBinding{ID: "sync-binding", SessionID: "descriptor-session", SlotID: "arbitrary-slot", ItemIndex: -1, OwnerUserID: "descriptor-owner", Provider: "obsidian", TargetDocument: json.RawMessage(mustJSONRewrite(s.target)), RemoteValue: json.RawMessage(mustJSONRewrite(stored))}).Error; err != nil {
+			if err := f.db.Create(&orm.DocumentPublicationBinding{ID: "sync-binding", SessionID: "descriptor-session", SlotID: "draft_document", ItemIndex: -1, OwnerUserID: "descriptor-owner", Provider: "obsidian", TargetDocument: json.RawMessage(mustJSONRewrite(s.target)), RemoteValue: json.RawMessage(mustJSONRewrite(stored))}).Error; err != nil {
 				t.Fatal(err)
 			}
 			client := document
@@ -705,7 +709,7 @@ func TestDocumentDeliveryLegacySyncRejectsClientTargetSubstitution(t *testing.T)
 				client = map[string]any{"document_id": "local-ir", "blocks": []any{}, "provider_binding": map[string]any{"provider": "obsidian", "document_id": "substituted-target", "uri": "fixture://substituted"}}
 			}
 			before := descriptorSnapshot(t, f)
-			w := deliveryRequest(t.Context(), f, http.MethodPost, "/workflow-sessions/descriptor-session/slots/arbitrary-slot/items/idx/-1:sync-writer-document", "descriptor-owner", map[string]any{"base_revision": 3, "base_draft_version": 7, "source_document": client, "revised_document": client, "mode": "checkpoint"})
+			w := deliveryRequest(t.Context(), f, http.MethodPost, "/workflow-sessions/descriptor-session/slots/draft_document/items/idx/-1:sync-writer-document", "descriptor-owner", map[string]any{"base_revision": 3, "base_draft_version": 7, "source_document": client, "revised_document": client, "mode": "checkpoint"})
 			if forged {
 				rewriteError(t, w, 409, "PROVIDER_BINDING_CONFLICT")
 				if len(s.allCalls()) != 0 || descriptorSnapshot(t, f) != before {
@@ -719,7 +723,7 @@ func TestDocumentDeliveryLegacySyncRejectsClientTargetSubstitution(t *testing.T)
 				t.Fatalf("valid legacy sync did not reach common boundary: %#v %#v", data, calls)
 			}
 			before = descriptorSnapshot(t, f)
-			replay := deliveryRequest(t.Context(), f, http.MethodPost, "/workflow-sessions/descriptor-session/slots/arbitrary-slot/items/idx/-1:sync-writer-document", "descriptor-owner", map[string]any{"base_revision": 3, "base_draft_version": 7, "source_document": client, "revised_document": client, "mode": "checkpoint"})
+			replay := deliveryRequest(t.Context(), f, http.MethodPost, "/workflow-sessions/descriptor-session/slots/draft_document/items/idx/-1:sync-writer-document", "descriptor-owner", map[string]any{"base_revision": 3, "base_draft_version": 7, "source_document": client, "revised_document": client, "mode": "checkpoint"})
 			if got := rewriteData(t, replay); !reflect.DeepEqual(got, data) {
 				t.Fatalf("legacy sync replay changed result: %#v", got)
 			}
@@ -952,6 +956,48 @@ func TestDocumentDeliveryDescriptorOffersPublication(t *testing.T) {
 	}
 	if !found {
 		t.Fatalf("arbitrary document cannot discover publication: %#v", document)
+	}
+}
+
+func TestDocumentDeliveryWriterPublicationSlots(t *testing.T) {
+	for _, slot := range []string{"source_document", "outline_document", "target_document", "draft_document", "flat_draft_document"} {
+		t.Run(slot, func(t *testing.T) {
+			f, s := newDeliveryFixture(t, "markdown")
+			if err := f.db.Model(&orm.WorkflowSession{}).Where("id = ?", "descriptor-session").Update("plugin_id", "writer-workflow").Error; err != nil {
+				t.Fatal(err)
+			}
+			if err := f.db.Model(&orm.WorkflowSlotRevision{}).Where("id = ?", "descriptor-artifact").
+				Updates(map[string]any{"slot_id": slot, "slot": slot}).Error; err != nil {
+				t.Fatal(err)
+			}
+			records := descriptorRecords(t, f.read(t.Context(), "/workflow-artifacts/descriptor-artifact", "descriptor-owner"))
+			document, _ := records[0]["document"].(map[string]any)
+			caps, _ := document["capabilities"].([]any)
+			found := false
+			for _, cap := range caps {
+				found = found || cap == "publish_document"
+			}
+			allowed := slot == "draft_document" || slot == "flat_draft_document"
+			if found != allowed {
+				t.Fatalf("publication capability for %s: %#v", slot, document)
+			}
+			w := deliveryPublish(t, f, deliveryBody("writer-slot"))
+			if allowed {
+				_ = rewriteData(t, w)
+				if len(s.writes()) != 1 {
+					t.Fatalf("draft publication writes=%d", len(s.writes()))
+				}
+				return
+			}
+			rewriteError(t, w, 422, "DOCUMENT_ACTION_UNSUPPORTED")
+			var count int64
+			if err := f.db.Model(&orm.DocumentPublicationOperation{}).Count(&count).Error; err != nil {
+				t.Fatal(err)
+			}
+			if count != 0 || len(s.allCalls()) != 0 || s.catalogCalls != 0 || len(s.authProviders) != 0 {
+				t.Fatalf("rejected slot created operations or called Runtime: operations=%d calls=%#v", count, s.allCalls())
+			}
+		})
 	}
 }
 

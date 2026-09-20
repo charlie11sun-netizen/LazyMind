@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
-	"net/url"
 	"time"
 
 	"gorm.io/gorm"
@@ -61,15 +60,7 @@ func publicationStatus(op *DocumentPublicationOperation, now time.Time) Document
 			target = receipt.TargetDocument
 		}
 	}
-	var locator struct {
-		URI string `json:"uri"`
-	}
-	if json.Unmarshal(target, &locator) == nil {
-		parsed, err := url.Parse(locator.URI)
-		if err == nil && (parsed.Scheme == "https" || parsed.Scheme == "http") && parsed.Host != "" && parsed.User == nil {
-			result.TargetURL = locator.URI
-		}
-	}
+	result.TargetURL = documentPublicationTargetURL(op.Provider, target)
 	return result
 }
 
@@ -212,7 +203,7 @@ func ReadArtifactDocumentPublication(w http.ResponseWriter, r *http.Request) {
 	}
 	result := DocumentPublicationLookup{}
 	if op != nil {
-		value := publicationStatus(op, time.Now())
+		value := publicationStatusForRead(r.Context(), op)
 		result.Operation = &value
 	}
 	common.ReplyOK(w, result)

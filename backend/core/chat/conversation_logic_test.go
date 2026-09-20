@@ -818,6 +818,26 @@ func TestBuildChatRequestBodyScopesDocumentPreviewRetrieval(t *testing.T) {
 	}
 }
 
+func TestBuildLazyChatRequestPreservesDocumentSelectionContext(t *testing.T) {
+	documentContext := map[string]any{
+		"dataset_id": "kb-1", "document_id": "doc-1",
+		"selected_text": "batch size tokens", "paragraph_text": "surrounding paragraph",
+	}
+	body := buildChatRequestBody(context.TODO(), nil, "conv-1", "", "translate", nil, map[string]any{
+		"document_context": documentContext,
+	}, nil, "", 1)
+	body["surface"] = "knowledge_document_preview"
+
+	req := buildLazyChatRequest(body)
+	if req.DocumentContext["selected_text"] != "batch size tokens" ||
+		req.DocumentContext["paragraph_text"] != "surrounding paragraph" {
+		t.Fatalf("document selection context was not forwarded: %#v", req.DocumentContext)
+	}
+	if req.Conversation.Surface != "knowledge_document_preview" {
+		t.Fatalf("conversation surface was not forwarded: %q", req.Conversation.Surface)
+	}
+}
+
 func TestBuildChatRequestBodyLoadsFiltersFromConversationDB(t *testing.T) {
 	db := orm.MigrateTestDB(t, &orm.Conversation{})
 	now := time.Now()
@@ -1650,7 +1670,7 @@ func TestLoadConversationHistoryPageUsesDatabasePaging(t *testing.T) {
 }
 
 func TestLoadConversationHistoryPageMergesGeneratingHistoryWithoutDuplicates(t *testing.T) {
-	db := orm.MigrateTestDB(t, &orm.ChatHistory{})
+	db := orm.MigrateTestDB(t, &orm.ChatHistory{}, &orm.Conversation{})
 	stateStore, err := state.NewSQLiteStore(t.TempDir() + "/state.db")
 	if err != nil {
 		t.Fatalf("open state store: %v", err)
@@ -1770,6 +1790,10 @@ func TestBuildLazyChatRequestMapsAllFields(t *testing.T) {
 		"local_fs_sources": []any{
 			map[string]any{"source_id": "src-1"},
 		},
+		"workspace_context": map[string]any{
+			"workspace_id": "workspace-1", "root": "/project", "directory_identity": "dir-1",
+			"workspace_version": 2, "permission_mode": "always_ask", "permission_version": 3,
+		},
 		"disabled_tools": []any{"bing"},
 		"available_skills": []any{
 			"coding/git-workflow",
@@ -1834,8 +1858,11 @@ func TestBuildLazyChatRequestMapsAllFields(t *testing.T) {
 	if req.Message.CurrentTurnSeq != 7 {
 		t.Fatalf("unexpected current_turn_seq: %d", req.Message.CurrentTurnSeq)
 	}
-	if len(req.Retrieval.Databases) != 1 || req.Retrieval.Dataset != "default" || len(req.Retrieval.LocalFSSources) != 1 {
+	if len(req.Retrieval.Databases) != 1 || req.Retrieval.Dataset != "default" {
 		t.Fatalf("unexpected retrieval: %#v", req.Retrieval)
+	}
+	if req.WorkspaceContext == nil || req.WorkspaceContext.WorkspaceID != "workspace-1" || req.WorkspaceContext.Root != "/project" {
+		t.Fatalf("unexpected workspace context: %#v", req.WorkspaceContext)
 	}
 	if req.Runtime.Reasoning {
 		t.Fatalf("expected reasoning to be false")

@@ -144,6 +144,11 @@ func GetLatestSession(ctx context.Context, db *gorm.DB, conversationID string) (
 // is preserved for audit purposes; only the dismissed flag is set.
 func DismissSession(ctx context.Context, db *gorm.DB, sessionID string) error {
 	return db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		// Match workspace commits: session before attempts, also on SQLite.
+		if err := tx.Model(&orm.WorkflowSession{}).Where("id = ?", sessionID).
+			UpdateColumn("updated_at", gorm.Expr("updated_at")).Error; err != nil {
+			return err
+		}
 		var s orm.WorkflowSession
 		if err := tx.Where("id = ? AND dismissed = false", sessionID).First(&s).Error; err != nil {
 			if errors.Is(err, gorm.ErrRecordNotFound) {
@@ -294,12 +299,35 @@ func ListDismissedSessions(ctx context.Context, db *gorm.DB, conversationID stri
 
 // UpdateSessionStatus transitions a session to a new status.
 func UpdateSessionStatus(ctx context.Context, db *gorm.DB, sessionID, status string) error {
-	return db.WithContext(ctx).Model(&orm.WorkflowSession{}).
-		Where("id = ?", sessionID).
-		Updates(map[string]any{
-			"status":     status,
-			"updated_at": time.Now().UTC(),
-		}).Error
+	return db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		query := tx.Model(&orm.WorkflowSession{}).Where("id = ? AND status <> ?", sessionID, status)
+		if status == SessionStatusWaiting {
+			// Delayed pause callbacks cannot overwrite a terminal session or a
+			// newly dispatched attempt (which may still be queued/claimed).
+			busy := tx.Model(&orm.WorkflowSessionStep{}).Select("1").Where(
+				"session_id = ? AND validity = ? AND status IN ?", sessionID, "effective",
+				[]string{"pending", "queued", "claimed", "running"})
+			query = query.Where("status NOT IN ?", []string{"completed", "failed", "stopped"}).Where("NOT EXISTS (?)", busy)
+		}
+		updates := map[string]any{"status": status, "updated_at": time.Now().UTC()}
+		// Dispatch reserves one version for the entire batch before launching.
+		if status != SessionStatusActive {
+			updates["state_version"] = gorm.Expr("state_version + 1")
+		}
+		updated := query.Updates(updates)
+		if updated.Error != nil {
+			return updated.Error
+		}
+		if updated.RowsAffected == 0 {
+			return nil
+		}
+		var session orm.WorkflowSession
+		if err := tx.Where("id = ?", sessionID).First(&session).Error; err != nil {
+			return err
+		}
+		payload, _ := json.Marshal(map[string]any{"status": status})
+		return appendSessionStateEvent(tx, session, "workflow.patch", payload)
+	})
 }
 
 // UpdateSessionCurrentStep updates current_step_id for a session.
@@ -1314,6 +1342,19 @@ func WriteSlotRevisionWithHumanArtifact(
 	changeSource string,
 	expectedRevision *int, expectedDraftVersion *int64,
 ) (*orm.WorkflowSlotRevision, error) {
+	return writeSlotRevisionWithHumanArtifact(ctx, db, sessionID, slotID, artifactKey, stepID, attempt, cardinality, listIndex, contentType, value, caption, changeSource, expectedRevision, expectedDraftVersion, false, nil)
+}
+
+func writeSlotRevisionWithHumanArtifact(
+	ctx context.Context, db *gorm.DB,
+	sessionID, slotID, artifactKey, stepID string, attempt int,
+	cardinality string, listIndex *int,
+	contentType string, value json.RawMessage, caption *string,
+	changeSource string,
+	expectedRevision *int, expectedDraftVersion *int64,
+	preserveConsumers bool,
+	preservedProducer *orm.WorkflowSlotRevision,
+) (*orm.WorkflowSlotRevision, error) {
 
 	if changeSource == "" {
 		changeSource = "human"
@@ -1400,7 +1441,14 @@ func WriteSlotRevisionWithHumanArtifact(
 		if err != nil {
 			return err
 		}
-		if err := artifactgraph.InvalidateConsumers(ctx, tx, sessionID, replacedRevisionIDs...); err != nil {
+		if preserveConsumers && slotID == "target_document" && changeSource == "provider_sync" {
+			err = artifactgraph.CheckConsumers(ctx, tx, sessionID, replacedRevisionIDs...)
+		} else if preservedProducer == nil {
+			err = artifactgraph.InvalidateConsumers(ctx, tx, sessionID, replacedRevisionIDs...)
+		} else {
+			err = artifactgraph.InvalidateConsumersPreservingProducer(ctx, tx, sessionID, *preservedProducer, replacedRevisionIDs...)
+		}
+		if err != nil {
 			return err
 		}
 		if err := tx.Create(humanArt).Error; err != nil {
@@ -1629,4 +1677,12 @@ func SaveDocumentArtifactValue(ctx context.Context, db *gorm.DB, owner, id strin
 		return nil, err
 	}
 	return result, nil
+}
+
+// State and its notification commit together. The stream polls this durable
+// log as well as accepting in-process wakeups.
+func appendSessionStateEvent(tx *gorm.DB, session orm.WorkflowSession, eventType string, payload json.RawMessage) error {
+	return tx.Create(&orm.WorkflowEvent{SessionID: session.ID, OwnerUserID: session.CreateUserID,
+		ContractVersion: "workflow.v1", EventType: eventType, EntityID: session.ID,
+		StateVersion: session.StateVersion, PayloadJSON: payload, CreatedAt: time.Now().UTC()}).Error
 }

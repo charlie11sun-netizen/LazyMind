@@ -1,6 +1,8 @@
 package workflow
 
 import (
+	"fmt"
+	"regexp"
 	"strings"
 	"unicode/utf8"
 
@@ -14,80 +16,104 @@ import (
 type rewriteMarkdownBlock struct {
 	start, end   int
 	raw, visible string
-	paragraph    bool
+	blockType    string
 }
 
-// Match Writer's source-block boundaries (blank lines outside fenced code),
-// then use a Markdown AST for classification and rendered quote matching.
+// Use the same inline text boundaries as the algorithm: heading/list markers
+// stay outside replacement ranges, and nested list items are separate blocks.
+var rewriteTaskMarker = regexp.MustCompile(`^\[[ xX]\][ \t]+`)
+
 func rewriteMarkdownBlocks(source string) []rewriteMarkdownBlock {
-	parser := goldmark.New(goldmark.WithExtensions(extension.Table)).Parser()
+	data := []byte(source)
+	tree := goldmark.New(goldmark.WithExtensions(extension.Table)).Parser().Parse(text.NewReader(data))
 	blocks := []rewriteMarkdownBlock{}
-	appendBlock := func(start, end int) {
-		raw := strings.TrimRight(source[start:end], "\r\n")
-		data := []byte(raw)
-		tree := parser.Parse(text.NewReader(data))
+	_ = ast.Walk(tree, func(node ast.Node, entering bool) (ast.WalkStatus, error) {
+		if !entering || node.Type() == ast.TypeInline || node.Lines().Len() == 0 {
+			return ast.WalkContinue, nil
+		}
+		kind := ""
+		switch node.Kind() {
+		case ast.KindParagraph, ast.KindTextBlock:
+			kind = "paragraph"
+		case ast.KindHeading:
+			kind = "heading"
+		}
+		for parent := node.Parent(); parent != nil && kind != ""; parent = parent.Parent() {
+			switch parent.Kind() {
+			case ast.KindListItem:
+				if kind == "paragraph" {
+					kind = "list_item"
+				}
+			case ast.KindDocument, ast.KindList:
+			default:
+				kind = ""
+			}
+		}
+		start := node.Lines().At(0).Start
+		end := node.Lines().At(node.Lines().Len() - 1).Stop
+		raw := strings.TrimRight(source[start:end], " \t\r\n")
+		end = start + len(raw)
+		if kind == "list_item" {
+			start += len(rewriteTaskMarker.FindString(raw))
+			raw = source[start:end]
+		}
+		if raw == "" {
+			return ast.WalkContinue, nil
+		}
 		var visible strings.Builder
-		_ = ast.Walk(tree, func(node ast.Node, entering bool) (ast.WalkStatus, error) {
+		_ = ast.Walk(node, func(child ast.Node, entering bool) (ast.WalkStatus, error) {
 			if !entering {
 				return ast.WalkContinue, nil
 			}
-			switch node := node.(type) {
+			switch child := child.(type) {
 			case *ast.Text:
-				value := node.Segment.Value(data)
-				if node.Parent() == nil || node.Parent().Kind() != ast.KindCodeSpan {
-					// Writer matches Mistune AST text, which preserves entity spelling.
+				value := child.Segment.Value(data)
+				if child.Parent() == nil || child.Parent().Kind() != ast.KindCodeSpan {
+					// Preserve entity spelling when matching rendered quotes.
 					value = util.UnescapePunctuations(value)
 				}
 				visible.Write(value)
-				if node.SoftLineBreak() || node.HardLineBreak() {
+				if child.SoftLineBreak() || child.HardLineBreak() {
 					visible.WriteByte(' ')
 				}
 			case *ast.String:
-				visible.Write(node.Value)
+				visible.Write(child.Value)
 			case *ast.AutoLink:
-				visible.Write(node.Label(data))
+				visible.Write(child.Label(data))
 			}
 			return ast.WalkContinue, nil
 		})
-		blocks = append(blocks, rewriteMarkdownBlock{start: utf8.RuneCountInString(source[:start]), end: utf8.RuneCountInString(source[:start+len(raw)]), raw: raw, visible: normalizeRewriteQuote(visible.String()), paragraph: tree.ChildCount() == 1 && tree.FirstChild().Kind() == ast.KindParagraph})
-	}
-	position, start := 0, -1
-	var fence byte
-	for _, line := range strings.SplitAfter(source, "\n") {
-		offset := position
-		position += len(line)
-		if line == "" {
-			continue
+		quote := visible.String()
+		if kind == "list_item" {
+			quote = rewriteTaskMarker.ReplaceAllString(quote, "")
 		}
-		trimmed := strings.TrimSpace(line)
-		marker := byte(0)
-		if strings.HasPrefix(trimmed, "```") || strings.HasPrefix(trimmed, "~~~") {
-			marker = trimmed[0]
-		}
-		if fence != 0 {
-			if marker == fence {
-				fence = 0
-			}
-			continue
-		}
-		if marker != 0 {
-			fence = marker
-		}
-		if trimmed != "" {
-			if start < 0 {
-				start = offset
-			}
-			continue
-		}
-		if start >= 0 {
-			appendBlock(start, offset)
-			start = -1
-		}
-	}
-	if start >= 0 {
-		appendBlock(start, len(source))
-	}
+		blocks = append(blocks, rewriteMarkdownBlock{
+			start: utf8.RuneCountInString(source[:start]), end: utf8.RuneCountInString(source[:end]),
+			raw: raw, visible: normalizeRewriteQuote(quote), blockType: kind,
+		})
+		return ast.WalkSkipChildren, nil
+	})
 	return blocks
+}
+
+func rewriteMarkdownStructure(source string) []string {
+	tree := goldmark.New(goldmark.WithExtensions(extension.Table)).Parser().Parse(text.NewReader([]byte(source)))
+	structure := []string{}
+	_ = ast.Walk(tree, func(node ast.Node, entering bool) (ast.WalkStatus, error) {
+		if node.Type() == ast.TypeInline {
+			return ast.WalkSkipChildren, nil
+		}
+		value := fmt.Sprintf("%s:%t", node.Kind(), entering)
+		switch node := node.(type) {
+		case *ast.Heading:
+			value += fmt.Sprintf(":%d", node.Level)
+		case *ast.List:
+			value += fmt.Sprintf(":%c:%d:%t", node.Marker, node.Start, node.IsTight)
+		}
+		structure = append(structure, value)
+		return ast.WalkContinue, nil
+	})
+	return structure
 }
 
 func normalizeRewriteQuote(value string) string { return strings.Join(strings.Fields(value), " ") }
@@ -105,7 +131,7 @@ func selectedRewriteMarkdownBlocks(source string, selections []map[string]any) (
 				if from >= to || strings.TrimSpace(string(runes[from:to])) == "" {
 					continue
 				}
-				if !block.paragraph {
+				if block.blockType == "" {
 					return nil, false
 				}
 				selected[index] = true
@@ -115,7 +141,7 @@ func selectedRewriteMarkdownBlocks(source string, selections []map[string]any) (
 			quote := normalizeRewriteQuote(selection["selected_text"].(string))
 			for index, block := range blocks {
 				if strings.Contains(block.visible, quote) || strings.Contains(normalizeRewriteQuote(block.raw), quote) {
-					if !block.paragraph {
+					if block.blockType == "" {
 						return nil, false
 					}
 					selected[index] = true

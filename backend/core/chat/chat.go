@@ -15,6 +15,7 @@ import (
 	"strings"
 	"time"
 
+	"lazymind/core/localworkspace"
 	"lazymind/core/modelconfig"
 )
 
@@ -53,14 +54,17 @@ type DatasetFilters struct {
 }
 
 type LazyChatRequest struct {
-	Message         ChatMessageOptions         `json:"message"`
-	Conversation    ChatConversationOptions    `json:"conversation"`
-	Retrieval       ChatRetrievalOptions       `json:"retrieval,omitempty"`
-	Runtime         ChatRuntimeOptions         `json:"runtime,omitempty"`
-	Personalization ChatPersonalizationOptions `json:"personalization,omitempty"`
-	Agent           ChatAgentOptions           `json:"agent,omitempty"`
-	Workflow        ChatWorkflowOptions        `json:"workflow,omitempty"`
-	ModelContext    map[string]any             `json:"model_context,omitempty"`
+	Message          ChatMessageOptions              `json:"message"`
+	Conversation     ChatConversationOptions         `json:"conversation"`
+	Retrieval        ChatRetrievalOptions            `json:"retrieval,omitempty"`
+	Runtime          ChatRuntimeOptions              `json:"runtime,omitempty"`
+	Personalization  ChatPersonalizationOptions      `json:"personalization,omitempty"`
+	Agent            ChatAgentOptions                `json:"agent,omitempty"`
+	Workflow         ChatWorkflowOptions             `json:"workflow,omitempty"`
+	ModelContext     map[string]any                  `json:"model_context,omitempty"`
+	LocalRuntime     bool                            `json:"local_runtime"`
+	WorkspaceContext *localworkspace.ContextSnapshot `json:"workspace_context,omitempty"`
+	DocumentContext  map[string]any                  `json:"document_context,omitempty"`
 
 	ExplicitResources ExplicitResourceBindings `json:"explicit_resource_bindings,omitempty"`
 }
@@ -83,17 +87,18 @@ type ChatMessageOptions struct {
 type ChatConversationOptions struct {
 	SessionID      string         `json:"session_id"`
 	RunID          string         `json:"run_id"`
+	HistoryID      string         `json:"history_id,omitempty"`
 	ConversationID string         `json:"conversation_id,omitempty"`
 	UserID         string         `json:"user_id"`
 	Mode           string         `json:"mode,omitempty"`
+	Surface        string         `json:"surface,omitempty"`
 	IntentContext  map[string]any `json:"intent_context,omitempty"`
 }
 
 type ChatRetrievalOptions struct {
-	Filters        *DatasetFilters `json:"filters,omitempty"`
-	Databases      []any           `json:"databases,omitempty"`
-	Dataset        string          `json:"dataset,omitempty"`
-	LocalFSSources []any           `json:"local_fs_sources,omitempty"`
+	Filters   *DatasetFilters `json:"filters,omitempty"`
+	Databases []any           `json:"databases,omitempty"`
+	Dataset   string          `json:"dataset,omitempty"`
 }
 
 type ChatRuntimeOptions struct {
@@ -109,6 +114,7 @@ type ChatRuntimeOptions struct {
 	OCRConfig                     map[string]any `json:"ocr_config,omitempty"`
 	ToolConfig                    map[string]any `json:"tool_config,omitempty"`
 	MCPConfig                     []any          `json:"mcp_config,omitempty"`
+	SystemMCPConfig               []any          `json:"system_mcp_config,omitempty"`
 	ContextUsagePreview           bool           `json:"context_usage_preview,omitempty"`
 	ContextPromptExport           bool           `json:"context_prompt_export,omitempty"`
 	ContextPreviewAllowLLMRouting bool           `json:"context_preview_allow_llm_routing,omitempty"`
@@ -426,11 +432,20 @@ func buildLazyChatRequest(body map[string]any) *LazyChatRequest {
 	if q, ok := body["user_query"].(string); ok {
 		req.Message.UserQuery = q
 	}
+	if context, ok := body["document_context"].(map[string]any); ok {
+		req.DocumentContext = context
+	}
 	if s, ok := body["session_id"].(string); ok {
 		req.Conversation.SessionID = s
 	}
+	if surface, ok := body["surface"].(string); ok {
+		req.Conversation.Surface = strings.TrimSpace(surface)
+	}
 	if runID, ok := body["run_id"].(string); ok {
 		req.Conversation.RunID = strings.TrimSpace(runID)
+	}
+	if historyID, ok := body["history_id"].(string); ok {
+		req.Conversation.HistoryID = strings.TrimSpace(historyID)
 	}
 	req.Message.History = chatMessagesFromAny(body["history"])
 	req.Message.Files = filesMapFromAny(body["files"])
@@ -450,7 +465,8 @@ func buildLazyChatRequest(body map[string]any) *LazyChatRequest {
 	if dataset, ok := body["dataset"].(string); ok {
 		req.Retrieval.Dataset = strings.TrimSpace(dataset)
 	}
-	req.Retrieval.LocalFSSources = anySlice(body["local_fs_sources"])
+	req.LocalRuntime = localworkspace.Enabled()
+	req.WorkspaceContext = localworkspace.SnapshotFromMetadata(body["workspace_context"])
 	req.Agent.DisabledTools = stringSlice(body["disabled_tools"])
 	req.Agent.AvailableSkills = stringSlice(body["available_skills"])
 	if useMemory, ok := body["use_memory"].(bool); ok {
@@ -559,6 +575,14 @@ func buildLazyChatRequest(body map[string]any) *LazyChatRequest {
 		req.Runtime.MCPConfig = make([]any, 0, len(mcpConfigAny))
 		for _, item := range mcpConfigAny {
 			req.Runtime.MCPConfig = append(req.Runtime.MCPConfig, item)
+		}
+	}
+	if systemMCPConfig, ok := body["system_mcp_config"].([]any); ok {
+		req.Runtime.SystemMCPConfig = systemMCPConfig
+	} else if systemMCPConfigAny, ok := body["system_mcp_config"].([]map[string]any); ok {
+		req.Runtime.SystemMCPConfig = make([]any, 0, len(systemMCPConfigAny))
+		for _, item := range systemMCPConfigAny {
+			req.Runtime.SystemMCPConfig = append(req.Runtime.SystemMCPConfig, item)
 		}
 	}
 	if workflowContext, ok := body["workflow_context"].(map[string]any); ok && len(workflowContext) > 0 {

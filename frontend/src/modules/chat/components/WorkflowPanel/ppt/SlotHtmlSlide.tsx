@@ -1,3 +1,4 @@
+import { ArtifactSourceButton } from '../ArtifactSourceButton';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import type { SlotRevision } from '@/modules/chat/store/workflowPanel';
@@ -170,6 +171,7 @@ export function SlotHtmlSlide({
   const frameCleanupRef = useRef(new Map<HTMLIFrameElement, () => void>());
   const selectedNodeRef = useRef<HTMLElement | null>(null);
   const [html, setHtml] = useState<string | null>(null);
+  const [sourceHtml, setSourceHtml] = useState('');
   const [error, setError] = useState<string | null>(null);
   const [fittedFrame, setFittedFrame] = useState<FittedFrame | null>(null);
   const [expanded, setExpanded] = useState(false);
@@ -240,7 +242,10 @@ export function SlotHtmlSlide({
         return;
       }
       const withCharts = await htmlWithInlinedEcharts(extracted);
-      if (!cancelled) setHtml(withCharts);
+      if (!cancelled) {
+        setHtml(withCharts);
+        setSourceHtml(extracted);
+      }
     })().catch(() => {
       if (!cancelled) {
         setError('Failed to load HTML slide');
@@ -408,7 +413,10 @@ export function SlotHtmlSlide({
       }
       setLocalRevision(result.revision);
       setLocalDraftVersion(result.draft_version);
-      if (preview.candidate_html) setHtml(preview.candidate_html);
+      if (preview.candidate_html) {
+        setHtml(preview.candidate_html);
+        setSourceHtml(preview.candidate_html);
+      }
       setEditPreview(null);
       setSelection(null);
       clearSelectedNode();
@@ -471,6 +479,7 @@ export function SlotHtmlSlide({
     >
       <div ref={viewportRef} className='slot-html-slide__viewport slot-html-slide__viewport--interactive'>
         {renderFrame(false)}
+        <ArtifactSourceButton value={editPreview?.candidate_html || sourceHtml} overlay />
         {editable && !editPreview && (
           <div className='slot-html-slide__edit-hint'>点击元素进行 AI 修改</div>
         )}

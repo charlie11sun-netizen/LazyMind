@@ -52,10 +52,16 @@ func (r *Repository) DescribeArtifact(ctx context.Context, owner string, artifac
 	// consumers do not disable them. Mutations still require the live guard.
 	if artifact.Document != nil && writable {
 		artifact.Document.Capabilities = append(artifact.Document.Capabilities, "convert_document", "numbering", "cross_reference")
-		if artifact.Document.Editable {
+		if artifact.Document.Editable && ArtifactPublicationAllowed(session.WorkflowID, artifact.SlotID, artifact.ListIndex) {
 			artifact.Document.Capabilities = append(artifact.Document.Capabilities, "publish_document")
 		}
 	}
+}
+
+// ArtifactPublicationAllowed limits Writer delivery to single draft artifacts.
+// Other workflows retain generic document publication.
+func ArtifactPublicationAllowed(workflowID, slotID string, listIndex *int) bool {
+	return workflowID != "writer-workflow" || listIndex == nil && (slotID == "draft_document" || slotID == "flat_draft_document")
 }
 
 // Imported Writer Markdown uses a separate target artifact until first publish.

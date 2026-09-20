@@ -2,6 +2,7 @@ package workflow
 
 import (
 	"reflect"
+	"strings"
 	"testing"
 )
 
@@ -20,13 +21,51 @@ func TestRewriteMarkdownSourceBoundaries(t *testing.T) {
 	}
 }
 func TestRewriteMarkdownSourceRejectsUnsupportedOrAmbiguousQuotes(t *testing.T) {
-	for _, source := range []string{"First.\n\n# Heading\n\nLast.", "First.\n\n```\nCode\n\nStill code\n```\n\nLast.", "First.\n# Heading\nLast."} {
+	for _, source := range []string{"First.\n\n> Quote\n\nLast.", "First.\n\n```\nCode\n\nStill code\n```\n\nLast.", "First.\n\n| A |\n| - |\n| B |\n\nLast."} {
 		if _, ok := selectedRewriteMarkdownBlocks(source, []map[string]any{{"start": 0, "end": len([]rune(source)), "selected_text": source}}); ok {
 			t.Fatalf("accepted unsupported structure: %q", source)
 		}
 	}
 	if _, ok := selectedRewriteMarkdownBlocks("Same.\n\nSame.", []map[string]any{{"selected_text": "Same"}}); ok {
 		t.Fatal("accepted ambiguous rendered quote")
+	}
+}
+
+func TestRewriteMarkdownHeadingAndListBoundaries(t *testing.T) {
+	for _, tc := range []struct {
+		source string
+		texts  []string
+	}{
+		{"前言\n## 标题 **重点** ##\n3. 第一条\n4. 第二条\n\n结尾", []string{"前言", "标题 **重点**", "第一条", "第二条", "结尾"}},
+		{"Heading\n=======\n\n正文", []string{"Heading", "正文"}},
+		{"3. Parent\n   1. Child\n   2. Next\n4. Last", []string{"Parent", "Child", "Next", "Last"}},
+		{"3. Parent\n\n   7. Child\n   8. Next\n4. Last", []string{"Parent", "Child", "Next", "Last"}},
+		{"3. First\n   continuation\n\n   Second paragraph\n4. Last", []string{"First\n   continuation", "Second paragraph", "Last"}},
+		{"- [x] Task\n- [ ] Next", []string{"Task", "Next"}},
+		{"  😀 text  \r\n   next  \r\n", []string{"😀 text  \r\n   next"}},
+	} {
+		t.Run(tc.source, func(t *testing.T) {
+			for _, offsets := range []bool{true, false} {
+				selections := []map[string]any{}
+				for _, old := range tc.texts {
+					selected := map[string]any{"selected_text": old}
+					if offsets {
+						start := len([]rune(tc.source[:strings.Index(tc.source, old)]))
+						selected["start"], selected["end"] = start, start+len([]rune(old))
+					}
+					selections = append(selections, selected)
+				}
+				blocks, ok := selectedRewriteMarkdownBlocks(tc.source, selections)
+				if !ok || len(blocks) != len(tc.texts) {
+					t.Fatalf("offsets=%v: missing text blocks: %#v", offsets, blocks)
+				}
+				for i, block := range blocks {
+					if block.raw != tc.texts[i] || string([]rune(tc.source)[block.start:block.end]) != tc.texts[i] {
+						t.Fatalf("offsets=%v: block %d includes markers or adjacent content: %#v", offsets, i, block)
+					}
+				}
+			}
+		})
 	}
 }
 func TestRewriteMarkdownFormattedAndEscapedQuotes(t *testing.T) {

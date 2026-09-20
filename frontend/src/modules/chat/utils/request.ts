@@ -438,7 +438,7 @@ export function WorkflowSessionApi() {
       return axiosInstance.patch<WorkflowArtifactReadResponse>(`${coreApiBaseUrl}/workflow-artifacts/${encodeURIComponent(artifactId)}`, body,
         { ...options, headers: { ...options?.headers, 'Workflow-Contract-Version': 'workflow.v1' } });
     },
-    getDocumentArtifact(artifactId: string, options?: RawAxiosRequestConfig) {
+    getDocumentArtifact(artifactId: string, options?: PublicationRequestOptions) {
       return axiosInstance.get<WorkflowArtifactReadResponse>(`${coreApiBaseUrl}/workflow-artifacts/${encodeURIComponent(artifactId)}`,
         { ...options, headers: { ...options?.headers, 'Workflow-Contract-Version': 'workflow.v1' } });
     },
@@ -550,10 +550,13 @@ export function WorkflowSessionApi() {
       baseRevision: number,
       outputFormat: WriterCopyFormat,
       document: unknown,
+      baseDraftVersion?: number,
     ) {
       return axiosInstance.post<{ code: number; data: ConvertDocumentResult }>(
         `${coreApiBaseUrl}/workflow-sessions/${encodeURIComponent(sessionId)}/slots/${encodeURIComponent(slotId)}/items/idx/${listIndex}:action-preview`,
-        { action: 'convert_document', base_revision: baseRevision, input: { output_format: outputFormat, document } },
+        { action: 'convert_document', base_revision: baseRevision,
+          ...(baseDraftVersion !== undefined ? { base_draft_version: baseDraftVersion } : {}),
+          input: { output_format: outputFormat, document } },
         { silentError: true } as RawAxiosRequestConfig,
       );
     },

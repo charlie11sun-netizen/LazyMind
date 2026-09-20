@@ -207,6 +207,7 @@ steps:
   write_document:
     label: 成稿
     tools_only: true
+    terminal_tools_only: true
     stream_heartbeat: true
     rerun_when: >
       The user asks to modify or rewrite the current draft_document, including changes

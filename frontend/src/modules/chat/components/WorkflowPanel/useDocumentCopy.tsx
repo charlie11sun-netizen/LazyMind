@@ -16,7 +16,7 @@ function preferredFormat(): WriterCopyFormat {
 }
 
 export function useDocumentCopy({
-  pendingReview = false, enabled, editingKey, sessionId, slotId, listIndex = -1, revision, document, sourceKey,
+  pendingReview = false, enabled, editingKey, sessionId, slotId, listIndex = -1, revision, draftVersion, document, sourceKey,
 }: {
   sourceKey?: string;
   pendingReview?: boolean;
@@ -26,6 +26,7 @@ export function useDocumentCopy({
   slotId?: string;
   listIndex?: number;
   revision?: number;
+  draftVersion?: number;
   document: unknown;
 }) {
   const { t } = useTranslation();
@@ -36,8 +37,8 @@ export function useDocumentCopy({
   const [copied, setCopied] = useState(false);
   useEffect(() => { if (!copied) return; const timer = window.setTimeout(() => setCopied(false), 1800); return () => window.clearTimeout(timer); }, [copied]);
   const pending = useRef(false);
-  const current = useRef({ document, revision, getSnapshot });
-  current.current = { document, revision, getSnapshot };
+  const current = useRef({ document, revision, draftVersion, getSnapshot });
+  current.current = { document, revision, draftVersion, getSnapshot };
 
   useEffect(() => {
     if (!enabled || !tabActive || !editingKey || !sessionId || !slotId) return undefined;
@@ -54,6 +55,7 @@ export function useDocumentCopy({
         const response = await WorkflowSessionApi().convertDocument(
           sessionId, slotId, listIndex, baseRevision, selected,
           isWriterDocument(snapshot) ? normalizeWriterDocumentForSync(snapshot) : snapshot,
+          current.current.draftVersion,
         );
         const result = response.data.data;
         if (response.data.code !== 0 || result?.format !== selected || typeof result.content !== 'string') {

@@ -1098,7 +1098,95 @@ func TestRenderWriterDocumentKeepsIRCanonicalForPinnedWorkflow(t *testing.T) {
 	}
 }
 
+func TestRenderWriterDocumentUnwrapsMarkdownTextArtifact(t *testing.T) {
+	chatService := httptest.NewServer(adaptLegacyWriterFixture(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var request struct {
+			Artifact json.RawMessage `json:"artifact"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+			t.Fatalf("decode render request: %v", err)
+		}
+		var artifact struct {
+			Schema string `json:"schema"`
+			Data   string `json:"data"`
+		}
+		if err := json.Unmarshal(request.Artifact, &artifact); err != nil {
+			t.Fatalf("decode render artifact: %v", err)
+		}
+		if artifact.Schema != "text/markdown" || artifact.Data != "# Source\n\n![diagram](images/diagram.png)" {
+			t.Fatalf("render artifact = %+v, want standard Markdown envelope", artifact)
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"result": map[string]any{
+				"title":          "Source",
+				"representation": "markdown",
+				"document":       "# Source\n\n![diagram](images/diagram.png)",
+			},
+		})
+	})))
+	t.Cleanup(chatService.Close)
+	t.Setenv("LAZYMIND_CHAT_SERVICE_URL", chatService.URL)
+
+	db := orm.MigrateTestDB(t,
+		&orm.DocumentPublicationOperation{}, &orm.DocumentPublicationBinding{},
+		&orm.WorkflowSession{}, &orm.WorkflowSlotRevision{}, &orm.WorkflowHumanArtifact{},
+		&orm.WorkflowSessionStep{}, &orm.WorkflowEvent{}, &orm.WorkflowAttemptInputBinding{},
+		&orm.WorkflowRouteDecision{},
+	)
+	store.Init(db.DB, db.DB, nil)
+	t.Cleanup(func() { store.Init(nil, nil, nil) })
+
+	now := time.Now().UTC()
+	if err := db.Create(&orm.WorkflowSession{
+		ID: "session", ConversationID: "conversation", WorkflowID: "writer-workflow",
+		Status: "completed", CreateUserID: "user-1", CreatedAt: now, UpdatedAt: now,
+	}).Error; err != nil {
+		t.Fatalf("seed writer session: %v", err)
+	}
+	if err := db.Create(&orm.WorkflowHumanArtifact{
+		ID: "source-1", SessionID: "session", Slot: "source_document", ContentType: "text/markdown",
+		Value: json.RawMessage(`{"text":"# Source\n\n![diagram](images/diagram.png)"}`), CreatedAt: now,
+	}).Error; err != nil {
+		t.Fatalf("seed source artifact: %v", err)
+	}
+	humanID := "source-1"
+	if err := db.Create(&orm.WorkflowSlotRevision{
+		ID: "revision-1", SessionID: "session", SlotID: "source_document",
+		Revision: 1, Selected: true, ChangeSource: "human", HumanArtifactID: &humanID,
+		Slot: "source_document", StepID: "prepare", Attempt: 1, CreatedAt: now,
+	}).Error; err != nil {
+		t.Fatalf("seed source revision: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodPost,
+		"/api/core/workflow-sessions/session/writer-document:render",
+		strings.NewReader(`{"slot":"source_document"}`))
+	req.Header.Set("X-User-Id", "user-1")
+	req = mux.SetURLVars(req, map[string]string{"session_id": "session"})
+	recorder := httptest.NewRecorder()
+	RenderWriterDocument(recorder, req)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, body=%s", recorder.Code, recorder.Body.String())
+	}
+}
+
+func TestWriterRenderArtifactPreservesSupportedEnvelopes(t *testing.T) {
+	for name, value := range map[string]json.RawMessage{
+		"standard": json.RawMessage(`{"schema":"text/markdown","data":"# Draft","meta":{"provider":"github"}}`),
+		"path":     json.RawMessage(`{"path":"/tmp/source.md","filename":"source.md"}`),
+		"ir":       json.RawMessage(`{"document_id":"doc-1","blocks":[]}`),
+	} {
+		t.Run(name, func(t *testing.T) {
+			if got := writerRenderArtifact(value); string(got) != string(value) {
+				t.Fatalf("writerRenderArtifact() = %s, want unchanged %s", got, value)
+			}
+		})
+	}
+}
+
 func TestSaveWriterDocumentDraftUpdatesInPlaceAndCheckpointCreatesRevision(t *testing.T) {
+	receivedNormalizedIR := false
 	chatService := httptest.NewServer(adaptLegacyWriterFixture(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/api/workflow/actions:invoke" {
 			t.Errorf("path = %q, want workflow action invoke", r.URL.Path)
@@ -1114,18 +1202,37 @@ func TestSaveWriterDocumentDraftUpdatesInPlaceAndCheckpointCreatesRevision(t *te
 			return
 		}
 		var edited struct {
-			Data string `json:"data"`
+			Data json.RawMessage `json:"data"`
 		}
 		if err := json.Unmarshal(request.Artifact, &edited); err != nil {
 			t.Errorf("decode edited artifact: %v", err)
 			http.Error(w, "invalid artifact", http.StatusBadRequest)
 			return
 		}
+		var source any
+		if err := json.Unmarshal(edited.Data, &source); err != nil {
+			t.Errorf("decode edited document: %v", err)
+			http.Error(w, "invalid document", http.StatusBadRequest)
+			return
+		}
+		representation := "markdown"
+		if document, ok := source.(map[string]any); ok {
+			representation = "ir"
+			blocks, _ := document["blocks"].([]any)
+			if len(blocks) > 0 {
+				block, _ := blocks[0].(map[string]any)
+				spans, _ := block["spans"].([]any)
+				if len(spans) > 0 {
+					span, _ := spans[0].(map[string]any)
+					_, receivedNormalizedIR = span["style"].(map[string]any)
+				}
+			}
+		}
 		_ = json.NewEncoder(w).Encode(map[string]any{
 			"result": map[string]any{
-				"source_document": edited.Data,
-				"representation":  "markdown",
-				"document":        edited.Data,
+				"source_document": source,
+				"representation":  representation,
+				"document":        source,
 				"numbering":       map[string]any{},
 				"title":           "Draft",
 			},
@@ -1167,7 +1274,7 @@ func TestSaveWriterDocumentDraftUpdatesInPlaceAndCheckpointCreatesRevision(t *te
 		t.Fatalf("seed writer revision: %v", err)
 	}
 
-	save := func(mode, document string, baseRevision int, baseDraftVersion int64) (int, int64) {
+	save := func(mode string, document any, baseRevision int, baseDraftVersion int64) (int, int64) {
 		body, err := json.Marshal(map[string]any{
 			"base_revision":      baseRevision,
 			"base_draft_version": baseDraftVersion,
@@ -1257,6 +1364,21 @@ func TestSaveWriterDocumentDraftUpdatesInPlaceAndCheckpointCreatesRevision(t *te
 	if staleRecorder.Code != http.StatusConflict ||
 		writerErrorCode(t, staleRecorder) != "REVISION_CONFLICT" {
 		t.Fatalf("stale save: status=%d body=%s", staleRecorder.Code, staleRecorder.Body.String())
+	}
+
+	legacyIR := map[string]any{
+		"document_id": "doc-1",
+		"title":       "Draft",
+		"blocks": []any{map[string]any{
+			"node_id": "divider-1", "type": "divider", "content": "",
+			"spans": []any{map[string]any{"text": "", "style": []any{}}},
+		}},
+	}
+	if revision, draftVersion := save("draft", legacyIR, 4, 1); revision != 4 || draftVersion != 2 {
+		t.Fatalf("IR draft baseline = revision %d draft %d, want 4 and 2", revision, draftVersion)
+	}
+	if !receivedNormalizedIR {
+		t.Fatal("save forwarded legacy IR style array without normalization")
 	}
 }
 

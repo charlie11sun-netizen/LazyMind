@@ -116,6 +116,37 @@ func TestEnrichWriterWriteBackSlots_UsesGitHubTarget(t *testing.T) {
 	}
 }
 
+func TestEnrichWriterWriteBackSlots_CurrentTargetSurvivesEditorCheckpoint(t *testing.T) {
+	db := newTestDB(t)
+	mustCreateWriterRecord(t, db.AutoMigrate(&orm.WorkflowHumanArtifact{}))
+	mustCreateWriterRecord(t, db.Create(&orm.WorkflowSession{ID: "session", WorkflowID: "writer-workflow"}).Error)
+	mustCreateWriterRecord(t, db.Create(&orm.WorkflowHumanArtifact{
+		ID: "edited", SessionID: "session", Slot: "draft_document", ContentType: "text/markdown",
+		Value: json.RawMessage(`{"text":"# Edited draft"}`),
+	}).Error)
+	draft := writerRevision("draft", "session", "draft_document", 3, "human", nil)
+	humanID := "edited"
+	draft.HumanArtifactID = &humanID
+	target := writerRevision("target", "session", "target_document", 2, "provider_sync",
+		json.RawMessage(`{"data":{"adapter":"github","doc_id":"acme/docs:branch:README.md","meta":{"pull_request_url":"https://github.com/acme/docs/pull/7"}}}`))
+	old := writerRevision("old-target", "session", "target_document", 1, "host",
+		json.RawMessage(`{"data":{"adapter":"github","doc_id":"acme/docs:main:README.md","meta":{"browser_url":"https://github.com/acme/docs/blob/main/README.md"}}}`))
+	old.Selected = false
+	for _, revision := range []*orm.WorkflowSlotRevision{&draft, &target, &old} {
+		mustCreateWriterRecord(t, db.Create(revision).Error)
+	}
+	old.Selected = false
+	mustCreateWriterRecord(t, db.Model(&old).Update("selected", false).Error)
+	// Session reads append historical step outputs after the selected artifacts.
+	slots := []slotDTO{toSlotDTO(&draft), toSlotDTO(&target), toSlotDTO(&old)}
+	enrichSlots(t.Context(), db.DB, "session", slots)
+	got := slots[0]
+	if got.Provider != "github" || !got.WriteBackReady || got.ProviderDocumentID != "acme/docs:branch:README.md" ||
+		got.WriteBackURL != "https://github.com/acme/docs/pull/7" {
+		t.Fatalf("checkpoint lost its current publication target: %+v", got)
+	}
+}
+
 func TestEnrichWriterWriteBackSlots_UsesObsidianTarget(t *testing.T) {
 	db := newTestDB(t)
 	mustCreateWriterRecord(t, db.DB.Create(&orm.WorkflowSession{
@@ -252,10 +283,33 @@ func TestApplyWriterProviderBindingUsesWeChatBrowserURL(t *testing.T) {
 		Provider:   "wechat",
 		DocumentID: "draft-1",
 		URI:        "",
-		BrowserURL: "https://mp.weixin.qq.com/",
+		BrowserURL: "https://mp.weixin.qq.com/s?tempkey=fixture-preview",
 	})
-	if info.URL != "https://mp.weixin.qq.com/" {
-		t.Fatalf("write-back URL = %q, want WeChat console URL", info.URL)
+	if info.URL != "https://mp.weixin.qq.com/s?tempkey=fixture-preview" {
+		t.Fatalf("write-back URL = %q, want WeChat draft URL", info.URL)
+	}
+}
+
+func TestInternalProviderBindingsExposeSameDocumentInPublicationAndSlot(t *testing.T) {
+	for _, tt := range []struct{ provider, uri, id, want string }{
+		{"feishu", "feishu:/~docx/FixtureDoc", "FixtureDoc", "https://feishu.cn/docx/FixtureDoc"},
+		{"feishu", "feishu@FixtureSpace:/~node/FixtureNode", "FixtureDoc", "https://feishu.cn/wiki/FixtureNode"},
+		{"feishu", "", "FixtureDoc", "https://feishu.cn/docx/FixtureDoc"},
+		{"notion", "notion:/~page/12345678-1234-1234-1234-123456789abc", "12345678-1234-1234-1234-123456789abc", "https://www.notion.so/12345678123412341234123456789abc"},
+	} {
+		t.Run(tt.provider+tt.uri, func(t *testing.T) {
+			binding := writerProviderBinding{Provider: tt.provider, URI: tt.uri, DocumentID: tt.id}
+			value, _ := json.Marshal(map[string]any{"provider_binding": binding})
+			target := publicationBindingTarget(value)
+			if got := documentPublicationTargetURL(tt.provider, target); got != tt.want {
+				t.Fatalf("publication target=%s want=%s", got, tt.want)
+			}
+			info := writerWriteBackInfo{}
+			applyWriterProviderBinding(&info, binding)
+			if info.URL != tt.want {
+				t.Fatalf("slot target=%s want=%s", info.URL, tt.want)
+			}
+		})
 	}
 }
 
@@ -286,7 +340,7 @@ func TestEnrichWriterWriteBackSlots_UsesObsidianLocalPath(t *testing.T) {
 	enrichSlots(context.Background(), db.DB, "session", slots)
 	got := slots[1]
 	if got.WriteBackState != writerWriteBackSyncedClean ||
-		got.WriteBackURL != "" ||
+		got.WriteBackURL != "obsidian://open?path=%2FUsers%2Ftest%2FDocuments%2Fobs%2FNote.md" ||
 		got.WriteBackLocalPath != "/Users/test/Documents/obs/Note.md" {
 		t.Fatalf("unexpected Obsidian write-back projection: %+v", got)
 	}

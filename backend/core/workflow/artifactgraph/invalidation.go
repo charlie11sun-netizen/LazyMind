@@ -37,19 +37,27 @@ func InvalidateConsumers(
 	sessionID string,
 	revisionIDs ...string,
 ) error {
-	return walkConsumers(ctx, tx, sessionID, false, revisionIDs...)
+	return walkConsumers(ctx, tx, sessionID, false, nil, revisionIDs...)
+}
+
+// InvalidateConsumersPreservingProducer updates publication target metadata
+// without invalidating the completed attempt that produced the published draft.
+// Other consumers and the live-attempt guard retain normal invalidation rules.
+func InvalidateConsumersPreservingProducer(ctx context.Context, tx *gorm.DB, sessionID string, producer orm.WorkflowSlotRevision, revisionIDs ...string) error {
+	return walkConsumers(ctx, tx, sessionID, false, &producer, revisionIDs...)
 }
 
 // CheckConsumers reports the same live-consumer guard without locks or writes.
 // It is an advisory read; mutations still recheck under the Session lock.
 func CheckConsumers(ctx context.Context, db *gorm.DB, sessionID string, revisionIDs ...string) error {
-	return walkConsumers(ctx, db, sessionID, true, revisionIDs...)
+	return walkConsumers(ctx, db, sessionID, true, nil, revisionIDs...)
 }
 
-func walkConsumers(ctx context.Context, tx *gorm.DB, sessionID string, readOnly bool, revisionIDs ...string) error {
+func walkConsumers(ctx context.Context, tx *gorm.DB, sessionID string, readOnly bool, preservedProducer *orm.WorkflowSlotRevision, revisionIDs ...string) error {
 	engine := invalidationEngine{
 		ctx: ctx, tx: tx.WithContext(ctx), sessionID: sessionID, readOnly: readOnly,
 		seenAttempts: map[string]bool{}, seenDecisions: map[string]bool{},
+		preservedProducer: preservedProducer,
 	}
 	for _, revisionID := range revisionIDs {
 		if strings.TrimSpace(revisionID) == "" {
@@ -63,13 +71,14 @@ func walkConsumers(ctx context.Context, tx *gorm.DB, sessionID string, readOnly 
 }
 
 type invalidationEngine struct {
-	readOnly      bool
-	ctx           context.Context
-	tx            *gorm.DB
-	sessionID     string
-	queue         []orm.WorkflowSessionStep
-	seenAttempts  map[string]bool
-	seenDecisions map[string]bool
+	preservedProducer *orm.WorkflowSlotRevision
+	readOnly          bool
+	ctx               context.Context
+	tx                *gorm.DB
+	sessionID         string
+	queue             []orm.WorkflowSessionStep
+	seenAttempts      map[string]bool
+	seenDecisions     map[string]bool
 }
 
 func (engine *invalidationEngine) attemptQuery() *gorm.DB {
@@ -147,6 +156,12 @@ func (engine *invalidationEngine) drain() error {
 		engine.seenAttempts[current.ID] = true
 		if !terminalAttempt(current.Status) {
 			return ErrArtifactInUse
+		}
+		if producer := engine.preservedProducer; producer != nil && producer.SessionID == engine.sessionID {
+			if producer.ProducerAttemptID != "" && (producer.ProducerAttemptID == current.ID || producer.ProducerAttemptID == current.TaskID) ||
+				producer.ProducerAttemptID == "" && producer.StepID == current.StepID && producer.Attempt == current.Attempt {
+				continue
+			}
 		}
 		if !engine.readOnly {
 			updated := engine.tx.Model(&orm.WorkflowSessionStep{}).

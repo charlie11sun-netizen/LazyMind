@@ -63,7 +63,7 @@ _TMP_DEFAULT_RETRIEVER_TOPK = 20
 _TMP_DEFAULT_RERANK_TOPK = 20
 _TMP_DEFAULT_K_MAX = 10
 _TMP_HINT = (
-    'After a hit, call read_file(target, offset=max(1, line-20), limit=80) '
+    'After a hit, call read_file_resource(target, offset=max(1, line-20), limit=80) '
     'for surrounding context. Read footers decide EOF, not document headings. '
     'Do not use this tool for knowledge bases, fetched web PDFs, workspace drafts, '
     'or source code; use kb_* tools or grep instead.'
@@ -295,7 +295,7 @@ class KBToolkit:
 
     __public_apis__ = [
         'list_knowledge_bases', 'list_knowledge_base_documents',
-        'aggregate_knowledge_base_documents', 'kb_search',
+        'aggregate_knowledge_base_documents', 'read_document', 'kb_search',
         'kb_get_parent_node', 'kb_get_window_nodes', 'kb_keyword_search',
     ]
     __tool_auto_activate__ = [
@@ -379,6 +379,23 @@ class KBToolkit:
             'group_by': _string_list(group_by),
         }
         return post_core_api('/system-query/documents:aggregate', payload)
+
+    def read_document(self, knowledge_base_id: str, document_id: str) -> Dict[str, Any]:
+        """Read a knowledge-base document through Core's authorized content service.
+
+        This works independently of semantic retrieval and is therefore suitable
+        for stored or parsed knowledge bases. Core may return cached parsed text
+        when materialization is available.
+        """
+        kb_id = str(knowledge_base_id or '').strip()
+        doc_id = str(document_id or '').strip()
+        if not kb_id or not doc_id:
+            raise ToolExecutionError('knowledge_base_id and document_id are required')
+        if kb_id not in self._kb_ids([kb_id]):
+            raise ToolExecutionError('Knowledge base is unavailable.')
+        return get_core_api(
+            f'/datasets/{quote(kb_id, safe="")}/documents/{quote(doc_id, safe="")}:content'
+        )
 
     @staticmethod
     def _accessible_kb_ids() -> set[str]:
@@ -715,7 +732,7 @@ def _tmp_agentic_config() -> dict:
 
 
 def _tmp_collect_uploads() -> tuple[list[dict], list[dict]]:
-    from lazymind.chat.engine.tools.local_file.resolver import (
+    from lazymind.chat.engine.tools.file_resources.resolver import (
         _dedupe_turn,
         materialize_local_path,
     )
@@ -763,13 +780,13 @@ def _tmp_collect_uploads() -> tuple[list[dict], list[dict]]:
 
 
 def _tmp_prepare_doc(item: dict) -> dict:
-    from lazymind.chat.engine.tools.local_file.store import workspace_for_request
+    from lazymind.chat.engine.tools.file_resources.store import workspace_for_request
 
     suffix = item['suffix']
     source = item['source_path']
     if suffix == '.pdf':
-        from lazymind.chat.engine.tools.local_file.ingest import ingest_pdf_file
-        from lazymind.chat.engine.tools.local_file.store import FileResourceStore
+        from lazymind.chat.engine.tools.file_resources.ingest import ingest_pdf_file
+        from lazymind.chat.engine.tools.file_resources.store import FileResourceStore
 
         store = FileResourceStore(workspace_for_request())
 
@@ -796,7 +813,7 @@ def _tmp_prepare_doc(item: dict) -> dict:
             'parse': 'ready',
         }
     if suffix in _TMP_OFFICE_SUFFIXES:
-        from lazymind.chat.engine.tools.local_file.resolver import _materialize_document_text
+        from lazymind.chat.engine.tools.file_resources.resolver import _materialize_document_text
 
         workspace = workspace_for_request()
 
@@ -842,7 +859,7 @@ def _tmp_chunk_line(lines: List[str], chunk: str) -> tuple[int, bool]:
 
 
 def _tmp_grep_hits(docs: List[dict], patterns: List[str]) -> List[dict]:
-    from lazymind.chat.engine.tools.local_file.window import grep_lines, load_text_lines
+    from lazymind.chat.engine.tools.file_resources.text_window import grep_lines, load_text_lines
 
     hits: list[dict] = []
     for pattern in patterns:
@@ -866,7 +883,7 @@ def _tmp_grep_hits(docs: List[dict], patterns: List[str]) -> List[dict]:
 
 def _tmp_semantic_hits(docs: List[dict], query: str, user_id: str) -> tuple[List[dict], str]:
     from lazymind.chat.engine.tools.algo.search_temp import embed_available, retrieve_temp_nodes
-    from lazymind.chat.engine.tools.local_file.window import load_text_lines
+    from lazymind.chat.engine.tools.file_resources.text_window import load_text_lines
 
     expanded = get_vocab_manager(user_id)(query)
     files = [doc['text_path'] for doc in docs]
@@ -951,6 +968,7 @@ def _tmp_merge_hits(grep_hits: List[dict], semantic_hits: List[dict], top_k: int
     return merged[:top_k]
 
 
+@lazyllm.tools.fc_register(host_file='NONE')
 def kb_tmp_search(
     semantic_query: Optional[str] = None,
     grep_patterns: Optional[List[str]] = None,
@@ -959,7 +977,7 @@ def kb_tmp_search(
     """Locate passages in this conversation's uploaded documents.
 
     Use for user-uploaded PDFs, Word/PPT, and prose text (txt/md). After hits,
-    call read_file on the returned target and line. Do not use for knowledge
+    call read_file_resource on the returned target and line. Do not use for knowledge
     bases, url_fetch web PDFs, workspace drafts, desktop folders, or source
     code — use kb_* tools or grep for those.
 
@@ -1030,6 +1048,6 @@ def kb_tmp_search(
         'footer': (
             'No matches.'
             if not hits
-            else f'Showing {len(hits)} locating hits. Call read_file for surrounding context.'
+            else f'Showing {len(hits)} locating hits. Call read_file_resource for surrounding context.'
         ),
     }

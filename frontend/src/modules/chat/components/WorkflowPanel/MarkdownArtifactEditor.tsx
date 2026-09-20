@@ -46,6 +46,7 @@ import {
   useRef,
   useState,
   type CSSProperties,
+  type ReactNode,
   type MouseEvent as ReactMouseEvent,
 } from 'react';
 import { useTranslation } from 'react-i18next';
@@ -67,12 +68,14 @@ import type {
   WriterNumberingState,
   WriterNumberingUpdate,
 } from '@/modules/chat/utils/request';
+import { parseSourceCitationIds } from '@/modules/chat/utils/sourceAdapter';
 import {
   resolveMarkdownImageUrlAsync,
   type MarkdownImageResolver,
 } from '@/modules/knowledge/utils/imageUrl';
 import { WriterHeadingNumberingMenu } from './WriterHeadingNumberingMenu';
 import { writerEmptyHeadingPlugin } from './writerEmptyHeadingPlugin';
+import { writerListNumberingPlugin } from './writerListNumberingPlugin';
 import {
   applyWriterMarkdownInternalReference,
   collectWriterMarkdownDomAnchors,
@@ -235,9 +238,7 @@ function sourceReferenceLink(target: EventTarget | null): HTMLAnchorElement | nu
 }
 
 function sourceReferenceId(link: HTMLAnchorElement): string {
-  const href = link.getAttribute('href') ?? '';
-  const match = /^#(?:user-content-)?source-(.+)$/.exec(href);
-  return match ? decodeURIComponent(match[1]) : '';
+  return parseSourceCitationIds(link.getAttribute('href'))[0] ?? '';
 }
 
 interface MarkdownSelectionRestorePoint {
@@ -495,9 +496,11 @@ export type MarkdownSaveMode = 'draft' | 'checkpoint';
 
 interface MarkdownArtifactEditorProps {
   savePaused?: boolean;
+  toolbarActions?: ReactNode;
   markdown: string;
   resolveImageUrl?: MarkdownImageResolver;
   numbering?: WriterNumberingState;
+  numberingDocument?: string;
   sourceRevision: number;
   maxHeight?: number;
   /** Compact chat presentation hides Workflow-only document chrome. */
@@ -569,10 +572,12 @@ function isMarkdownToolbarDropdownOpen(): boolean {
 
 export function MarkdownArtifactEditor({
   savePaused = false,
+  toolbarActions,
   markdown,
   renderContext,
   resolveImageUrl,
   numbering,
+  numberingDocument,
   sourceRevision,
   maxHeight,
   presentation = 'workflow',
@@ -652,7 +657,6 @@ export function MarkdownArtifactEditor({
   const serializedBaselineRef = useRef<string | undefined>(normalizeMarkdownForMdxEditor(markdown).trim());
   const sourceEditedRef = useRef(false);
   const richSourceRef = useRef<string>();
-  const awaitingModeBaselineRef = useRef(false);
   const copySnapshotRef = useRef(markdown);
   const dirtyRef = useRef(false);
   const savingRef = useRef(false);
@@ -675,11 +679,11 @@ export function MarkdownArtifactEditor({
       || writerMarkdownPersistenceIdentity(draftMarkdown) !== writerMarkdownPersistenceIdentity(baseMarkdown);
   const materializedDraftMarkdown = useMemo(
     () => protectWriterMarkdownAnchors(
-      anchorSourceMarkdown,
+      numberingDocument ?? anchorSourceMarkdown,
       draftMarkdown,
       false,
     ),
-    [anchorSourceMarkdown, draftMarkdown],
+    [anchorSourceMarkdown, draftMarkdown, numberingDocument],
   );
   copySnapshotRef.current = dirty
     ? writerMarkdownForSave(materializedDraftMarkdown)
@@ -688,7 +692,7 @@ export function MarkdownArtifactEditor({
     () => collectWriterMarkdownOutline(materializedDraftMarkdown),
     [materializedDraftMarkdown],
   );
-  const hasOutline = Boolean(markdownOutline.title);
+  const hasOutline = Boolean(markdownOutline.title || markdownOutline.items.length);
   const referenceTargets = useMemo(
     () => collectWriterMarkdownReferenceTargets(materializedDraftMarkdown).map((target) => {
       const numberingLabel = target.type === 'heading'
@@ -727,34 +731,6 @@ export function MarkdownArtifactEditor({
   draftMarkdownRef.current = draftMarkdown;
   savingRef.current = saving;
   conflictRef.current = conflict;
-
-  const changeEditorMode = (mode: 'rich' | 'source') => {
-    if (mode === editorMode) return;
-    try {
-      const current = draftMarkdownRef.current;
-      const canonical = sourceEditedRef.current || serializedBaselineRef.current === undefined
-        ? current
-        : preserveMarkdownSource(richSourceRef.current ?? latestSourceRef.current.markdown, serializedBaselineRef.current, current);
-      richSourceRef.current = canonical;
-      sourceEditedRef.current = mode !== 'rich';
-      awaitingModeBaselineRef.current = mode === 'rich';
-      serializedBaselineRef.current = normalizeMarkdownForMdxEditor(canonical).trim();
-      draftMarkdownRef.current = mode === 'rich' ? normalizeMarkdownForMdxEditor(canonical) : canonical;
-      setDraftMarkdown(draftMarkdownRef.current);
-      setRenderErrorSource(undefined);
-      setEditorMode(mode);
-    } catch { setSaveError(t('chat.writerMarkdown.saveFailed')); }
-  };
-
-  useLayoutEffect(() => {
-    if (editorMode !== 'rich' || !awaitingModeBaselineRef.current) return;
-    queueMicrotask(() => {
-      if (editorRef.current && awaitingModeBaselineRef.current) {
-        serializedBaselineRef.current = editorRef.current.getMarkdown();
-        awaitingModeBaselineRef.current = false;
-      }
-    });
-  }, [editorMode]);
 
   useEffect(() => {
     onContentChange?.(
@@ -863,20 +839,9 @@ export function MarkdownArtifactEditor({
           const label = presentation?.label || fallbackLabel;
           link.dataset.writerSourceCitation = 'true';
           link.dataset.writerSourceLabel = label;
-          link.dataset.writerSourceInitial = label.slice(0, 1).toUpperCase();
           link.setAttribute('contenteditable', 'false');
           link.setAttribute('role', 'button');
           link.tabIndex = 0;
-          if (presentation?.faviconUrl) {
-            link.dataset.writerSourceHasIcon = 'true';
-            link.style.setProperty(
-              '--writer-source-icon',
-              `url("${presentation.faviconUrl}")`,
-            );
-          } else {
-            delete link.dataset.writerSourceHasIcon;
-            link.style.removeProperty('--writer-source-icon');
-          }
           link.removeAttribute('title');
           link.setAttribute(
             'aria-label',
@@ -1020,10 +985,13 @@ export function MarkdownArtifactEditor({
       const headingRect = emptyHeading.getBoundingClientRect();
       const style = window.getComputedStyle(emptyHeading);
       const lineHeight = parseFloat(style.lineHeight) || parseFloat(style.fontSize) * 1.2;
+      const headingLeft = headingRect.left - surfaceRect.left;
+      const headingTop = headingRect.top - surfaceRect.top + surface.scrollTop;
+      const fitsInGutter = headingLeft >= 64;
       setEmptyHeadingLevel(emptyHeading.tagName);
       setSelectionToolbar({
-        top: headingRect.top - surfaceRect.top + surface.scrollTop + (lineHeight - 26) / 2,
-        left: headingRect.left - surfaceRect.left + surface.scrollLeft - 64,
+        top: fitsInGutter ? headingTop + (lineHeight - 26) / 2 : Math.max(surface.scrollTop, headingTop - 30),
+        left: (fitsInGutter ? headingLeft - 64 : Math.max(4, headingLeft)) + surface.scrollLeft,
         maxWidth: 56,
         placement: 'above',
       });
@@ -1277,7 +1245,6 @@ export function MarkdownArtifactEditor({
     const normalizedMarkdown = normalizeMarkdownForMdxEditor(markdown);
     richSourceRef.current = undefined;
     sourceEditedRef.current = false;
-    awaitingModeBaselineRef.current = false;
     serializedBaselineRef.current = normalizedMarkdown.trim();
     if (normalizedMarkdown !== draftMarkdownRef.current) {
       replaceMarkdownSilently(normalizedMarkdown, true);
@@ -1311,11 +1278,15 @@ export function MarkdownArtifactEditor({
       // Keep typing entirely under MDXEditor's control. Anchor repair belongs
       // at the persistence boundary so pressing Enter never reloads the whole
       // editor merely to restore hidden system metadata.
-      const protectedDraft = numberingUpdate && !dirtyRef.current
+      // Recover the user's source before restoring system anchors. Otherwise
+      // inserted anchor ids look like edits and can invalidate nearby mappings.
+      const numberingOnly = numberingUpdate && !dirtyRef.current;
+      const sourceDraft = numberingOnly
         ? sourceBeforeSave.markdown
-        : protectWriterMarkdownAnchors(sourceBeforeSave.markdown, nextDraft);
-      const savedMarkdown = writerMarkdownForSave(serializedBaselineRef.current === undefined || sourceEditedRef.current ? protectedDraft :
-        preserveMarkdownSource(richSourceRef.current ?? sourceBeforeSave.markdown, serializedBaselineRef.current, protectedDraft));
+        : serializedBaselineRef.current === undefined || sourceEditedRef.current ? nextDraft :
+          preserveMarkdownSource(richSourceRef.current ?? sourceBeforeSave.markdown, serializedBaselineRef.current, nextDraft);
+      const savedMarkdown = writerMarkdownForSave(numberingOnly ? sourceDraft :
+        protectWriterMarkdownAnchors(sourceBeforeSave.markdown, sourceDraft, true, true));
       const result = await onSave(savedMarkdown, revisionBeforeSave, mode, numberingUpdate);
       const savedRevision = typeof result === 'number'
         ? result
@@ -1324,21 +1295,24 @@ export function MarkdownArtifactEditor({
         ? result.markdown
         : savedMarkdown;
       const backendMarkdown = normalizeMarkdownForMdxEditor(persistedMarkdown);
+      // An unchanged save receipt confirms the current editor state. Reimporting
+      // its source can discard transient empty paragraphs and move the caret.
+      const acceptedDraft = persistedMarkdown === savedMarkdown ? nextDraft : backendMarkdown;
       const hasNewerDraft = draftMarkdownRef.current !== nextDraft;
-      setBaseMarkdown(backendMarkdown);
-      // A mode switch during this request may have established a newer source
-      // snapshot. The older response must not replace that editing baseline.
+      setBaseMarkdown(acceptedDraft);
+      // Newer edits may have established a different source snapshot while
+      // this request was pending. Preserve that editing baseline.
       if (!hasNewerDraft || richSourceRef.current === richSourceBeforeSave) {
         richSourceRef.current = undefined;
         serializedBaselineRef.current = persistedMarkdown === savedMarkdown ? nextDraft : backendMarkdown.trim();
       }
       if (!hasNewerDraft) {
         sourceEditedRef.current = false;
-        if (backendMarkdown !== draftMarkdownRef.current) {
-          replaceMarkdownSilently(backendMarkdown, persistedMarkdown !== savedMarkdown);
+        if (acceptedDraft !== draftMarkdownRef.current) {
+          replaceMarkdownSilently(acceptedDraft, persistedMarkdown !== savedMarkdown);
         }
-        draftMarkdownRef.current = backendMarkdown;
-        setDraftMarkdown(backendMarkdown);
+        draftMarkdownRef.current = acceptedDraft;
+        setDraftMarkdown(acceptedDraft);
       }
       setBaseRevision(savedRevision);
       setAnchorSourceMarkdown(persistedMarkdown);
@@ -1436,7 +1410,6 @@ export function MarkdownArtifactEditor({
     const nextMarkdown = normalizeMarkdownForMdxEditor(pendingSource.markdown);
     richSourceRef.current = undefined;
     sourceEditedRef.current = false;
-    awaitingModeBaselineRef.current = false;
     serializedBaselineRef.current = nextMarkdown.trim();
     replaceMarkdownSilently(nextMarkdown, true);
     draftMarkdownRef.current = nextMarkdown;
@@ -1457,8 +1430,7 @@ export function MarkdownArtifactEditor({
 
   const handleMarkdownChange = useCallback((nextDraft: string, initialMarkdownNormalize = false) => {
     if (initialMarkdownNormalize) {
-      if (!dirtyRef.current || awaitingModeBaselineRef.current) serializedBaselineRef.current = nextDraft;
-      awaitingModeBaselineRef.current = false;
+      if (!dirtyRef.current) serializedBaselineRef.current = nextDraft;
       return;
     }
     draftMarkdownRef.current = nextDraft;
@@ -1627,6 +1599,7 @@ export function MarkdownArtifactEditor({
   }, [draftMarkdown, selection]);
   const referenceDisabled = readOnly
     || !selection?.supported || Boolean(selection.paragraphSelections?.length)
+    || selection?.paragraph?.tagName !== 'P' || Boolean(selection.paragraph?.closest('li'))
     || saving
     || conflict
     || Boolean(removableReferenceMarkdown)
@@ -1772,6 +1745,21 @@ export function MarkdownArtifactEditor({
   const editorStyle: CSSProperties | undefined = selectionToolbarStyle || maxHeight !== undefined
     ? { ...selectionToolbarStyle, ...(maxHeight !== undefined ? { maxHeight } : {}) }
     : undefined;
+
+  let sourcePreview: string | undefined;
+  if (editorMode === 'source') {
+    try {
+      sourcePreview = dirty ? writerMarkdownForSave(preserveMarkdownSource(
+        richSourceRef.current ?? anchorSourceMarkdown,
+        serializedBaselineRef.current ?? draftMarkdown,
+        draftMarkdown,
+      )) : anchorSourceMarkdown;
+    } catch {
+      // Keep the rich draft mounted and recoverable if safe source mapping fails.
+      // The save path reports the failure and offers retry without writing it back.
+      sourcePreview = undefined;
+    }
+  }
 
   return (
     <section
@@ -2067,9 +2055,10 @@ export function MarkdownArtifactEditor({
         {!chatPresentation && hasOutline && <aside
           className='writer-markdown-editor__outline-rail'
           id={outlineId}
+          hidden={!outlineOpen}
           onClick={(event) => event.stopPropagation()}
         >
-          {outlineOpen ? (
+          {outlineOpen && (
             <nav
               className='writer-markdown-editor__outline'
               aria-label={t('chat.writerIR.outline')}
@@ -2137,36 +2126,38 @@ export function MarkdownArtifactEditor({
                 </div>
               )}
             </nav>
-          ) : (
-            <button
-              type='button'
-              className={
-                'writer-markdown-editor__outline-toggle '
-                + 'writer-markdown-editor__outline-toggle--collapsed'
-              }
-              title={t('chat.writerIR.expandOutline')}
-              aria-label={t('chat.writerIR.expandOutline')}
-              aria-controls={outlineId}
-              aria-expanded='false'
-              onClick={() => setOutlineOpen(true)}
-            >
-              <MenuUnfoldOutlined aria-hidden />
-            </button>
           )}
         </aside>}
         <div className={`writer-markdown-editor__main${editorMode !== 'rich' ? ' writer-markdown-editor__main--source' : ''}`}>
           <div className='writer-document-toolbar'>
+            {!chatPresentation && hasOutline && !outlineOpen && (
+              <button
+                type='button'
+                className='writer-markdown-editor__outline-toggle writer-markdown-editor__outline-toggle--collapsed'
+                title={t('chat.writerIR.expandOutline')}
+                aria-label={t('chat.writerIR.expandOutline')}
+                aria-controls={outlineId}
+                aria-expanded='false'
+                onClick={(event) => { event.stopPropagation(); setOutlineOpen(true); }}
+              >
+                <MenuUnfoldOutlined aria-hidden />
+              </button>
+            )}
             <span role='status' aria-live='polite'>{readOnly ? t('chat.writerMarkdown.readOnly') : saveError ? t('chat.writerMarkdown.saveFailed') : savePaused && dirty ? t('chat.writerLocal.publishingPendingSave') : saving ? t(draftMarkdown !== savingDraftRef.current ? 'chat.writerIR.savingWithEdits' : 'chat.writerIR.saving') : t(dirty ? 'chat.writerLocal.pendingSave' : 'chat.writerMarkdown.saved')}</span>
+            {toolbarActions}
             <WriterDocumentOptions width={pageWidth} onWidth={setPageWidth} sourceMode={editorMode === 'source'}
-              onSourceMode={() => changeEditorMode(editorMode === 'rich' ? 'source' : 'rich')}>
+              onSourceMode={() => setEditorMode(editorMode === 'rich' ? 'source' : 'rich')}>
               {hasOutlineInstructions && <button type='button' onClick={outlineInstructionsExpanded ? collapseAllOutlineInstructions : expandAllOutlineInstructions}>
                 {t(outlineInstructionsExpanded ? 'chat.writerIR.collapseAllOutlineInstructions' : 'chat.writerIR.expandAllOutlineInstructions')}
               </button>}
             </WriterDocumentOptions>
           </div>
-          {editorMode === 'source' ? <textarea className='writer-source-input' aria-label={t('chat.writerSource.source')} readOnly={readOnly}
-                value={dirty ? writerMarkdownForSave(draftMarkdown) : anchorSourceMarkdown} onChange={(event) => { sourceEditedRef.current = true; serializedBaselineRef.current = undefined; handleMarkdownChange(event.target.value); }} />
-            : renderErrorSource !== undefined ? (
+          {editorMode === 'source' && (sourcePreview === undefined
+            ? <div className='writer-markdown-editor__notice writer-markdown-editor__notice--error' role='alert'>
+              {t('chat.writerMarkdown.saveFailed')}
+            </div>
+            : <textarea className='writer-source-input' aria-label={t('chat.writerSource.source')} readOnly value={sourcePreview} />)}
+          {renderErrorSource !== undefined ? (
             <div
               className='writer-markdown-editor__parse-fallback'
               role='alert'
@@ -2174,12 +2165,13 @@ export function MarkdownArtifactEditor({
               <span className='writer-markdown-editor__parse-fallback-message'>
                 {t('chat.writerMarkdown.renderFallback')}
               </span>
-              <button type='button' onClick={() => changeEditorMode('source')}>{t('chat.writerSource.source')}</button>
+              <button type='button' onClick={() => setEditorMode('source')}>{t('chat.writerSource.source')}</button>
               <pre>{renderErrorSource}</pre>
             </div>
           ) : <WriterCodeDisplayContext.Provider value={codeDisplayLanguages}><MDXEditor
             ref={editorRef}
             className='writer-markdown-editor__surface'
+            contentEditableClassName='writer-markdown-editor__content'
             markdown={normalizeMarkdownForMdxEditor(draftMarkdown)}
             translation={editorTranslation}
             readOnly={readOnly}
@@ -2191,9 +2183,12 @@ export function MarkdownArtifactEditor({
               writerEmptyHeadingPlugin(),
               writerLocalSourcePlugin(),
               listsPlugin(),
+              writerListNumberingPlugin(),
               quotePlugin(),
               thematicBreakPlugin(),
-              linkPlugin(),
+              // Auto-link transforms run after the import baseline and otherwise
+              // turn untouched bare URLs into apparent user edits on first input.
+              linkPlugin({ disableAutoLink: true }),
               linkDialogPlugin(),
               tablePlugin(),
               frontmatterPlugin(),

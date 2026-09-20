@@ -8,6 +8,7 @@ vi.mock('@ant-design/icons', () => ({
   DisconnectOutlined: () => null,
   DownOutlined: () => null,
   FontSizeOutlined: () => null,
+  HighlightOutlined: () => null,
   ItalicOutlined: () => null,
   LinkOutlined: () => null,
   OrderedListOutlined: () => null,
@@ -91,6 +92,8 @@ import { WriterIRDocumentEditor } from './WriterIRDocumentEditor';
 import * as imageUrl from '@/modules/knowledge/utils/imageUrl';
 import {
   getWriterInternalReference,
+  writerBlockRangeHasInlineStyle,
+  writerBlockRangeSpanColor,
   type WriterDocument,
 } from './writerIR';
 
@@ -381,6 +384,37 @@ describe('WriterIRDocumentEditor image previews', () => {
 });
 
 describe('WriterIRDocumentEditor numbering sidecar', () => {
+  it('preserves divider structure when editing another block', () => {
+    const divider = {
+      node_id: 'divider-1',
+      type: 'divider',
+      content: '---',
+      spans: [],
+      metadata: { provider_owned: true },
+    } satisfies WriterDocument['blocks'][number];
+    const dividerDocument: WriterDocument = {
+      ...document,
+      blocks: [divider, document.blocks[1]],
+    };
+    const onChange = vi.fn();
+    const { container } = render(
+      <WriterIRDocumentEditor
+        document={dividerDocument}
+        ariaLabel='Writer document'
+        onChange={onChange}
+      />,
+    );
+    const paragraph = container.querySelector<HTMLElement>(
+      '[data-node-id="p-1"] > [data-writer-block-content]',
+    )!;
+    paragraph.textContent = 'Edited paragraph';
+    fireEvent.input(paragraph);
+
+    const updated = onChange.mock.calls.at(-1)?.[0] as WriterDocument;
+    expect(updated.blocks[0]).toEqual(divider);
+    expect(updated.blocks[1].content).toBe('Edited paragraph');
+  });
+
   it.each([1, 2, 3, 4, 5, 6])('uses the Markdown level %i placeholder without persisting it or changing numbering', (level) => {
     const onChange = vi.fn();
     const emptyDocument: WriterDocument = {
@@ -422,6 +456,8 @@ describe('WriterIRDocumentEditor numbering sidecar', () => {
           entries: { 'sec-1': { label: '1.', mode: 'ordered' } },
         }}
         ariaLabel='Writer document'
+        onFocus={vi.fn()}
+        onBlur={vi.fn()}
         onChange={onChange}
       />,
     );
@@ -444,7 +480,7 @@ describe('WriterIRDocumentEditor numbering sidecar', () => {
     fireEvent.input(heading!);
 
     await waitFor(() => expect(onChange).toHaveBeenCalled());
-    const updated = onChange.mock.calls.at(-1)?.[0] as WriterDocument;
+    const updated = onChange.mock.calls[onChange.mock.calls.length - 1]?.[0] as WriterDocument;
     expect(updated.blocks[0].content).toBe('Renamed section');
   });
 });
@@ -564,6 +600,159 @@ describe('WriterIRDocumentEditor tables', () => {
       header: true, align: 'center', column_span: 2,
     });
     expect(container.querySelector('[data-node-id="cell-2"]')).toHaveTextContent('200');
+  });
+});
+
+describe('WriterIRDocumentEditor multi-block toolbar', () => {
+  const multiDocument: WriterDocument = {
+    ...document,
+    blocks: [
+      document.blocks[0],
+      { node_id: 'first', type: 'paragraph', content: '😀 Alpha Alpha' },
+      { node_id: 'second', type: 'paragraph', content: 'Beta rest' },
+    ],
+  };
+
+  function selectAcross(container: HTMLElement) {
+    const first = container.querySelector('[data-node-id="first"] [data-writer-block-content]')!;
+    const second = container.querySelector('[data-node-id="second"] [data-writer-block-content]')!;
+    const range = window.document.createRange();
+    const firstText = window.document.createTreeWalker(first, NodeFilter.SHOW_TEXT).nextNode()!;
+    const secondText = window.document.createTreeWalker(second, NodeFilter.SHOW_TEXT).nextNode()!;
+    range.setStart(firstText, 9); // The second Alpha, after an emoji.
+    range.setEnd(secondText, 4);
+    window.getSelection()?.removeAllRanges();
+    window.getSelection()?.addRange(range);
+    fireEvent.mouseUp(second);
+  }
+
+  it('shows the complete toolbar without requiring AI rewrite support and formats the precise range', () => {
+    const changed = vi.fn();
+    const { container } = render(<ControlledWriter initialDocument={multiDocument} onDocumentChange={changed} />);
+    selectAcross(container);
+    expect(screen.getByRole('toolbar', { name: 'chat.writerIR.formatToolbar' })).toBeInTheDocument();
+    expect(screen.getByRole('combobox', { name: 'chat.writerIR.blockStyle' })).toBeEnabled();
+    fireEvent.click(screen.getByRole('button', { name: 'chat.writerIR.bold' }));
+    const next = changed.mock.calls[0][0] as WriterDocument;
+    expect(writerBlockRangeHasInlineStyle(next.blocks[1], 8, 13, 'strong')).toBe(true);
+    expect(writerBlockRangeHasInlineStyle(next.blocks[1], 0, 8, 'strong')).toBe(false);
+    expect(writerBlockRangeHasInlineStyle(next.blocks[2], 0, 4, 'strong')).toBe(true);
+    expect(writerBlockRangeHasInlineStyle(next.blocks[2], 4, 9, 'strong')).toBe(false);
+    expect(window.getSelection()?.getRangeAt(0).startContainer.parentElement?.closest('[data-node-id]')?.getAttribute('data-node-id')).toBe('first');
+    expect(window.getSelection()?.getRangeAt(0).endContainer.parentElement?.closest('[data-node-id]')?.getAttribute('data-node-id')).toBe('second');
+    expect(screen.getByRole('button', { name: 'chat.writerIR.bold' })).toHaveAttribute('aria-pressed', 'true');
+    fireEvent.click(screen.getByRole('button', { name: 'chat.writerIR.bold' }));
+    const cleared = changed.mock.calls[1][0] as WriterDocument;
+    expect(writerBlockRangeHasInlineStyle(cleared.blocks[1], 8, 13, 'strong')).toBe(false);
+    expect(writerBlockRangeHasInlineStyle(cleared.blocks[2], 0, 4, 'strong')).toBe(false);
+  });
+
+  it('applies a mixed bold selection uniformly instead of inverting each paragraph', () => {
+    const changed = vi.fn();
+    const initial = { ...multiDocument, blocks: multiDocument.blocks.map(block => block.node_id === 'second'
+      ? { ...block, spans: [{ text: block.content!, style: ['strong'] }] } : block) };
+    const { container } = render(<ControlledWriter initialDocument={initial} onDocumentChange={changed} />);
+    selectAcross(container);
+    fireEvent.click(screen.getByRole('button', { name: 'chat.writerIR.bold' }));
+    const next = changed.mock.calls[0][0] as WriterDocument;
+    expect(writerBlockRangeHasInlineStyle(next.blocks[1], 8, 13, 'strong')).toBe(true);
+    expect(writerBlockRangeHasInlineStyle(next.blocks[2], 0, 4, 'strong')).toBe(true);
+  });
+
+  it.each(['heading-2', 'ordered-list'])('applies %s to every selected block', (format) => {
+    const changed = vi.fn();
+    const { container } = render(<ControlledWriter initialDocument={multiDocument} onDocumentChange={changed} />);
+    selectAcross(container);
+    fireEvent.change(screen.getByRole('combobox', { name: 'chat.writerIR.blockStyle' }), { target: { value: format } });
+    const next = changed.mock.calls[0][0] as WriterDocument;
+    expect(next.blocks[0]).toEqual(multiDocument.blocks[0]);
+    expect(next.blocks.slice(1).map(block => block.type)).toEqual(format === 'heading-2' ? ['heading', 'heading'] : ['list_item', 'list_item']);
+    expect(next.blocks.slice(1).map(block => block.content)).toEqual(['😀 Alpha Alpha', 'Beta rest']);
+    expect(window.getSelection()?.isCollapsed).toBe(false);
+  });
+
+  it('toggles a selected range into a list and back without losing the selection', () => {
+    const changed = vi.fn();
+    const { container } = render(<ControlledWriter initialDocument={multiDocument} onDocumentChange={changed} />);
+    selectAcross(container);
+    fireEvent.click(screen.getByRole('button', { name: 'chat.writerIR.orderedList' }));
+    expect(changed.mock.calls[0][0].blocks.slice(1).every((block: { type: string }) => block.type === 'list_item')).toBe(true);
+    fireEvent.click(screen.getByRole('button', { name: 'chat.writerIR.orderedList' }));
+    expect(changed.mock.calls[1][0].blocks.slice(1).every((block: { type: string }) => block.type === 'paragraph')).toBe(true);
+    expect(window.getSelection()?.getRangeAt(0).endContainer.parentElement?.closest('[data-node-id]')?.getAttribute('data-node-id')).toBe('second');
+  });
+
+  it('applies and removes a cross-reference across paragraphs without changing their text', () => {
+    const changed = vi.fn();
+    const { container } = render(<ControlledWriter initialDocument={multiDocument} onDocumentChange={changed} />);
+    selectAcross(container);
+    fireEvent.click(screen.getByRole('button', { name: 'chat.writerIR.crossReference' }));
+    fireEvent.click(screen.getByTitle('1. Target section'));
+    const next = changed.mock.calls[0][0] as WriterDocument;
+    expect(next.blocks.slice(1).map(block => block.content)).toEqual(['😀 Alpha Alpha', 'Beta rest']);
+    for (const block of next.blocks.slice(1)) {
+      expect(block.spans?.some(span => getWriterInternalReference(span)?.targetNodeId === 'sec-1')).toBe(true);
+    }
+    fireEvent.click(screen.getByRole('button', { name: 'chat.writerIR.removeCrossReference' }));
+    const cleared = changed.mock.calls[1][0] as WriterDocument;
+    expect(cleared.blocks.slice(1).every(block => block.spans?.every(span => !getWriterInternalReference(span)))).toBe(true);
+  });
+
+  it('colors only selected text across blocks and restores the default colors', () => {
+    const changed = vi.fn();
+    const { container } = render(<ControlledWriter initialDocument={multiDocument} onDocumentChange={changed} />);
+    selectAcross(container);
+    fireEvent.click(screen.getByRole('button', { name: 'chat.writerIR.colorPanel' }));
+    fireEvent.click(screen.getAllByRole('button', { name: 'chat.writerIR.colors.red' })[0]);
+    const next = changed.mock.calls[0][0] as WriterDocument;
+    expect(writerBlockRangeSpanColor(next.blocks[1], 8, 13, 'text_color')).toBeTypeOf('number');
+    expect(writerBlockRangeSpanColor(next.blocks[1], 0, 8, 'text_color')).toBeNull();
+    expect(writerBlockRangeSpanColor(next.blocks[2], 0, 4, 'text_color')).toBe(writerBlockRangeSpanColor(next.blocks[1], 8, 13, 'text_color'));
+    fireEvent.click(screen.getByRole('button', { name: 'chat.writerIR.restoreDefaultColors' }));
+    const cleared = changed.mock.calls[1][0] as WriterDocument;
+    expect(writerBlockRangeSpanColor(cleared.blocks[1], 8, 13, 'text_color')).toBeNull();
+    expect(writerBlockRangeSpanColor(cleared.blocks[2], 0, 4, 'text_color')).toBeNull();
+  });
+
+  it('supports keyboard formatting and dismisses the toolbar on outside focus', () => {
+    const changed = vi.fn();
+    const { container } = render(<ControlledWriter initialDocument={multiDocument} onDocumentChange={changed} />);
+    selectAcross(container);
+    const editor = screen.getByRole('textbox', { name: 'Writer document' });
+    fireEvent.keyDown(editor, { key: 'i', ctrlKey: true });
+    const next = changed.mock.calls[0][0] as WriterDocument;
+    expect(writerBlockRangeHasInlineStyle(next.blocks[1], 8, 13, 'italic')).toBe(true);
+    expect(writerBlockRangeHasInlineStyle(next.blocks[2], 0, 4, 'italic')).toBe(true);
+    fireEvent.blur(editor, { relatedTarget: window.document.body });
+    expect(screen.queryByRole('toolbar')).not.toBeInTheDocument();
+  });
+
+  it('keeps multi-paragraph rewrite in the toolbar and clears it when the selection collapses', () => {
+    const rewrite = vi.fn();
+    const { container } = render(<WriterIRDocumentEditor document={multiDocument} ariaLabel='Writer document'
+      onChange={vi.fn()} onFocus={vi.fn()} onBlur={vi.fn()} onRewriteSelection={rewrite} allowMultipleParagraphs />);
+    selectAcross(container);
+    const action = screen.getByRole('button', { name: 'chat.artifactRewrite.action' });
+    expect(action.closest('[role="toolbar"]')).not.toBeNull();
+    fireEvent.click(action);
+    expect(rewrite).toHaveBeenCalledWith(expect.objectContaining({ nodeSelections: [
+      { node_id: 'first', selected_text: 'Alpha' }, { node_id: 'second', selected_text: 'Beta' },
+    ] }));
+    const paragraph = container.querySelector<HTMLElement>('[data-node-id="second"] [data-writer-block-content]')!;
+    placeCaret(paragraph, 1);
+    fireEvent.mouseUp(paragraph);
+    expect(screen.queryByRole('toolbar')).not.toBeInTheDocument();
+  });
+
+  it.each([false, true])('does not expose formatting for a protected selection (disabled=%s)', (disabled) => {
+    const changed = vi.fn();
+    const protectedDocument = disabled ? multiDocument : { ...multiDocument, blocks: multiDocument.blocks.map(block =>
+      block.node_id === 'second' ? { ...block, editable: false } : block) };
+    const { container } = render(<WriterIRDocumentEditor document={protectedDocument} disabled={disabled}
+      ariaLabel='Writer document' onChange={changed} onFocus={vi.fn()} onBlur={vi.fn()} />);
+    selectAcross(container);
+    expect(screen.queryByRole('toolbar')).not.toBeInTheDocument();
+    expect(changed).not.toHaveBeenCalled();
   });
 });
 

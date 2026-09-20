@@ -19,12 +19,45 @@
   &--inline &__input { width: min(360px, 65vw); }
 }
 
-.writer-document-toolbar { position: relative; z-index: 3; display: flex; align-items: center; justify-content: space-between; min-height: 36px; padding: 4px 12px; gap: 12px; flex-shrink: 0; border-bottom: 1px solid var(--color-border, #dbe3ee); background: var(--color-bg-base, #fff); }
-.writer-document-toolbar > [role='status'] { font-size: 12px; color: var(--color-text-secondary, #64748b); }
+.writer-document-toolbar { position: sticky; top: 0; z-index: 3; display: flex; align-items: center; justify-content: space-between; min-height: 30px; padding: 1px 8px; gap: 8px; flex-shrink: 0; border-bottom: 1px solid var(--color-border, #dbe3ee); background: var(--color-bg-base, #fff); }
+.writer-document-toolbar > [role='status'] { margin-right: auto; font-size: 12px; color: var(--color-text-secondary, #64748b); }
+.writer-document-toolbar > .writer-document-options { margin-left: 0; }
+.writer-document-toolbar .writer-document-options > summary { padding: 2px 6px; line-height: 22px; }
+.writer-document-toolbar .workflow-slot__version-btn {
+  min-height: 26px;
+  padding: 2px 6px;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: inherit;
+  font-size: 12px;
+  font-weight: 400;
+  line-height: 22px;
+  white-space: nowrap;
+
+  &:hover:not(:disabled) { background: var(--color-bg-layout, #f1f5f9); }
+  &:focus-visible { outline: 2px solid var(--color-primary, #2563eb); outline-offset: 2px; }
+}
 .writer-document-options { position: relative; margin-left: auto; font-size: 12px;
   summary { cursor: pointer; padding: 5px 8px; border-radius: 4px; }
   &__menu { position: absolute; top: 100%; right: 0; z-index: 35; width: 220px; padding: 10px; background: var(--color-bg-container, white); border: 1px solid var(--color-border, #dbe3ee); border-radius: 6px; box-shadow: 0 6px 20px #0002; }
-  button { display: block; width: 100%; text-align: left; padding: 6px; border: 0; background: transparent; cursor: pointer; color: inherit; }
+  .writer-document-options__menu > button {
+    display: block;
+    width: 100%;
+    min-height: 0;
+    text-align: left;
+    padding: 6px;
+    border: 0;
+    border-radius: 4px;
+    background: transparent;
+    cursor: pointer;
+    color: inherit;
+    font: inherit;
+
+    &:hover:not(:disabled) { background: var(--color-bg-layout, #f1f5f9); }
+    &:active:not(:disabled) { transform: none; }
+    &:focus-visible { outline: 2px solid var(--color-primary, #2563eb); outline-offset: 2px; }
+  }
   fieldset { border: 0; margin: 8px 0 0; padding: 0; }
   label { display: block; padding: 5px; cursor: pointer; }
 }
