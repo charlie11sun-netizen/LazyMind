@@ -16,10 +16,12 @@
     "pack:win:x64:installer": "electron-builder --config electron-builder.config.cjs --win nsis --x64 --publish never"
   },
   "devDependencies": {
-    "electron": "^31.7.7",
+    "electron": "^37.10.3",
     "electron-builder": "^24.13.3"
   },
   "dependencies": {
-    "ws": "^8.21.3"
+    "uiohook-napi": "1.5.5",
+    "ws": "^8.21.3",
+    "node-gyp-build": "4.8.4"
   }
 }

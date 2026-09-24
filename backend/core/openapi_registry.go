@@ -15,6 +15,7 @@ import (
 	"lazymind/core/doc"
 	"lazymind/core/evalset"
 	"lazymind/core/mcp"
+	"lazymind/core/modelconfig"
 	"lazymind/core/modelprovider"
 	"lazymind/core/showcase"
 	"lazymind/core/wordgroup"
@@ -114,6 +115,7 @@ type documentActionErrorOpenAPIData struct {
 	ProviderSynced *bool  `json:"provider_synced,omitempty"`
 	ArtifactSaved  *bool  `json:"artifact_saved,omitempty"`
 	Retryable      *bool  `json:"retryable,omitempty"`
+	Cause          string `json:"cause,omitempty" enum:"PANDOC_NOT_FOUND,PANDOC_NOT_EXECUTABLE,PANDOC_VERSION_UNSUPPORTED,PANDOC_TIMEOUT,PANDOC_INPUT_TOO_LARGE,PANDOC_OUTPUT_TOO_LARGE,PANDOC_TEMPLATE_INVALID,PANDOC_FILTER_FAILED,PANDOC_CONVERSION_FAILED"`
 
 	Code string `json:"code" enum:"IDENTITY_REQUIRED,PERMISSION_DENIED,ARTIFACT_NOT_FOUND,REVISION_REQUIRED,REVISION_CONFLICT,DRAFT_VERSION_REQUIRED,DRAFT_VERSION_CONFLICT,SESSION_NOT_EDITABLE,DOCUMENT_ACTION_INVALID,DOCUMENT_ACTION_UNSUPPORTED,MODEL_CONFIG_REQUIRED,SELECTION_STALE,SELECTION_AMBIGUOUS,ARTIFACT_IN_USE,DOCUMENT_ACTION_FAILED,DOCUMENT_CONVERSION_FAILED,DOCUMENT_PROVIDERS_UNAVAILABLE,DOCUMENT_ACTION_RESULT_INVALID,DOCUMENT_ACTION_SAVE_FAILED,CROSS_REFERENCE_SELECTION_INVALID,CROSS_REFERENCE_TARGET_NOT_FOUND,PUBLICATION_NOT_FOUND,PUBLICATION_IN_PROGRESS,PUBLICATION_STATE_CONFLICT,PUBLICATION_RECOVERY_CLOSED,PUBLICATION_IDEMPOTENCY_CONFLICT,PUBLICATION_ALREADY_BOUND,PUBLICATION_OUTCOME_UNKNOWN,PROVIDER_SYNC_LOCAL_CONFLICT,PROVIDER_SYNC_LOCAL_PERSIST_FAILED,PROVIDER_CREDENTIALS_UNAVAILABLE,PROVIDER_BINDING_CONFLICT"`
 }
@@ -198,7 +200,7 @@ func newSchemaBuilder() *schemaBuilder {
 func operationRegistryOpenAPISpec() map[string]any {
 	builder := newSchemaBuilder()
 	paths := map[string]any{}
-	for _, op := range registeredCoreOperations() {
+	for _, op := range append(registeredCoreOperations(), workflowControlOperations()...) {
 		pathItem, _ := paths[op.Path].(map[string]any)
 		if pathItem == nil {
 			pathItem = map[string]any{}
@@ -598,6 +600,10 @@ func isPrimitiveKind(kind reflect.Kind) bool {
 }
 
 func schemaNameForType(t reflect.Type) string {
+	// Keep the public document Artifact schema stable when exposing executor outputs.
+	if t.PkgPath() == "lazymind/core/workflow/executor" && t.Name() == "Artifact" {
+		return "WorkflowExecutionArtifact"
+	}
 	if name := t.Name(); name != "" {
 		return name
 	}
@@ -1134,18 +1140,23 @@ type agentRouterErrorResponse struct {
 }
 
 type agentThreadOpenAPIResponse struct {
-	ThreadID      string         `json:"thread_id"`
-	CurrentTaskID string         `json:"current_task_id,omitempty"`
-	Status        string         `json:"status"`
-	ThreadPayload map[string]any `json:"thread_payload,omitempty"`
-	CreatedAt     string         `json:"created_at"`
-	UpdatedAt     string         `json:"updated_at"`
+	RuntimeStatus  string         `json:"runtime_status,omitempty"`
+	CleanupPending bool           `json:"cleanup_pending,omitempty"`
+	StatusSource   string         `json:"status_source" enum:"live,cached"`
+	ObservedAt     *string        `json:"observed_at,omitempty"`
+	ThreadID       string         `json:"thread_id"`
+	CurrentTaskID  string         `json:"current_task_id,omitempty"`
+	Status         string         `json:"status"`
+	ThreadPayload  map[string]any `json:"thread_payload,omitempty"`
+	CreatedAt      string         `json:"created_at"`
+	UpdatedAt      string         `json:"updated_at"`
 }
 
 type agentThreadListOpenAPIResponse struct {
-	Threads       []agentThreadOpenAPIResponse `json:"threads"`
-	TotalSize     int64                        `json:"total_size"`
-	NextPageToken string                       `json:"next_page_token"`
+	CurrentThreadID string                       `json:"current_thread_id,omitempty"`
+	Threads         []agentThreadOpenAPIResponse `json:"threads"`
+	TotalSize       int64                        `json:"total_size"`
+	NextPageToken   string                       `json:"next_page_token"`
 }
 
 type skillPathParams struct {
@@ -1238,12 +1249,14 @@ type listRemoteGroupModelsOpenAPIResponse struct {
 }
 
 type addModelProviderGroupModelOpenAPIRequest struct {
+	Vision         bool    `json:"vision,omitempty" desc:"Whether this LLM accepts image input"`
 	Name           string  `json:"name"`
 	ModelType      string  `json:"model_type"`
 	MaxInputTokens *string `json:"max_input_tokens,omitempty" desc:"Optional override. When omitted, LLM/VLM windows are resolved from config/model_context_windows.yaml by model name and unknown names fall back to 128K."`
 }
 
 type addModelProviderGroupModelOpenAPIResponse struct {
+	Vision                   bool    `json:"vision" desc:"Whether this LLM accepts image input"`
 	ID                       string  `json:"id"`
 	UserModelProviderID      string  `json:"user_model_provider_id"`
 	UserModelProviderGroupID string  `json:"user_model_provider_group_id"`
@@ -1261,6 +1274,7 @@ type updateModelProviderGroupModelOpenAPIRequest struct {
 }
 
 type listModelProviderGroupModelsOpenAPIItem struct {
+	Vision                   bool     `json:"vision" desc:"Whether this LLM accepts image input"`
 	ID                       string   `json:"id"`
 	Source                   string   `json:"source" enum:"own,cloud"`
 	ProviderID               string   `json:"provider_id"`
@@ -1388,14 +1402,23 @@ type setSharedProviderOpenAPIRequest struct {
 }
 
 type userModelProviderOpenAPIItem struct {
-	ID                     string   `json:"id"`
-	DefaultModelProviderID string   `json:"default_model_provider_id"`
-	Name                   string   `json:"name"`
-	Description            string   `json:"description"`
-	BaseURL                string   `json:"base_url"`
-	Category               string   `json:"category"`
-	IsConfigured           bool     `json:"is_configured"`
-	Capabilities           []string `json:"capabilities"`
+	ID                     string                           `json:"id"`
+	DefaultModelProviderID string                           `json:"default_model_provider_id"`
+	Name                   string                           `json:"name"`
+	Description            string                           `json:"description"`
+	BaseURL                string                           `json:"base_url"`
+	BaseURLPresets         []modelProviderBaseURLPresetItem `json:"base_url_presets,omitempty"`
+	Category               string                           `json:"category"`
+	IsConfigured           bool                             `json:"is_configured"`
+	Capabilities           []string                         `json:"capabilities"`
+	ModelTypes             []string                         `json:"model_types"`
+}
+
+type modelProviderBaseURLPresetItem struct {
+	Key            string `json:"key"`
+	Value          string `json:"value"`
+	Label          string `json:"label,omitempty"`
+	APIKeyRequired *bool  `json:"api_key_required,omitempty"`
 }
 
 type listUserModelProvidersOpenAPIResponse struct {
@@ -1552,6 +1575,7 @@ type skillReviewTaskListOpenAPIResponse struct {
 }
 
 type skillOrganizeOpenAPIRequest struct {
+	Mode        string   `json:"mode,omitempty" enum:"light,deep" desc:"Organization level; defaults to light. Light changes descriptions and search metadata only. Deep also permits refactoring, merging and deduplication."`
 	RequestID   string   `json:"requestid"`
 	Skills      []string `json:"skills"`
 	ArtifactDir string   `json:"artifact_dir,omitempty"`
@@ -1638,6 +1662,17 @@ type skillListQueryParams struct {
 	Tags     []string `query:"tags"`
 	Page     int32    `query:"page"`
 	PageSize int32    `query:"page_size"`
+	NameOnly bool     `query:"name_only" desc:"When true, keyword matches only the skill name (case-insensitive literal substring). Defaults to false for full-text search. Filtering applies before pagination and total count."`
+}
+
+type installedSkillListQueryParams struct {
+	Source   string   `query:"source" enum:"builtin,internal,external" desc:"Filter by origin. Builtin UID takes precedence over internal/external storage categories; category remains an independent legacy filter."`
+	Keyword  string   `query:"keyword"`
+	Category string   `query:"category"`
+	Tags     []string `query:"tags"`
+	Page     int32    `query:"page"`
+	PageSize int32    `query:"page_size"`
+	NameOnly bool     `query:"name_only" desc:"When true, keyword matches only the skill name (case-insensitive literal substring). Defaults to false for full-text search. Filtering applies before pagination and total count."`
 }
 
 type shareListQueryParams struct {
@@ -1660,16 +1695,24 @@ type skillCreateManagedOpenAPIRequest struct {
 	Tags        []string                  `json:"tags,omitempty"`
 	AutoEvo     *bool                     `json:"auto_evo,omitempty"`
 	IsEnabled   *bool                     `json:"is_enabled,omitempty"`
+	Field       string                    `json:"field,omitempty" desc:"Capability field for search; independent of the internal/external storage category."`
+	Aliases     []string                  `json:"aliases,omitempty" desc:"Search aliases; omit to preserve existing values, use an empty array to clear."`
+	Keywords    []string                  `json:"keywords,omitempty" desc:"Search keywords; omit to preserve existing values, use an empty array to clear."`
+	CallMode    *string                   `json:"call_mode,omitempty" enum:"manual,on_demand,priority,disabled" desc:"Calling policy; disabled is a legacy alias for manual."`
 }
 
 type skillUpdateManagedOpenAPIRequest struct {
 	Name        *string                    `json:"name,omitempty" desc:"Optional. Rename the directory skill."`
 	Category    *string                    `json:"category,omitempty" desc:"Optional. Move the skill to another category."`
-	Description *string                    `json:"description,omitempty" desc:"Optional. Replace product metadata description; SKILL.md is not rewritten."`
+	Description *string                    `json:"description,omitempty" desc:"Optional. Update the description and the current execution SKILL.md; preserve the original revision."`
 	Tags        []string                   `json:"tags,omitempty" desc:"Optional. Replace tags; omit to keep tags unchanged."`
 	AutoEvo     *bool                      `json:"auto_evo,omitempty" desc:"Optional. Enable or disable automatic evolution."`
 	IsEnabled   *bool                      `json:"is_enabled,omitempty" desc:"Optional. Enable or disable the skill."`
+	CallMode    *string                    `json:"call_mode,omitempty" enum:"manual,on_demand,priority,disabled" desc:"Calling policy. manual requires explicit selection; disabled is a legacy alias for manual."`
 	Source      *skillSourceOpenAPIRequest `json:"source,omitempty" desc:"Optional. Replace the whole skill directory from an uploaded ZIP or URL."`
+	Field       *string                    `json:"field,omitempty" desc:"Capability field for search; independent of the internal/external storage category."`
+	Aliases     []string                   `json:"aliases,omitempty" desc:"Search aliases; omit to preserve existing values, use an empty array to clear."`
+	Keywords    []string                   `json:"keywords,omitempty" desc:"Search keywords; omit to preserve existing values, use an empty array to clear."`
 }
 
 type skillDraftSummaryOpenAPIResponse struct {
@@ -1681,21 +1724,28 @@ type skillDraftSummaryOpenAPIResponse struct {
 }
 
 type skillListItemOpenAPIResponse struct {
-	ID                  string                              `json:"id"`
-	SkillID             string                              `json:"skill_id"`
-	Name                string                              `json:"name"`
-	SkillName           string                              `json:"skill_name,omitempty"`
-	Description         string                              `json:"description"`
-	Category            string                              `json:"category"`
-	Tags                []string                            `json:"tags"`
-	HeadRevisionID      string                              `json:"head_revision_id"`
-	FileContent         string                              `json:"file_content,omitempty"`
-	AutoEvo             bool                                `json:"auto_evo"`
-	IsEnabled           bool                                `json:"is_enabled"`
-	Draft               skillDraftSummaryOpenAPIResponse    `json:"draft"`
-	LatestVersionChange *latestVersionChangeOpenAPIResponse `json:"latest_version_change,omitempty"`
-	DeletedAt           *string                             `json:"deleted_at,omitempty"`
-	DeletedBy           string                              `json:"deleted_by,omitempty"`
+	OriginBuiltinSkillUID string                              `json:"origin_builtin_skill_uid" desc:"Builtin source UID, or empty when not builtin. Identity is independent of name and storage category."`
+	ID                    string                              `json:"id"`
+	SkillID               string                              `json:"skill_id"`
+	Name                  string                              `json:"name"`
+	SkillName             string                              `json:"skill_name,omitempty"`
+	Description           string                              `json:"description"`
+	Category              string                              `json:"category"`
+	Tags                  []string                            `json:"tags"`
+	HeadRevisionID        string                              `json:"head_revision_id"`
+	FileContent           string                              `json:"file_content,omitempty"`
+	IsEnabled             bool                                `json:"is_enabled"`
+	CallMode              string                              `json:"call_mode"`
+	SortRank              int64                               `json:"sort_rank"`
+	Draft                 skillDraftSummaryOpenAPIResponse    `json:"draft"`
+	LatestVersionChange   *latestVersionChangeOpenAPIResponse `json:"latest_version_change,omitempty"`
+	DeletedAt             *string                             `json:"deleted_at,omitempty"`
+	DeletedBy             string                              `json:"deleted_by,omitempty"`
+	Field                 string                              `json:"field,omitempty" desc:"Capability field for search; independent of the internal/external storage category."`
+	Aliases               []string                            `json:"aliases,omitempty" desc:"Search aliases; omit to preserve existing values, use an empty array to clear."`
+	Keywords              []string                            `json:"keywords,omitempty" desc:"Search keywords; omit to preserve existing values, use an empty array to clear."`
+	OriginalRevisionID    string                              `json:"original_revision_id" desc:"Immutable initial revision, if known; never substitutes the latest execution revision."`
+	AutoEvo               bool                                `json:"auto_evo"`
 }
 
 type skillListOpenAPIResponse struct {
@@ -1714,19 +1764,26 @@ type skillCategoriesOpenAPIResponse struct {
 }
 
 type skillDetailOpenAPIResponse struct {
-	ID                  string                              `json:"id"`
-	SkillID             string                              `json:"skill_id"`
-	Name                string                              `json:"name"`
-	SkillName           string                              `json:"skill_name,omitempty"`
-	Description         string                              `json:"description"`
-	Category            string                              `json:"category"`
-	Tags                []string                            `json:"tags"`
-	HeadRevisionID      string                              `json:"head_revision_id"`
-	FileContent         string                              `json:"file_content,omitempty"`
-	AutoEvo             bool                                `json:"auto_evo"`
-	IsEnabled           bool                                `json:"is_enabled"`
-	Draft               skillDraftSummaryOpenAPIResponse    `json:"draft"`
-	LatestVersionChange *latestVersionChangeOpenAPIResponse `json:"latest_version_change,omitempty"`
+	OriginBuiltinSkillUID string                              `json:"origin_builtin_skill_uid" desc:"Builtin source UID, or empty when not builtin. Identity is independent of name and storage category."`
+	ID                    string                              `json:"id"`
+	SkillID               string                              `json:"skill_id"`
+	Name                  string                              `json:"name"`
+	SkillName             string                              `json:"skill_name,omitempty"`
+	Description           string                              `json:"description"`
+	Category              string                              `json:"category"`
+	Tags                  []string                            `json:"tags"`
+	HeadRevisionID        string                              `json:"head_revision_id"`
+	FileContent           string                              `json:"file_content,omitempty"`
+	IsEnabled             bool                                `json:"is_enabled"`
+	CallMode              string                              `json:"call_mode"`
+	SortRank              int64                               `json:"sort_rank"`
+	Draft                 skillDraftSummaryOpenAPIResponse    `json:"draft"`
+	LatestVersionChange   *latestVersionChangeOpenAPIResponse `json:"latest_version_change,omitempty"`
+	Field                 string                              `json:"field,omitempty" desc:"Capability field for search; independent of the internal/external storage category."`
+	Aliases               []string                            `json:"aliases,omitempty" desc:"Search aliases; omit to preserve existing values, use an empty array to clear."`
+	Keywords              []string                            `json:"keywords,omitempty" desc:"Search keywords; omit to preserve existing values, use an empty array to clear."`
+	OriginalRevisionID    string                              `json:"original_revision_id" desc:"Immutable initial revision, if known; never substitutes the latest execution revision."`
+	AutoEvo               bool                                `json:"auto_evo"`
 }
 
 type skillWriteOpenAPIResponse struct {
@@ -2198,6 +2255,24 @@ type knowledgeMarketTaskPathParams struct {
 	JobID string `path:"job_id"`
 }
 
+type knowledgeMarketTaskErrorOpenAPIResponse struct {
+	Code    int    `json:"code"`
+	Message string `json:"message"`
+	Data    any    `json:"data,omitempty"`
+}
+
+type knowledgeMarketTaskCancelOpenAPIResponse struct {
+	StopRequested bool   `json:"stop_requested,omitempty"`
+	JobID         string `json:"job_id"`
+	Canceled      int    `json:"canceled"`
+	Running       int    `json:"running"`
+	Unknown       int    `json:"unknown"`
+}
+
+type knowledgeMarketTaskDeletedOpenAPIResponse struct {
+	JobID string `json:"job_id"`
+}
+
 type knowledgeMarketTaskListQueryParams struct {
 	Page     int32  `query:"page"`
 	PageSize int32  `query:"page_size"`
@@ -2211,18 +2286,25 @@ type knowledgeMarketTaskProgressOpenAPIResponse struct {
 }
 
 type knowledgeMarketTaskListItemOpenAPIResponse struct {
-	JobID        string                                     `json:"job_id"`
-	JobType      string                                     `json:"job_type"`
-	JobStatus    string                                     `json:"job_status"`
-	InstallState string                                     `json:"install_state"`
-	MarketItemID string                                     `json:"market_item_id"`
-	Name         string                                     `json:"name"`
-	Icon         string                                     `json:"icon"`
-	Progress     knowledgeMarketTaskProgressOpenAPIResponse `json:"progress"`
-	DatasetID    string                                     `json:"dataset_id"`
-	ErrorMessage string                                     `json:"error_message"`
-	CreatedAt    string                                     `json:"created_at"`
-	FinishedAt   string                                     `json:"finished_at,omitempty"`
+	DisplayState string `json:"display_state,omitempty"`
+	CanCancel    bool   `json:"can_cancel,omitempty"`
+	CanRetry     bool   `json:"can_retry,omitempty"`
+	CanDelete    bool   `json:"can_delete,omitempty"`
+
+	Stage          string                                     `json:"stage,omitempty"`
+	OverallPercent int64                                      `json:"overall_percent,omitempty"`
+	JobID          string                                     `json:"job_id"`
+	JobType        string                                     `json:"job_type"`
+	JobStatus      string                                     `json:"job_status"`
+	InstallState   string                                     `json:"install_state"`
+	MarketItemID   string                                     `json:"market_item_id"`
+	Name           string                                     `json:"name"`
+	Icon           string                                     `json:"icon"`
+	Progress       knowledgeMarketTaskProgressOpenAPIResponse `json:"progress"`
+	DatasetID      string                                     `json:"dataset_id"`
+	ErrorMessage   string                                     `json:"error_message"`
+	CreatedAt      string                                     `json:"created_at"`
+	FinishedAt     string                                     `json:"finished_at,omitempty"`
 }
 
 type knowledgeMarketTaskListOpenAPIResponse struct {
@@ -2243,25 +2325,42 @@ type knowledgeMarketTaskPayloadOpenAPIResponse struct {
 // updated/skipped/reason/removed; update-all carries checked plus the spawned
 // item id lists.
 type knowledgeMarketTaskResultOpenAPIResponse struct {
-	DatasetID    string   `json:"dataset_id"`
-	Submitted    int      `json:"submitted"`
-	Reason       string   `json:"reason,omitempty"`
-	Removed      int      `json:"removed,omitempty"`
-	Checked      int      `json:"checked,omitempty"`
-	UpdatedItems []string `json:"updated_items,omitempty"`
-	SkippedItems []string `json:"skipped_items,omitempty"`
+	TaskIDs      []string                                    `json:"task_ids,omitempty"`
+	Failures     []knowledgeMarketFileFailureOpenAPIResponse `json:"failures,omitempty"`
+	Parse        *knowledgeMarketTaskParseOpenAPIResponse    `json:"parse,omitempty"`
+	DatasetID    string                                      `json:"dataset_id"`
+	Submitted    int                                         `json:"submitted"`
+	Reason       string                                      `json:"reason,omitempty"`
+	Removed      int                                         `json:"removed,omitempty"`
+	Checked      int                                         `json:"checked,omitempty"`
+	UpdatedItems []string                                    `json:"updated_items,omitempty"`
+	SkippedItems []string                                    `json:"skipped_items,omitempty"`
 }
 
 type knowledgeMarketTaskParseOpenAPIResponse struct {
-	State   string `json:"state"`
-	Total   int    `json:"total"`
-	Pending int    `json:"pending"`
-	Parsing int    `json:"parsing"`
-	Done    int    `json:"done"`
-	Failed  int    `json:"failed"`
+	Canceled int                                         `json:"canceled,omitempty"`
+	Unknown  int                                         `json:"unknown,omitempty"`
+	State    string                                      `json:"state"`
+	Total    int                                         `json:"total"`
+	Pending  int                                         `json:"pending"`
+	Parsing  int                                         `json:"parsing"`
+	Done     int                                         `json:"done"`
+	Failed   int                                         `json:"failed"`
+	Failures []knowledgeMarketFileFailureOpenAPIResponse `json:"failures,omitempty"`
+}
+
+type knowledgeMarketFileFailureOpenAPIResponse struct {
+	TaskID string `json:"task_id,omitempty"`
+	Name   string `json:"name"`
+	Reason string `json:"reason" enum:"parse_failed,import_failed,missing_task,rate_limited"`
 }
 
 type knowledgeMarketTaskDetailOpenAPIResponse struct {
+	DisplayState string `json:"display_state,omitempty"`
+	CanCancel    bool   `json:"can_cancel,omitempty"`
+	CanRetry     bool   `json:"can_retry,omitempty"`
+	CanDelete    bool   `json:"can_delete,omitempty"`
+
 	JobID          string                                     `json:"job_id"`
 	JobType        string                                     `json:"job_type"`
 	JobStatus      string                                     `json:"job_status"`
@@ -2457,20 +2556,22 @@ type chatEntryDefaultsPatchOpenAPIRequest struct {
 }
 
 type userChatSettingsPatchOpenAPIRequest struct {
-	EnableWorkflow *bool                                 `json:"enable_workflow,omitempty"`
-	WorkflowMode   *string                               `json:"workflow_mode,omitempty"`
-	EnableSubagent *bool                                 `json:"enable_subagent,omitempty"`
-	QuickQuestion  *chatEntryDefaultsPatchOpenAPIRequest `json:"quick_question,omitempty"`
-	NewTask        *chatEntryDefaultsPatchOpenAPIRequest `json:"new_task,omitempty"`
+	EnableToolRetrieval *bool                                 `json:"enable_tool_retrieval,omitempty"`
+	EnableWorkflow      *bool                                 `json:"enable_workflow,omitempty"`
+	WorkflowMode        *string                               `json:"workflow_mode,omitempty"`
+	EnableSubagent      *bool                                 `json:"enable_subagent,omitempty"`
+	QuickQuestion       *chatEntryDefaultsPatchOpenAPIRequest `json:"quick_question,omitempty"`
+	NewTask             *chatEntryDefaultsPatchOpenAPIRequest `json:"new_task,omitempty"`
 }
 
 type userChatSettingsOpenAPIResponse struct {
-	EnableWorkflow bool                     `json:"enable_workflow"`
-	WorkflowMode   string                   `json:"workflow_mode"`
-	EnableSubagent bool                     `json:"enable_subagent"`
-	QuickQuestion  chatEntryDefaultsOpenAPI `json:"quick_question"`
-	NewTask        chatEntryDefaultsOpenAPI `json:"new_task"`
-	UpdatedAt      string                   `json:"updated_at"`
+	EnableToolRetrieval bool                     `json:"enable_tool_retrieval"`
+	EnableWorkflow      bool                     `json:"enable_workflow"`
+	WorkflowMode        string                   `json:"workflow_mode"`
+	EnableSubagent      bool                     `json:"enable_subagent"`
+	QuickQuestion       chatEntryDefaultsOpenAPI `json:"quick_question"`
+	NewTask             chatEntryDefaultsOpenAPI `json:"new_task"`
+	UpdatedAt           string                   `json:"updated_at"`
 }
 
 type userUIPreferencesPatchOpenAPIRequest struct {
@@ -3354,7 +3455,7 @@ func registeredCoreOperations() []openAPIOperation {
 			Path:        "/skills",
 			Summary:     "List skills",
 			Tags:        []string{"skills"},
-			QueryParams: skillListQueryParams{},
+			QueryParams: installedSkillListQueryParams{},
 			Responses:   map[int]openAPIResponse{200: resp("Skill list", skillListOpenAPIResponse{})},
 		},
 		{
@@ -3380,9 +3481,17 @@ func registeredCoreOperations() []openAPIOperation {
 		},
 		{
 			Method:      "POST",
+			Path:        "/skill-review:when-to-use-choice",
+			Summary:     "Retired description-based invocation choices",
+			Description: "Always returns HTTP 410. Use PATCH /skills/{skill_id} with call_mode to control invocation; descriptions are never changed by this endpoint.",
+			Tags:        []string{"skills"},
+			Responses:   map[int]openAPIResponse{410: {Description: "Endpoint retired; update the skill calling mode instead"}},
+		},
+		{
+			Method:      "POST",
 			Path:        "/skill_organize",
 			Summary:     "Submit skill organize task",
-			Description: "Submits 2 to 20 internal SkillV2 files for organization. The task runs asynchronously in the algorithm service.",
+			Description: "Submits 2 to 20 internal SkillV2 files for organization. Light mode is the default and changes descriptions and search metadata only; deep mode also permits refactoring, merging and deduplication. The task runs asynchronously in the algorithm service.",
 			Tags:        []string{"skills"},
 			RequestBody: jsonBodyOf(skillOrganizeOpenAPIRequest{}, true),
 			Responses:   map[int]openAPIResponse{200: resp("Skill organize task accepted", skillOrganizeOpenAPIResponse{})},
@@ -3971,6 +4080,33 @@ func registeredCoreOperations() []openAPIOperation {
 			Responses:   map[int]openAPIResponse{200: resp("Background install task detail", knowledgeMarketTaskDetailOpenAPIResponse{})},
 		},
 		{
+			Method:      "DELETE",
+			Path:        "/knowledge-market/tasks/{job_id}",
+			Summary:     "Delete terminal knowledge market task history",
+			Description: "Deletes only the current user's terminal task record; keeps the knowledge base and documents. Active submissions or parsing return 409.",
+			Tags:        []string{"knowledge-market"},
+			PathParams:  knowledgeMarketTaskPathParams{},
+			Responses:   map[int]openAPIResponse{200: resp("Deleted task", knowledgeMarketTaskDeletedOpenAPIResponse{})},
+		},
+		{
+			Method:      "POST",
+			Path:        "/knowledge-market/tasks/{job_id}:retry",
+			Summary:     "Retry a failed knowledge market task",
+			Description: "Enqueues new work for the current user's failed or partially failed task. Successful files are retained. Active or successful tasks return 409.",
+			Tags:        []string{"knowledge-market"},
+			PathParams:  knowledgeMarketTaskPathParams{},
+			Responses:   map[int]openAPIResponse{200: resp("Retry enqueued", knowledgeMarketInstallOpenAPIResponse{})},
+		},
+
+		{
+			Method: "POST", Path: "/knowledge-market/tasks/{job_id}:cancel",
+			Summary:     "Stop further submission and cancel waiting files",
+			Description: "Stops the current user's latest single-item submission or cancels only WAITING files. Running files and successful content are retained. Counts report confirmed cancellation, running files, and outcomes requiring recheck. No automatic replay after response loss.",
+			Tags:        []string{"knowledge-market"}, PathParams: knowledgeMarketTaskPathParams{},
+			Responses: map[int]openAPIResponse{200: resp("Cancellation outcome", knowledgeMarketTaskCancelOpenAPIResponse{}), 401: resp("Authentication required", knowledgeMarketTaskErrorOpenAPIResponse{}), 403: resp("Dataset access denied", knowledgeMarketTaskErrorOpenAPIResponse{}), 404: resp("Task not found", knowledgeMarketTaskErrorOpenAPIResponse{}), 409: resp("Task cannot be canceled", knowledgeMarketTaskErrorOpenAPIResponse{}), 503: resp("Cancellation service unavailable", knowledgeMarketTaskErrorOpenAPIResponse{})},
+		},
+
+		{
 			Method:      "GET",
 			Path:        "/knowledge-market/installs",
 			Summary:     "List my knowledge market installs",
@@ -4555,6 +4691,15 @@ func registeredCoreOperations() []openAPIOperation {
 			Responses:  map[int]openAPIResponse{200: resp("Discovered MCP tools", mcp.DiscoverResponse{})},
 		},
 		{
+			Method: "POST", Path: "/mcp_servers/{id}/oauth/authorize", Summary: "Authorize personal MCP server", Tags: []string{"mcp_servers"}, PathParams: mcpServerPathParams{}, Responses: map[int]openAPIResponse{200: resp("Authorization URL", mcp.OAuthResponse{})},
+		},
+		{
+			Method: "POST", Path: "/mcp_servers/{id}/oauth/callback", Summary: "Complete personal MCP authorization", Tags: []string{"mcp_servers"}, PathParams: mcpServerPathParams{}, RequestBody: jsonBodyOf(mcp.OAuthCallbackRequest{}, true), Responses: map[int]openAPIResponse{200: resp("Authorization status", mcp.OAuthResponse{})},
+		},
+		{
+			Method: "DELETE", Path: "/mcp_servers/{id}/oauth", Summary: "Disconnect personal MCP authorization", Tags: []string{"mcp_servers"}, PathParams: mcpServerPathParams{}, Responses: map[int]openAPIResponse{200: resp("Authorization status", mcp.OAuthResponse{})},
+		},
+		{
 			Method:      "PUT",
 			Path:        "/mcp_servers/{id}/tools",
 			Summary:     "Update MCP server tools",
@@ -4590,6 +4735,11 @@ func registeredCoreOperations() []openAPIOperation {
 			Responses:  map[int]openAPIResponse{200: {Description: "Exported conversation file", ContentType: "application/octet-stream", Schema: schemaSource{Inline: map[string]any{"type": "string", "format": "binary"}}}},
 		},
 		{
+			Method: "GET", Path: "/agent/evolution-models", Summary: "List validated evolution models",
+			Description: "Personal and explicitly shared Core model candidates with current capability evidence. Connection verification alone never admits a model. A missing available_default_ref requires explicit selection; no silent fallback.",
+			Tags:        []string{"agent"}, Responses: map[int]openAPIResponse{200: resp("Evolution models", modelconfig.EvolutionModels{})},
+		},
+		{
 			Method:      "GET",
 			Path:        "/agent/threads",
 			Summary:     "List agent threads",
@@ -4602,7 +4752,7 @@ func registeredCoreOperations() []openAPIOperation {
 			Method:      "POST",
 			Path:        "/agent/threads",
 			Summary:     "Create agent thread",
-			Description: "Creates an Evo thread and stores only the local thread index and active-thread lock needed by Core.",
+			Description: "Creates an Evo thread. Optional evo_model_ref selects a validated, authorized, version-bound model for this request only. Core resolves credentials and stores a public model_at_creation summary in thread_payload. An omitted reference uses only the configured available default. Client llm_config and model_at_creation are ignored.",
 			Tags:        []string{"agent"},
 			RequestBody: evoJSONBody(true),
 			Responses:   map[int]openAPIResponse{200: evoJSONResp("Created agent thread")},
@@ -4751,6 +4901,16 @@ func registeredCoreOperations() []openAPIOperation {
 			Path:        "/agent/threads/{thread_id}/pause",
 			Summary:     "Pause agent thread",
 			Description: "Proxies Evo pause and updates Core's local thread status.",
+			Tags:        []string{"agent"},
+			PathParams:  agentThreadPathParams{},
+			RequestBody: evoJSONBody(false),
+			Responses:   map[int]openAPIResponse{200: evoJSONResp("Evo command response")},
+		},
+		{
+			Method:      "POST",
+			Path:        "/agent/threads/{thread_id}/resume",
+			Summary:     "Resume agent thread",
+			Description: "Resumes a paused Evo thread after ownership and active-thread checks; reconciles Core's local status.",
 			Tags:        []string{"agent"},
 			PathParams:  agentThreadPathParams{},
 			RequestBody: evoJSONBody(false),

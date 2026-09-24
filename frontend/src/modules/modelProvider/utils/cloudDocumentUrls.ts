@@ -2,6 +2,13 @@ function getBaseName() {
   return ((window as Window & { BASENAME?: string }).BASENAME || "").trim();
 }
 
+// Only the cloud-document hub may be restored after login; never accept an external redirect.
+export function cloudDocumentLoginReturnPath(value: unknown): string | undefined {
+  if (typeof value !== "string") return undefined;
+  if (value === "/cloud-documents" || value.startsWith("/cloud-documents?")) return value;
+  return undefined;
+}
+
 export function getCloudDocumentsUrl(
   provider?: "feishu" | "notion" | "github" | "local" | "googledrive" | "gmail" | "wechat",
 ) {
@@ -45,3 +52,5 @@ export const CLOUD_DOCUMENTS_MAIL_PATH = "/cloud-documents/mail";
 
 export const CLOUD_DOCUMENTS_GITHUB_SETUP_PATH =
   "/cloud-documents/docs/github-setup";
+export const CLOUD_DOCUMENTS_OBSIDIAN_SETUP_PATH =
+  "/cloud-documents/docs/obsidian-setup";

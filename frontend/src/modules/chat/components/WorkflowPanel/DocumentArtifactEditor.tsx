@@ -5,6 +5,7 @@ import type { DocumentProvider, DocumentPublishRequest, DocumentNumberingResult,
 import { useWorkflowStore, type SlotRevision } from '@/modules/chat/store/workflowPanel';
 import { WorkflowSessionApi, type RewriteSelectionPreview, type WriterNumberingState, type WriterNumberingUpdate } from '@/modules/chat/utils/request';
 import { resolveCoreAssetUrl, resolveMarkdownImageUrlFromMap } from '@/modules/knowledge/utils/imageUrl';
+import { getCloudDocumentsUrl } from '@/modules/modelProvider/utils/cloudDocumentUrls';
 import i18n from '@/i18n';
 import { MarkdownArtifactEditor, type MarkdownSaveMode } from './MarkdownArtifactEditor';
 import { WriterIRControl, type WriterIRSaveMode } from './WriterIRControl';
@@ -33,6 +34,9 @@ function unwrap(value: unknown): unknown {
 function key() { return crypto.randomUUID(); }
 function responseCode(error: unknown): string | undefined {
   return (error as { response?: { data?: { data?: { code?: string } } } })?.response?.data?.data?.code;
+}
+function rewriteConflict(code: 'DRAFT_VERSION_CONFLICT' | 'SELECTION_STALE'): Error & { code: string } {
+  return Object.assign(new Error(code), { code });
 }
 type Baseline = { id: string; revision: number; draft?: number; value: unknown };
 
@@ -336,7 +340,8 @@ export function DocumentArtifactEditor({ slot: incomingSlot, sessionId, readOnly
   const applyPreview = async () => {
     if (!preview?.value.commit?.token) return undefined;
     const baseline=previewSource.current;
-    if (dirty.current || !baseline || external.current.id!==baseline.id || external.current.revision!==baseline.revision || external.current.draft!==baseline.draft) throw new Error('rewrite baseline changed');
+    if (dirty.current) throw rewriteConflict('SELECTION_STALE');
+    if (!baseline || external.current.id!==baseline.id || external.current.revision!==baseline.revision || external.current.draft!==baseline.draft) throw rewriteConflict('DRAFT_VERSION_CONFLICT');
     const response = await WorkflowSessionApi().executeDocumentAction(preview.id, { action: 'rewrite_selection',
       base_revision: preview.value.base_revision, base_draft_version: preview.value.base_draft_version,
       input: { commit_token: preview.value.commit.token } });
@@ -377,8 +382,16 @@ export function DocumentArtifactEditor({ slot: incomingSlot, sessionId, readOnly
       if (code && beforeWrite.includes(code)) attempt.current = undefined;
       else request.uncertain = true;
       setError(documentPublicationErrorMessage(code, provider));
+      if (code === 'PROVIDER_CREDENTIALS_UNAVAILABLE' && provider === 'feishu') {
+        const states = await availability.refresh();
+        if (states?.feishu === 'chat-disabled') {
+          setAuthorizationNeeded(provider);
+          setError(String(i18n.t('chat.writerLocal.feishuChatDisabled')));
+          setErrorAction('providers');
+        }
+      }
     } finally { publishPending.current = false; setPublishingProvider(null);setPublicationRefresh(value=>value+1); }
-  }, [accept, busy, publicationBlocked, onRefresh]);
+  }, [accept, busy, publicationBlocked, onRefresh, availability.refresh]);
   const publishRef = useRef(publish); publishRef.current = publish;
 
   const providerLabel = (provider: string) => i18n.exists(`chat.writerIR.providers.${provider}`) ? String(i18n.t(`chat.writerIR.providers.${provider}`)) : provider;
@@ -386,7 +399,7 @@ export function DocumentArtifactEditor({ slot: incomingSlot, sessionId, readOnly
     const state = availability.states[provider];
     if (state !== 'ready') {
       setAuthorizationNeeded(provider);
-      setError(state === 'authorize' ? String(i18n.t('chat.writerLocal.authorization', { provider: providerLabel(provider) })) : String(i18n.t(state === 'checking' ? 'chat.writerLocal.checking' : 'chat.writerLocal.platformFailed')));
+      setError(state === 'chat-disabled' ? String(i18n.t('chat.writerLocal.feishuChatDisabled')) : state === 'authorize' ? String(i18n.t('chat.writerLocal.authorization', { provider: providerLabel(provider) })) : String(i18n.t(state === 'checking' ? 'chat.writerLocal.checking' : 'chat.writerLocal.platformFailed')));
       setErrorAction('providers');
       return;
     }
@@ -402,11 +415,16 @@ export function DocumentArtifactEditor({ slot: incomingSlot, sessionId, readOnly
   };
   const chooseRef = useRef(chooseProvider); chooseRef.current = chooseProvider;
   useEffect(() => {
+    if (authorizationNeeded && availability.states[authorizationNeeded] === 'ready') {
+      setAuthorizationNeeded(''); setError(''); setErrorAction(null);
+    }
+  }, [authorizationNeeded, availability.states]);
+  useEffect(() => {
     if (!active || !writable || !descriptor.capabilities.includes('publish_document')) return;
     let remembered: string | null = null;
     try { remembered = localStorage.getItem('writer-publish-provider'); } catch { /* Storage preferences are optional. */ }
     const preferred = providers.find(provider => provider.id === slot.provider)?.id ?? providers.find(provider => provider.id === remembered)?.id ?? providers[0]?.id;
-    const authorizationStatus = (provider: string) => availability.states[provider] === 'ready' ? '' : String(i18n.t(availability.states[provider] === 'authorize' ? 'chat.writerLocal.authorizeShort' : availability.states[provider] === 'failed' ? 'chat.writerLocal.platformFailed' : 'chat.writerLocal.checking'));
+    const authorizationStatus = (provider: string) => availability.states[provider] === 'ready' ? '' : String(i18n.t(availability.states[provider] === 'chat-disabled' ? 'chat.writerLocal.feishuChatDisabledShort' : availability.states[provider] === 'authorize' ? 'chat.writerLocal.authorizeShort' : availability.states[provider] === 'failed' ? 'chat.writerLocal.platformFailed' : 'chat.writerLocal.checking'));
     return registerFooterAction(`${editingKey}:publish`, {
       label: publishingProvider !== null ? String(i18n.t('chat.writerLocal.publishing', { provider: providerLabel(publishingProvider) }))
         : providers.length === 1 ? String(i18n.t(slot.provider === preferred && slot.write_back_ready ? 'chat.writerLocal.update' : 'chat.writerLocal.create', { provider: providerLabel(preferred) })) : String(i18n.t('chat.writerLocal.publishTo')),
@@ -414,10 +432,27 @@ export function DocumentArtifactEditor({ slot: incomingSlot, sessionId, readOnly
       menuLabel: String(i18n.t('chat.writerLocal.chooseProvider')),
       disabled: busy || publicationBlocked || !loaded || providers.length === 0, flushBeforeAction: true, flushKey: editingKey,
       onClick: () => { if (preferred) chooseRef.current(preferred); },
-      menu: providers.length > 1 ? providers.map(provider => ({ key: provider.id,
-        label: [providerLabel(provider.id), authorizationStatus(provider.id)].filter(Boolean).join(' · '),
-        icon: <span className='workflow-panel__provider-icon' aria-hidden='true'><WriterProviderIcon provider={provider.id} /></span>,
-        onClick: () => chooseRef.current(provider.id) })) : undefined,
+      menu: providers.length > 1 ? providers.map(provider => {
+        const label = [providerLabel(provider.id), authorizationStatus(provider.id)].filter(Boolean).join(' · ');
+        const state = availability.states[provider.id];
+        const settingsAction = state === 'authorize' ? String(i18n.t('chat.writerLocal.authorizeAction'))
+          : state === 'chat-disabled' ? String(i18n.t('chat.writerLocal.settings')) : '';
+        return { key: provider.id,
+          label: settingsAction ? <span className='workflow-panel__provider-menu-label'>
+            <span>{label}</span>
+            <a className='workflow-panel__provider-settings-link'
+              href={getCloudDocumentsUrl(provider.id === 'feishu' || provider.id === 'googledrive' || provider.id === 'wechat' ? provider.id : undefined)}
+              target='_blank' rel='noopener noreferrer'
+              aria-label={String(i18n.t('chat.writerLocal.providerSettingsLabel', { provider: providerLabel(provider.id), action: settingsAction }))}
+              onClick={event => event.stopPropagation()}
+              onKeyDown={event => { if (event.key === 'Enter' || event.key === ' ') event.stopPropagation(); }}>
+              {settingsAction}<ExportOutlined aria-hidden='true' />
+            </a>
+          </span> : label,
+          icon: <span className='workflow-panel__provider-icon' aria-hidden='true'><WriterProviderIcon provider={provider.id} /></span>,
+          onClick: () => chooseRef.current(provider.id),
+        };
+      }) : undefined,
       statusText: error && authorizationNeeded ? undefined : error || publicationStatus || (providers.length === 1 && preferred ? authorizationStatus(preferred) : undefined), statusTone: error ? 'error' : 'success',
       statusLink: publicationUrl ? { href: publicationUrl, label: String(i18n.t('chat.writerIR.openCloudDocument')) } : undefined,
     });
@@ -456,8 +491,8 @@ export function DocumentArtifactEditor({ slot: incomingSlot, sessionId, readOnly
       <span className='workflow-document-notice__icon' aria-hidden='true'>{authorizationNeeded ? <LockOutlined /> : <ExclamationCircleOutlined />}</span>
       <span className='workflow-document-notice__message'>{error}</span>
       {(authorizationNeeded || errorAction) && <div className='workflow-document-notice__actions'>
-        {authorizationNeeded && <a className='workflow-document-notice__action workflow-document-notice__action--settings' href='/cloud-documents' target='_blank' rel='noreferrer'>
-          {String(i18n.t('chat.writerLocal.settings'))}<ExportOutlined aria-hidden='true' />
+        {authorizationNeeded && <a className='workflow-document-notice__action workflow-document-notice__action--settings' href={getCloudDocumentsUrl(authorizationNeeded === 'feishu' ? 'feishu' : undefined)} target='_blank' rel='noreferrer'>
+          {String(i18n.t(authorizationNeeded === 'feishu' ? 'chat.writerLocal.feishuSettings' : 'chat.writerLocal.settings'))}<ExportOutlined aria-hidden='true' />
         </a>}
         {errorAction && <button className='workflow-document-notice__action' type='button' onClick={() => { if (errorAction === 'download') retryDownload.current?.(); else if (errorAction === 'history') retryHistory.current?.(); else { setError(''); setProviderRefresh(value => value + 1); void availability.refresh(); } }}>
           <ReloadOutlined aria-hidden='true' />{String(i18n.t('common.retry'))}
@@ -470,6 +505,7 @@ export function DocumentArtifactEditor({ slot: incomingSlot, sessionId, readOnly
       baseRevision={latest.current.revision} baseDraftVersion={latest.current.draft} selection={selection}
       onClose={() => setSelection(null)} onApplied={() => { setPreview(null); onRefresh?.(); }}
       requestPreview={async (instruction, picked) => {
+        if (dirty.current && flushEditor.current && !await flushEditor.current()) throw rewriteConflict('DRAFT_VERSION_CONFLICT');
         const current = latest.current; previewSource.current = { ...current };
         if (picked.type === 'ppt_html') throw new Error('unsupported document selection');
         const response = await WorkflowSessionApi().previewDocumentAction(current.id, { action: 'rewrite_selection',

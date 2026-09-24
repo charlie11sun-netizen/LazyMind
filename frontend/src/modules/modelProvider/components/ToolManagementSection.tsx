@@ -1,3 +1,5 @@
+import { getLocalizedErrorMessage } from "@/components/request";
+import { useSettingsDraft, useSettingsEditor, useSettingsFormDraft } from "@/modules/settings/SettingsNavigationGuard";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import {
   Button,
@@ -31,6 +33,8 @@ import { useTranslation } from "react-i18next";
 import { localizeErrorCode } from "@/components/request";
 import type { StructuredAsset } from "@/modules/memory/shared";
 import {
+  authorizeMcpServer,
+  disconnectMcpServer,
   checkMcpServer,
   createMcpServer,
   deleteMcpServer,
@@ -88,7 +92,7 @@ const getMcpTransportLabel = (value?: string) => {
 const resolveAllowedMcpToolNames = (server: McpServerAsset, tools: McpToolAsset[]) => {
   const toolNames = tools.map(getMcpToolPermissionName).filter(Boolean);
   if (!server.allowedTools) {
-    return toolNames;
+    return server.authType === "oauth" ? [] : toolNames;
   }
 
   const allowedToolSet = new Set(server.allowedTools);
@@ -178,6 +182,17 @@ export default function ToolManagementSection({ description, initialQuery = "", 
   const [mcpToolDraftNames, setMcpToolDraftNames] = useState<string[]>([]);
   const [mcpToolSaving, setMcpToolSaving] = useState(false);
   const [mcpForm] = Form.useForm<McpServerDraft>();
+  const mcpAuthType = Form.useWatch("authType", mcpForm) || "api_key";
+  const mcpTransport = Form.useWatch("transport", mcpForm);
+
+  const mcpLocation = useSettingsEditor("mcp");
+  const toolsLocation = useSettingsEditor("mcp-tools");
+  const mcpDraft = useSettingsFormDraft(mcpForm, mcpModalOpen, mcpSaving);
+  const confirmToolsClose = useSettingsDraft({
+    dirty: mcpToolsDrawerOpen && Boolean(mcpToolTarget) &&
+      JSON.stringify([...mcpToolDraftNames].sort()) !== JSON.stringify(resolveAllowedMcpToolNames(mcpToolTarget!, mcpToolTarget!.tools || []).sort()),
+    saving: mcpToolSaving,
+  });
 
   const listOptions = useMemo(() => ({ keyword: query }), [query]);
 
@@ -307,13 +322,15 @@ export default function ToolManagementSection({ description, initialQuery = "", 
   );
 
   const openMcpToolsDrawer = useCallback((server: McpServerAsset) => {
+    if (toolsLocation.managed && toolsLocation.item !== server.id) { toolsLocation.select(server.id); return; }
     const tools = server.tools || [];
     setMcpToolTarget(server);
     setMcpToolDraftNames(resolveAllowedMcpToolNames(server, tools));
     setMcpToolsDrawerOpen(true);
-  }, []);
+  }, [toolsLocation.managed, toolsLocation.item, toolsLocation.select]);
 
   const openMcpCreateModal = useCallback(() => {
+    if (mcpLocation.managed && mcpLocation.item !== "new") { mcpLocation.select("new"); return; }
     setMcpModalMode("add");
     setMcpEditingServer(null);
     mcpForm.resetFields();
@@ -321,41 +338,66 @@ export default function ToolManagementSection({ description, initialQuery = "", 
       name: "",
       url: "",
       transport: "sse",
+      authType: "api_key",
       apiKey: "",
       timeout: 30,
       enabled: false,
     });
+    mcpDraft.captureSavedValues();
     setMcpModalOpen(true);
-  }, [mcpForm]);
+  }, [mcpForm, mcpDraft.captureSavedValues, mcpLocation.managed, mcpLocation.item, mcpLocation.select]);
 
   const openMcpEditModal = useCallback(
     (server: McpServerAsset) => {
+      if (mcpLocation.managed && mcpLocation.item !== server.id) { mcpLocation.select(server.id); return; }
       setMcpModalMode("edit");
       setMcpEditingServer(server);
       mcpForm.resetFields();
       mcpForm.setFieldsValue({
         name: server.name,
+        authType: server.authType || "api_key",
         url: server.url,
         transport: normalizeMcpTransportValue(server.transport),
         apiKey: "",
         timeout: server.timeout,
         enabled: server.enabled,
       });
+      mcpDraft.captureSavedValues();
       setMcpModalOpen(true);
     },
-    [mcpForm],
+    [mcpForm, mcpDraft.captureSavedValues, mcpLocation.managed, mcpLocation.item, mcpLocation.select],
   );
+
+  useEffect(() => {
+    if (!mcpLocation.managed) return;
+    if (!mcpLocation.item) { setMcpModalOpen(false); return; }
+    if (mcpModalOpen || mcpLoading) return;
+    if (mcpLocation.item === "new") openMcpCreateModal();
+    else {
+      const server = mcpServers.find((item) => item.id === mcpLocation.item);
+      if (server) openMcpEditModal(server);
+    }
+  }, [mcpLocation.item, mcpLoading, mcpServers, openMcpCreateModal, openMcpEditModal]);
+  useEffect(() => {
+    if (!toolsLocation.managed) return;
+    if (!toolsLocation.item) { setMcpToolsDrawerOpen(false); return; }
+    if (mcpToolsDrawerOpen || mcpLoading) return;
+    const server = mcpServers.find((item) => item.id === toolsLocation.item);
+    if (server) openMcpToolsDrawer(server);
+  }, [toolsLocation.item, mcpLoading, mcpServers, openMcpToolsDrawer]);
 
   const closeMcpModal = useCallback(() => {
     if (!mcpSaving) {
+      mcpLocation.select();
       setMcpModalOpen(false);
     }
-  }, [mcpSaving]);
+  }, [mcpSaving, mcpLocation.select]);
 
   const saveMcpServer = useCallback(async () => {
     try {
       const values = await mcpForm.validateFields();
       const draft: McpServerDraft = {
+        authType: values.authType || "api_key",
         name: values.name.trim(),
         url: values.url.trim(),
         transport: normalizeMcpTransportValue(String(values.transport || "sse")),
@@ -375,16 +417,19 @@ export default function ToolManagementSection({ description, initialQuery = "", 
         await createMcpServer(draft);
         message.success(t("admin.memoryMcpCreateSuccess"));
       }
+      mcpDraft.acceptSaved();
+      mcpLocation.select();
       setMcpModalOpen(false);
       await refreshMcpState();
     } catch (error) {
       if (error && typeof error === "object" && "errorFields" in error) {
         return;
       }
+      message.error(getLocalizedErrorMessage(error));
     } finally {
       setMcpSaving(false);
     }
-  }, [mcpEditingServer, mcpForm, mcpModalMode, refreshMcpState, t]);
+  }, [mcpEditingServer, mcpForm, mcpModalMode, refreshMcpState, t, mcpDraft.acceptSaved, mcpLocation.select]);
 
   const handleToggleMcpServer = useCallback(
     async (server: McpServerAsset, checked: boolean) => {
@@ -477,9 +522,10 @@ export default function ToolManagementSection({ description, initialQuery = "", 
 
   const closeMcpToolsDrawer = useCallback(() => {
     if (!mcpToolSaving) {
+      toolsLocation.select();
       setMcpToolsDrawerOpen(false);
     }
-  }, [mcpToolSaving]);
+  }, [mcpToolSaving, toolsLocation.select]);
 
   const saveMcpServerTools = useCallback(async () => {
     if (!mcpToolTarget) {
@@ -489,14 +535,17 @@ export default function ToolManagementSection({ description, initialQuery = "", 
     setMcpToolSaving(true);
     try {
       await updateMcpServerTools(mcpToolTarget.id, mcpToolDraftNames);
+      confirmToolsClose.acceptSaved();
+      toolsLocation.select();
       setMcpToolsDrawerOpen(false);
       await refreshMcpState();
       message.success(t("admin.memoryMcpToolsSaveSuccess"));
-    } catch {
+    } catch (error) {
+      message.error(getLocalizedErrorMessage(error));
     } finally {
       setMcpToolSaving(false);
     }
-  }, [mcpToolDraftNames, mcpToolTarget, refreshMcpState, t]);
+  }, [mcpToolDraftNames, mcpToolTarget, refreshMcpState, t, confirmToolsClose.acceptSaved, toolsLocation.select]);
 
   const renderManagedToolSummary = (primary?: string, secondary?: string) => {
     return (
@@ -593,6 +642,16 @@ export default function ToolManagementSection({ description, initialQuery = "", 
             ) : switchNode}
           </div>
           <Space className="model-provider-managed-tool-links" size={isSettingsLayout ? 6 : 0} wrap>
+            {server.authType === "oauth" && <>
+              <Tag>{t(`admin.memoryMcpOAuthStatus_${server.oauthStatus || "needs_authorization"}`)}</Tag>
+              <Button size="small" onClick={() => void authorizeMcpServer(server.id).catch(() => {})}>
+                {t(server.oauthStatus === "authorized" ? "admin.memoryMcpReconnect" : "admin.memoryMcpConnect")}
+              </Button>
+              {server.oauthStatus === "authorized" && <Button size="small" onClick={() => void disconnectMcpServer(server.id).then(refreshMcpState).catch(() => {})}>
+                {t("admin.memoryMcpDisconnect")}
+              </Button>}
+            </>}
+
             <Button
               icon={isSettingsLayout ? <ReloadOutlined /> : undefined}
               loading={mcpActionLoading.has(getMcpActionKey("check", server.id))}
@@ -751,7 +810,7 @@ export default function ToolManagementSection({ description, initialQuery = "", 
         destroyOnHidden
         footer={
           <div className="model-provider-mcp-drawer-footer">
-            <Button onClick={closeMcpModal}>{t("common.cancel")}</Button>
+            <Button onClick={() => mcpDraft.confirmClose(closeMcpModal)}>{t("common.cancel")}</Button>
             <Button loading={mcpSaving} type="primary" onClick={() => void saveMcpServer()}>
               {t("common.save")}
             </Button>
@@ -764,7 +823,7 @@ export default function ToolManagementSection({ description, initialQuery = "", 
             : t("admin.memoryMcpEditTitle")
         }
         width={560}
-        onClose={closeMcpModal}
+        onClose={() => mcpDraft.confirmClose(closeMcpModal)}
       >
         <Form<McpServerDraft>
           className="model-provider-mcp-form"
@@ -835,7 +894,14 @@ export default function ToolManagementSection({ description, initialQuery = "", 
               <InputNumber max={600} min={1} placeholder="30" />
             </Form.Item>
           </div>
-          <Form.Item
+          <Form.Item label={t("admin.memoryMcpAuthType")} name="authType">
+            <Select options={[
+              { value: "none", label: t("admin.memoryMcpNoAuth") },
+              { value: "api_key", label: "API Key" },
+              { value: "oauth", label: "OAuth", disabled: mcpTransport !== "http" },
+            ]} />
+          </Form.Item>
+          {mcpAuthType === "api_key" && <Form.Item
             extra={
               mcpModalMode === "edit"
                 ? t("admin.memoryMcpApiKeyEditHint", {
@@ -867,7 +933,7 @@ export default function ToolManagementSection({ description, initialQuery = "", 
                   : t("admin.memoryMcpApiKeyEditPlaceholder")
               }
             />
-          </Form.Item>
+          </Form.Item>}
           <Form.Item
             label={t("admin.memoryMcpEnabled")}
             name="enabled"
@@ -895,7 +961,7 @@ export default function ToolManagementSection({ description, initialQuery = "", 
         className="model-provider-mcp-drawer"
         footer={
           <div className="model-provider-mcp-drawer-footer">
-            <Button onClick={closeMcpToolsDrawer}>{t("common.cancel")}</Button>
+            <Button onClick={() => confirmToolsClose(closeMcpToolsDrawer)}>{t("common.cancel")}</Button>
             <Button
               disabled={!mcpToolTarget?.tools.length}
               loading={mcpToolSaving}
@@ -909,7 +975,7 @@ export default function ToolManagementSection({ description, initialQuery = "", 
         open={mcpToolsDrawerOpen}
         title={t("admin.memoryMcpToolsTitle", { name: mcpToolTarget?.name || "" })}
         width={620}
-        onClose={closeMcpToolsDrawer}
+        onClose={() => confirmToolsClose(closeMcpToolsDrawer)}
       >
         {mcpToolTarget ? (
           <div className="model-provider-mcp-tools-panel">

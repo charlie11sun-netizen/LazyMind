@@ -14,8 +14,9 @@ describe('Workflow Panel live update surface', () => {
     expect(panel).not.toContain('pollIntervalMs');
     expect(panel).not.toMatch(/setInterval\s*\(\s*refresh/);
     expect(hook).toContain('s.subscribeWorkflowSession');
+    expect(hook).toContain('if (managedExternally || !conversationId || !session?.session_id) return;');
     expect(hook).toContain('return subscribe(conversationId, session.session_id)');
-    expect(hook).toContain('[conversationId, session?.session_id, subscribe]');
+    expect(hook).toContain('[conversationId, session?.session_id, subscribe, managedExternally]');
     expect(workflowStore).toContain('const existing = workflowStreams.get(sessionId)');
     expect(workflowStore).toContain('existing.refs += 1');
     expect(workflowStore).toContain('current.refs -= 1');
@@ -56,8 +57,10 @@ describe('Workflow Panel live update surface', () => {
     );
     expect(taskStore).toContain('get().upsertTask(conversationId');
     expect(taskPanel).toContain('if (filter === "all") return tasks;');
+    expect(taskPanel).toContain('const [now, setNow] = useState(Date.now())');
+    expect(taskPanel).toContain('if (!document.hidden) setNow(Date.now())');
     expect(taskPanel).toMatch(
-      /buildOrdinaryTaskTimeline\(\s*tasks,\s*workflowSteps,\s*Date\.now\(\),\s*plannedCount,\s*\)/,
+      /buildOrdinaryTaskTimeline\(\s*tasks,\s*workflowSteps,\s*now,\s*plannedCount,\s*\)/,
     );
     expect(chatLayout).toContain('taskCenterDisplayCount(');
   });

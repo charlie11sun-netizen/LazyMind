@@ -9,7 +9,9 @@ Desktop mode wraps the existing host-process Local runtime in an Electron shell.
 | macOS arm64 | `make local-up` / `make local-down` | `make desktop-darwin-arm64` (internal ZIP) / `make desktop-darwin-arm64-dmg` (signed DMG) |
 | Windows x64 | `make local-win-up` / `make local-win-down` | `make desktop-windows-x64` (portable ZIP) / `make desktop-windows-x64-installer` (installer) |
 
-Desktop packages bundle the Go services, process-compose, Caddy, the compiled frontend, Python 3.11 runtime, auth/algorithm venvs, LazyLLM, Milvus Lite 3, and the Local dependency overlay. Model weights are not bundled.
+Desktop packages bundle the Go services, process-compose, Caddy, Pandoc 3.11, the compiled frontend, Python 3.11 runtime, auth/algorithm venvs, LazyLLM, Milvus Lite 3, and the Local dependency overlay. Model weights are not bundled.
+
+Pandoc release URLs and SHA-256 pins live in `desktop/dependencies/pandoc.json`. Desktop builds reuse verified archives from `desktop/cache/dependencies/pandoc`, try `LAZYMIND_PANDOC_MIRROR_URL` first when configured, then the project-controlled mainland mirror list, and finally the official upstream release. The packaged algorithm services receive the absolute binary path through `LAZYMIND_PANDOC_PATH`; end users do not download or configure Pandoc.
 
 Release history samples are not stored in Git. Windows and macOS build entrypoints download the URL pinned in `desktop/history-injection-package.json`, verify its size and SHA-256, and include the outer archive as `resources/runtime/history-injection.zip`. Installer/first-launch warmup verifies it again, extracts only its `history-injection/` subtree into the mutable user runtime, and then starts Core so the conversations and artifacts are injected. The signed macOS application bundle is never modified during this process.
 
@@ -59,6 +61,10 @@ desktop/dist/LazyMind-windows-x64-installer-<version>-yyyyMMdd-HHmmss-<commit>.e
 `LazyMind.exe` is the entry point inside `win-unpacked`; the directory also contains Electron DLLs/locales and `resources/runtime` with all LazyMind services and Python dependencies.
 
 The Feishu CLI version and platform archive/license checksums are maintained together in `backend/core/providerconnection/feishu-cli-release.json`. macOS, Windows, Docker, and the Go runtime read this same manifest; update the version and its checksums together when upgrading the CLI.
+
+CLI-authenticated document tools also use `backend/feishu-credential-helper`, which pins the same official CLI library version. Desktop builds and the Sidecar image include the helper and its SHA256 file. Core reads `LAZYMIND_FEISHU_CLI_CREDENTIAL_HELPER_PATH` and `LAZYMIND_FEISHU_CLI_CREDENTIAL_HELPER_SHA256`; the Sidecar reads the checksum from `LAZYMIND_FEISHU_CLI_CREDENTIAL_HELPER_SHA256_FILE` instead. Missing or invalid helper configuration leaves existing OAuth and CLI scanning available, while CLI document tools refuse to export a credential.
+
+The helper verifies the native CLI user's identity before handing a short-lived user access token to existing internal document tools. Refresh tokens and app secrets stay with the CLI. Sidecar token responses are encrypted and bound to the signed request. Read-only CLI connections require reauthorization with the document write scopes before Writer can publish. Windows helper builds are checked separately from native authentication: the existing Windows CLI filesystem-permission compatibility issue still requires a native fix and verification.
 
 ## Cloud release origin
 

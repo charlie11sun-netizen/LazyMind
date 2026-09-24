@@ -9,6 +9,8 @@ import (
 	"time"
 
 	"lazymind/core/common/orm"
+	"lazymind/core/common/taskdisplay"
+	"lazymind/core/workflow/controlstore"
 
 	"github.com/google/uuid"
 	"gorm.io/gorm"
@@ -46,9 +48,10 @@ func (c Config) leaseDuration() time.Duration {
 }
 
 type Service struct {
-	db     *gorm.DB
-	config Config
-	now    func() time.Time
+	controlFinalization bool
+	db                  *gorm.DB
+	config              Config
+	now                 func() time.Time
 }
 
 // ServiceCapable identifies the protocol implementation compiled into this
@@ -57,6 +60,20 @@ func ServiceCapable() bool { return ContractVersion == "workflow.v1" }
 
 func New(db *gorm.DB, config Config) *Service {
 	return &Service{db: db, config: config, now: func() time.Time { return time.Now().UTC() }}
+}
+
+// WithDB shares the caller's transaction while preserving lease policy and clock.
+func (s *Service) WithDB(db *gorm.DB) *Service {
+	copy := *s
+	copy.db = db
+	return &copy
+}
+
+// WithControlTransaction is used only by the workflow-owned atomic finalization use case.
+func (s *Service) WithControlTransaction(db *gorm.DB) *Service {
+	copy := s.WithDB(db)
+	copy.controlFinalization = true
+	return copy
 }
 
 func SchemaCapable(db *gorm.DB) bool {
@@ -146,8 +163,11 @@ func (s *Service) Claim(ctx context.Context, executorID string) (Claim, error) {
 	return s.ClaimForHost(ctx, executorID, "")
 }
 
-// ClaimForHost restricts ownership to Sessions controlled by the requested
-// Host. An empty Host is retained only for compatibility and tests.
+// Only controlled sessions opt into per-attempt routing. Native sessions retain main routing.
+const executorHostSQL = `CASE WHEN ps.controller_host = 'external-agent' AND ps.control_protocol = 'workflow.control.v1' THEN COALESCE(NULLIF(plugin_session_steps.executor_host, ''), ps.controller_host) ELSE COALESCE(ps.controller_host, 'lazymind') END` // workflow-naming: persistence
+
+// ClaimForHost routes by the attempt executor, falling back to the session
+// for attempts created before per-step routing. An empty Host is retained only for compatibility and tests.
 func (s *Service) ClaimForHost(ctx context.Context, executorID, host string) (Claim, error) {
 	if !SchemaCapable(s.db) {
 		return Claim{}, ErrSchemaUnavailable
@@ -160,7 +180,7 @@ func (s *Service) ClaimForHost(ctx context.Context, executorID, host string) (Cl
 	)
 	if host != "" {
 		query = query.Joins("JOIN plugin_sessions ps ON ps.id = plugin_session_steps.session_id").
-			Where("COALESCE(ps.controller_host, 'lazymind') = ?", host)
+			Where(executorHostSQL+" = ?", host) // workflow-naming: persistence
 	}
 	err := query.Order("plugin_session_steps.created_at ASC").First(&candidate).Error
 	if errors.Is(err, gorm.ErrRecordNotFound) {
@@ -185,7 +205,7 @@ func (s *Service) ClaimAttemptForHost(ctx context.Context, attemptID, executorID
 		Where("plugin_session_steps.id = ? AND plugin_session_steps.validity = 'effective'", attemptID) // workflow-naming: persistence
 	if host != "" {
 		query = query.Joins("JOIN plugin_sessions ps ON ps.id = plugin_session_steps.session_id").
-			Where("COALESCE(ps.controller_host, 'lazymind') = ?", host)
+			Where(executorHostSQL+" = ?", host) // workflow-naming: persistence
 	}
 	if err := query.First(&candidate).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
@@ -196,6 +216,22 @@ func (s *Service) ClaimAttemptForHost(ctx context.Context, attemptID, executorID
 	return s.claimCandidate(ctx, candidate, executorID, true)
 }
 
+// ClaimQueuedAttemptForHost does not rotate a running worker's handle. Only explicit Resume may do that.
+func (s *Service) ClaimQueuedAttemptForHost(ctx context.Context, attemptID, executorID, host string) (Claim, error) {
+	var candidate orm.WorkflowSessionStep
+	err := s.db.WithContext(ctx).Model(&orm.WorkflowSessionStep{}).
+		Joins("JOIN plugin_sessions ps ON ps.id = plugin_session_steps.session_id").                                                                                                  // workflow-naming: persistence
+		Where("plugin_session_steps.id = ? AND plugin_session_steps.status = 'queued' AND plugin_session_steps.validity = 'effective' AND "+executorHostSQL+" = ?", attemptID, host). // workflow-naming: persistence
+		Select("plugin_session_steps.*").First(&candidate).Error                                                                                                                      // workflow-naming: persistence
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return Claim{}, ErrNotClaimable
+	}
+	if err != nil {
+		return Claim{}, err
+	}
+	return s.claimCandidate(ctx, candidate, executorID, false)
+}
+
 func (s *Service) claimCandidate(ctx context.Context, candidate orm.WorkflowSessionStep, executorID string, allowCurrentOwner bool) (Claim, error) {
 	now := s.now()
 	token, err := newToken()
@@ -204,7 +240,21 @@ func (s *Service) claimCandidate(ctx context.Context, candidate orm.WorkflowSess
 	}
 	expires := now.Add(s.config.leaseDuration())
 	err = s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		session, err := controlstore.LockControlledSession(tx, candidate.SessionID)
+		if err != nil {
+			return err
+		}
+		controlled := controlstore.Controlled(session)
+		if controlled {
+			if err := controlstore.GuardClaim(tx, session); err != nil {
+				return err
+			}
+		}
+
 		condition := "id = ? AND fencing_generation = ? AND (status = 'queued' OR lease_expires_at < ?"
+		if controlled {
+			condition = "id = ? AND fencing_generation = ? AND (status = 'queued' OR (status IN ('claimed','running') AND lease_expires_at < ?)"
+		}
 		args := []any{candidate.ID, candidate.FencingGeneration, now}
 		if allowCurrentOwner {
 			condition += " OR (lease_owner = ? AND status IN ('claimed','running'))"
@@ -224,6 +274,11 @@ func (s *Service) claimCandidate(ctx context.Context, candidate orm.WorkflowSess
 		if err := tx.Model(&orm.WorkflowOutbox{}).Where("attempt_id = ? AND status IN ('pending','claimed')", candidate.ID).
 			Updates(map[string]any{"status": "claimed", "updated_at": now}).Error; err != nil {
 			return err
+		}
+		if controlled && candidate.ExecutorHost == "lazymind" {
+			if err := controlstore.ConsumeContinuation(tx, candidate.SessionID, candidate.ID); err != nil {
+				return err
+			}
 		}
 		payload, _ := json.Marshal(map[string]any{"attempt_id": candidate.ID, "status": "claimed", "fencing_generation": candidate.FencingGeneration + 1})
 		return appendEvent(tx, candidate, "", "attempt.patch", payload, now)
@@ -271,12 +326,21 @@ func (s *Service) Heartbeat(ctx context.Context, attemptID, token string) (time.
 	return expires, nil
 }
 
-func (s *Service) Progress(ctx context.Context, attemptID, token string, progress json.RawMessage) error {
+func (s *Service) Progress(ctx context.Context, attemptID, token string, progress json.RawMessage) (err error) {
+	defer func() {
+		if err != nil {
+			taskdisplay.Observe(ctx, taskdisplay.EventRejected, 0, 1)
+		}
+	}()
+	display, err := decodePublicDisplay(progress)
+	if err != nil {
+		return err
+	}
 	now := s.now()
 	return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		result := tx.Model(&orm.WorkflowSessionStep{}).Where(
 			"id = ? AND lease_token = ? AND lease_expires_at >= ? AND status IN ('claimed','running')",
-			attemptID, token, now).Updates(map[string]any{"status": "running", "progress_json": progress, "updated_at": now})
+			attemptID, token, now).UpdateColumn("updated_at", gorm.Expr("updated_at"))
 		if result.Error != nil {
 			return result.Error
 		}
@@ -285,6 +349,16 @@ func (s *Service) Progress(ctx context.Context, attemptID, token string, progres
 		}
 		var row orm.WorkflowSessionStep
 		if err := tx.Where("id = ?", attemptID).First(&row).Error; err != nil {
+			return err
+		}
+		duplicate, err := persistPublicDisplay(tx, row, display, now)
+		if duplicate {
+			taskdisplay.Observe(ctx, taskdisplay.EventDuplicate, 0, 1)
+		}
+		if err != nil || duplicate {
+			return err
+		}
+		if err := tx.Model(&row).Updates(map[string]any{"status": "running", "progress_json": progress, "updated_at": now}).Error; err != nil {
 			return err
 		}
 		return appendEvent(tx, row, "", "attempt.progress", progress, now)
@@ -309,6 +383,13 @@ func (s *Service) Terminal(ctx context.Context, attemptID, token, status, code s
 				return ErrNotFound
 			}
 			return err
+		}
+		session, err := controlstore.LockControlledSession(tx, current.SessionID)
+		if err != nil {
+			return err
+		}
+		if controlstore.Controlled(session) && !s.controlFinalization {
+			return controlstore.Reject("CONTROL_FINALIZATION_REQUIRED", "use workflow.step.complete to settle this controlled execution")
 		}
 		if terminal(current.Status) {
 			if current.Status == status {

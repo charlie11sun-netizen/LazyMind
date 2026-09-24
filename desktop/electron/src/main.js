@@ -1,6 +1,7 @@
 const {
   app,
   BrowserWindow,
+  Notification,
   ipcMain,
   shell,
   dialog,
@@ -10,11 +11,18 @@ const {
   session,
   powerMonitor,
   net,
+  desktopCapturer,
+  systemPreferences,
+  utilityProcess,
+  screen,
 } = require("electron");
 const { spawn, execFile } = require("node:child_process");
 const { createHmac, randomBytes, randomUUID } = require("node:crypto");
 const fs = require("node:fs");
 const path = require("node:path");
+const { installScreenCapture } = require("./screen-capture");
+const { createInputRecorder } = require("./input-recording");
+const { createRecordingHelper } = require("./recording-helper");
 const { resolveWindowsDesktopPaths } = require("./desktop-paths");
 const { resolveRuntimeLocalFile } = require("./runtime-local-file");
 const {
@@ -45,10 +53,17 @@ const { loadDesktopCloudConfiguration } = require("./cloud-release-config");
 const { startCloudOAuthCallbackRelay } = require("./cloud-oauth-callback-relay");
 const { clearTemporaryCredentials: clearRuntimeTemporaryCredentials } = require("./temporary-credential-cleanup");
 const { waitForRendererWithRuntimeRecovery } = require("./renderer-recovery");
+const { createDesktopNotifications, isTrustedNotificationSender } = require("./native-notifications.js");
+const { createNotificationSession } = require("./notification-session.js");
 const {
+  desktopNotificationAPIOrigin,
+  desktopNotificationInstanceID,
+  desktopNotificationRuntimeReady,
+  resolveAgentConnectorPath,
   desktopDevRendererURL,
   desktopDevRuntimeStatus,
   normalizeLoopbackURL,
+  restoreDesktopNotificationSession,
 } = require("./desktop-dev");
 const {
   collapseRoots,
@@ -59,6 +74,13 @@ const {
   resolveExistingDirectories,
   saveAccessState,
 } = require("./local-folder-access");
+const {
+  buildObsidianRuntimeEnv,
+  clearObsidianConfig,
+  isExistingDirectory,
+  loadObsidianConfig,
+  saveObsidianConfig,
+} = require("./obsidian-config");
 
 const { BrowserConnection } = require("./browser-connection");
 const { createBrowserAdapter, loadBrowserController, profilePartition } = require("./managed-browser");
@@ -118,6 +140,8 @@ const explicitRuntimeRoot = process.env.LAZYMIND_DESKTOP_RUNTIME_ROOT || "";
 const desktopLogsDir = app.getPath("logs");
 const desktopCredentialIdentityPath = path.join(app.getPath("userData"), "credential-device.json");
 const localFolderAccessStatePath = path.join(app.getPath("userData"), "local-folder-access.json");
+const obsidianConfigPath = path.join(app.getPath("userData"), "obsidian-config.json");
+const obsidianDisabledRoot = path.join(app.getPath("userData"), ".obsidian-unconfigured");
 const cursorWorkspaceStorageRoot = path.join(
   app.getPath("appData"),
   "Cursor",
@@ -132,8 +156,13 @@ const editablePptDependencyConfigPath = path.join(
   "config",
   "editable-ppt-dependencies.json",
 );
-const agentConnectorPath = process.env.LAZYMIND_DESKTOP_AGENT_CONNECTOR ||
-  path.join(runtimeResourcesRoot, "bin", `lazymind${isWindows ? ".exe" : ""}`);
+const agentConnectorPath = resolveAgentConnectorPath({
+  override: process.env.LAZYMIND_DESKTOP_AGENT_CONNECTOR,
+  isExternalRuntimeDev,
+  repoRoot,
+  runtimeResourcesRoot,
+  isWindows,
+});
 const maxStartupLogEntries = 1200;
 const maxSidecarFailureBytes = 32 * 1024;
 const desktopShutdownTimeout = process.env.LAZYMIND_DESKTOP_SHUTDOWN_TIMEOUT || "20s";
@@ -143,6 +172,7 @@ const runtimeOwnershipHandoffTimeoutMs = 30 * 1000;
 const agentHostRestartMaxDelayMs = 30 * 1000;
 const agentHostStableAfterMs = 60 * 1000;
 const agentConnectorActionTimeoutMs = 15 * 1000;
+const agentConnectorInstallTimeoutMs = 120 * 1000;
 const agentConnectorBindingTimeoutMs = 30 * 1000;
 const macInstallationWarmupMarker = macWarmupMarkerPath(app.getPath("userData"));
 const startupMetricsHistoryPath = path.join(desktopLogsDir, "startup-metrics.jsonl");
@@ -202,6 +232,70 @@ let startupState = {
   startedAt: new Date().toISOString(),
   updatedAt: new Date().toISOString(),
 };
+
+let notificationSessionRevision = 0;
+let sessionWrites = Promise.resolve();
+let notificationRenewalCandidate;
+const notificationSession = createNotificationSession();
+const desktopNotifications = createDesktopNotifications({
+  Notification,
+  statePath: path.join(app.getPath("userData"), "native-notifications.json"),
+  icon: windowsDesktopIconPath(),
+  renewSession: (session, userID, stillCurrent) => {
+    // The renderer owns foreground refresh. Background mode destroys it, so
+    // only the main process rotates credentials until window creation resumes.
+    if (!windowHiddenByUser || mainWindow || isQuitting || !stillCurrent()) return null;
+    const revision = notificationSessionRevision;
+    return (sessionWrites = sessionWrites.catch(() => {}).then(async () => {
+      if (!windowHiddenByUser || mainWindow || isQuitting || !stillCurrent()
+        || revision !== notificationSessionRevision) return null;
+      const result = await runConnectorJSON(["internal", "session", "renew"], 15000,
+        { ...session, user_id: userID,
+          pending_session: notificationRenewalCandidate?.accessToken === session.access_token
+            ? notificationRenewalCandidate.session : undefined });
+      if (isQuitting || !stillCurrent() || revision !== notificationSessionRevision) return null;
+      if (!result?.ok) {
+        notificationRenewalCandidate = result?.pending_session
+          ? { accessToken: session.access_token, session: result.pending_session } : undefined;
+        const code = result?.code === "DESKTOP_SESSION_AUTHENTICATION_REQUIRED"
+          ? result.code : "DESKTOP_SESSION_RENEWAL_UNAVAILABLE";
+        throw Object.assign(new Error(code), { code });
+      }
+      notificationRenewalCandidate = undefined;
+      if (!notificationSession.rotated(session, result.session)) return null;
+      return result.session;
+    }));
+  },
+  getRuntime: async () => {
+    const status = await readStatus({ timeout: 10000 });
+    return {
+      ready: !isQuitting && !isInstallerWarmup && app.isReady()
+        && desktopNotificationRuntimeReady(status, isExternalRuntimeDev),
+      apiOrigin: desktopNotificationAPIOrigin(status, isExternalRuntimeDev),
+      frontendOrigin: notificationFrontendOrigin(),
+      instanceId: desktopNotificationInstanceID(status, isExternalRuntimeDev),
+    };
+  },
+  openPath: async (url, stillCurrent) => {
+    await showActiveWindow();
+    if (!stillCurrent() || isQuitting || !mainWindow || mainWindow.isDestroyed()
+      || new URL(url).origin !== notificationFrontendOrigin()) return;
+    const window = mainWindow;
+    await window.loadURL(url);
+    if (stillCurrent() && !window.isDestroyed()) {
+      window.show();
+      window.focus();
+    }
+  },
+  report: (code) => appendStartupLog("desktop", code),
+});
+
+function notificationFrontendOrigin() {
+  if (isExternalRuntimeDev) {
+    return new URL(desktopDevURL).origin;
+  }
+  return `http://127.0.0.1:${Number(currentStatus?.config?.frontendPort)}`;
+}
 
 function loadEditablePptDependencyConfig() {
   try {
@@ -265,6 +359,7 @@ function sidecarArgs(command, extra = []) {
 
 function sidecarEnv() {
   const localFolderAccess = loadAccessState(localFolderAccessStatePath);
+  const obsidianConfig = loadObsidianConfig(obsidianConfigPath);
   const env = {
     ...process.env,
     LAZYMIND_RUNTIME_PROFILE: "desktop",
@@ -288,6 +383,10 @@ function sidecarEnv() {
     PYTHONDONTWRITEBYTECODE: "1",
     LAZYMIND_FILE_WATCHER_EXTRA_ALLOWED_ROOTS_JSON: JSON.stringify(localFolderAccess.allowedRoots),
   };
+  Object.assign(
+    env,
+    buildObsidianRuntimeEnv(obsidianConfig.root, obsidianDisabledRoot),
+  );
   env.LAZYMIND_MODEL_PROVIDER_SECRET_KEY ||= deriveDesktopCredentialKey(desktopCredentialIdentity, "model-provider");
   env.LAZYMIND_MCP_SECRET_KEY ||= deriveDesktopCredentialKey(desktopCredentialIdentity, "mcp");
   env.LAZYMIND_AUTH_CLOUD_SECRET_KEY ||= deriveDesktopCredentialKey(desktopCredentialIdentity, "cloud-oauth");
@@ -603,10 +702,16 @@ function runAgentConnector(agent, action) {
   if (action === "login") {
     return startAgentLogin(agent);
   }
-  return runConnectorJSON(
+  const installWorkflow = agent === "deepseek-harness" && action === "connect";
+  const run = () => runConnectorJSON(
     ["internal", "agent", agent, action],
-    agentConnectorActionTimeoutMs,
+    installWorkflow ? agentConnectorInstallTimeoutMs : agentConnectorActionTimeoutMs,
   );
+  if (installWorkflow) {
+    const address = new URL(process.env.LAZYMIND_ASSISTANT_BRIDGE_URL || "http://127.0.0.1:19091").host;
+    return runConnectorJSON(["assistant", "start", "--listen", address], agentConnectorActionTimeoutMs).then(run);
+  }
+  return run();
 }
 
 function startAgentLogin(agent) {
@@ -659,7 +764,7 @@ async function runExecutorConnector(provider, action) {
 
 const agentBindingTargets = new Set([
   "codex-cli", "codex-desktop", "cursor-cli", "codebuddy-cli", "cursor-desktop",
-  "workbuddy-desktop", "raccoon-desktop", "traework-desktop",
+  "workbuddy-desktop", "raccoon-desktop", "traework-desktop", "deepseek-harness-cli",
 ]);
 const agentBindingActions = new Set(["status", "set", "clear"]);
 
@@ -672,7 +777,7 @@ async function runAgentBinding(target, action, executablePath = "") {
     args.push("--path", executablePath);
   }
   const result = await runConnectorJSON(args, agentConnectorBindingTimeoutMs);
-  if (action !== "status" && target.endsWith("-cli")) {
+  if (action !== "status" && target.endsWith("-cli") && target !== "deepseek-harness-cli") {
     restartAgentHost();
   }
   return result;
@@ -794,7 +899,7 @@ async function runInstallerWarmup() {
           callback({ cancel: true });
         }
       });
-      await warmupWindow.loadURL(`http://127.0.0.1:${status.config.frontendPort}`);
+      await warmupWindow.loadURL(`http://localhost:${status.config.frontendPort}`);
     },
     stopRuntime: () => runSidecar("down", maintenanceArgs, {
       env: { ...sidecarEnv(), LAZYMIND_LOCAL_DOWN_TIMEOUT: "120s" },
@@ -1033,12 +1138,12 @@ function spawnDetachedShutdownHelper(reason) {
   }
 }
 
-async function readStatus() {
+async function readStatus(options = {}) {
   if (isExternalRuntimeDev) {
     currentStatus = desktopDevRuntimeStatus(externalRuntimeURL);
     return currentStatus;
   }
-  const stdout = await runSidecar("status", ["--json"]);
+  const stdout = await runSidecar("status", ["--json"], options);
   currentStatus = JSON.parse(stdout);
   startupMetricsRecorder.observeStatus(currentStatus);
   return currentStatus;
@@ -1050,6 +1155,16 @@ function localFolderAccessSnapshot() {
     ...state,
     available: true,
     items: recommendationsForExactFolders(state.allowedRoots),
+  };
+}
+
+function obsidianConfigSnapshot() {
+  const config = loadObsidianConfig(obsidianConfigPath);
+  return {
+    configured: Boolean(config.root),
+    available: Boolean(config.root && isExistingDirectory(config.root)),
+    root: config.root || "",
+    updatedAt: config.updatedAt || "",
   };
 }
 
@@ -1130,10 +1245,33 @@ function resolveRequestedLocalFolder(folderPath, status, accessState) {
 }
 
 async function restartRuntimeAfterFolderAccessChange() {
-  await runSidecar("down");
+  const monitor = runtimeProcess;
+  let monitorClosed = Promise.resolve();
+  if (monitor) {
+    monitorClosed = new Promise((resolve, reject) => {
+      let timeout;
+      const onClose = () => {
+        clearTimeout(timeout);
+        resolve();
+      };
+      timeout = setTimeout(() => {
+        monitor.removeListener("close", onClose);
+        reject(new Error("Timed out waiting for the previous desktop runtime monitor to exit"));
+      }, runtimeOwnershipHandoffTimeoutMs);
+      monitor.once("close", onClose);
+    });
+  }
+
+  await runSidecar("down", [], { env: sidecarShutdownEnv() });
   detachRuntimeMonitor();
+  await monitorClosed;
   startRuntime();
-  return waitForRuntimeReady();
+  const status = await waitForRuntimeReady();
+  const window = activeWindow();
+  if (window && !window.isDestroyed()) {
+    window.webContents.reload();
+  }
+  return status;
 }
 
 function logStartupContext() {
@@ -1204,6 +1342,8 @@ function beginFastQuit(reason = "quit") {
     return;
   }
   isQuitting = true;
+  notificationSessionRevision += 1;
+  desktopNotifications.stop();
   allowWindowClose = true;
   finishStartupMetrics("cancelled", "app-quit-during-startup");
   appendStartupLog("desktop", `quitting LazyMind Desktop (${reason}); runtime cleanup continues in background`);
@@ -1760,6 +1900,7 @@ function attachExternalNavigationHandler(window) {
     window.webContents,
     (url) => shell.openExternal(url),
     (error) => appendStartupLog("error", `failed to open external URL: ${serializeError(error)}`),
+    { webPreferences: { preload: path.join(__dirname, "preload.js") } },
   );
 }
 
@@ -1930,7 +2071,9 @@ function showActiveWindow() {
       ? "opening frontend window from resident runtime"
       : "opening frontend window and starting runtime",
   );
-  const creation = createWindow();
+  // Stop starting background refresh before reopening, and finish any in-flight
+  // rotation before the new preload reads the renderer's old stored credentials.
+  const creation = sessionWrites.catch(() => {}).then(() => createWindow());
   windowCreationPromise = creation;
   void creation
     .catch((error) => {
@@ -2000,7 +2143,7 @@ function createHiddenRendererAttempt(frontendPort) {
   rendererReadyWait = readyWait;
   startupMetricsRecorder.mark("frontendLoadStarted");
   const ready = Promise.all([
-    window.loadURL(`http://127.0.0.1:${frontendPort}/agent/chat/home`),
+    window.loadURL(`http://localhost:${frontendPort}/agent/chat/home`),
     readyWait.promise,
   ]);
   return {
@@ -2065,8 +2208,17 @@ async function createDesktopDevWindow() {
 
 async function createWindow() {
   if (isExternalRuntimeDev) {
+    try {
+      const saved = await runConnectorJSON(["internal", "session", "snapshot"], 3000);
+      restoreDesktopNotificationSession(saved, notificationSession, desktopNotifications);
+    } catch { /* Missing/expired saved session: renderer keeps the normal login path. */ }
     return createDesktopDevWindow();
   }
+  try {
+    const saved = await runConnectorJSON(["internal", "session", "snapshot"], 3000);
+    if (saved?.ok) notificationSession.hydrate(saved.session);
+  } catch { /* Older/unavailable connector: keep the normal login path. Never log credentials. */ }
+  if (isQuitting || windowHiddenByUser) return;
   const nextStartupWindow = new BrowserWindow(browserWindowOptions(true));
   let latestRendererAttempt;
   startupWindow = nextStartupWindow;
@@ -2206,19 +2358,22 @@ const managedBrowser = new BrowserConnection({
     const root = isPackaged
       ? path.join(process.resourcesPath, "browser-controller")
       : path.join(repoRoot, "browser-extension");
-    const { BrowserController, captureCurrentPage } = await loadBrowserController(root);
+    const { BrowserController, BrowserRecorder, captureCurrentPage } = await loadBrowserController(root);
     const partition = profilePartition(serverURL, userID);
     const adapter = browserEngine === "edge"
       ? createEdgeAdapter({ profileDir: path.join(app.getPath("userData"), "edge-profiles", partition.slice(8)) })
       : createBrowserAdapter({ BrowserWindow, session, partition });
     const controller = new BrowserController(adapter);
+    const recorder = new BrowserRecorder(adapter);
     return {
       browserName: browserEngine === "edge" ? "Microsoft Edge" : "LazyMind Browser",
       browserVersion: browserEngine === "edge" ? "" : process.versions.chrome,
-      dispatch: (action, payload) => action === "capture_current_page"
+      dispatch: (action, payload) => action.startsWith("recording_")
+        ? recorder.dispatch(action, payload)
+        : action === "capture_current_page"
         ? captureCurrentPage(payload, adapter)
         : controller.dispatch(action, payload),
-      dispose: () => adapter.dispose(),
+      dispose: async () => { await recorder.dispose(); await adapter.dispose(); },
     };
   },
 });
@@ -2227,6 +2382,51 @@ function assertBrowserIPC(event) {
     throw new Error("Browser control is only available from the LazyMind main window");
   }
 }
+let nativeRecordingOwner = null;
+const nativeRecording = process.platform === "darwin" ? createRecordingHelper({
+  source: app.isPackaged ? path.join(process.resourcesPath, "recording-helper", "LazyMind Recorder.app") : path.resolve(__dirname, "../../build/recording-helper/LazyMind Recorder.app"),
+  root: path.join(app.getPath("appData"), "LazyMind", "recording-helper"),
+  onEvent: (message) => { if (nativeRecordingOwner && !nativeRecordingOwner.isDestroyed()) nativeRecordingOwner.send("lazymind:recordingNativeEvent", message); },
+  log: (stage, message) => appendStartupLog("recording-helper", `${stage}: ${message}`),
+}) : null;
+ipcMain.handle("lazymind:recordingNativeStart", async (event) => {
+  assertBrowserIPC(event);
+  if (!nativeRecording) throw new Error("recording-helper-unavailable");
+  nativeRecordingOwner = event.sender;
+  const result = await nativeRecording.start();
+  if (event.sender.isDestroyed() || event.sender !== mainWindow?.webContents) { nativeRecording.dispose(); throw new Error("recording-cancelled"); }
+  return result;
+});
+ipcMain.handle("lazymind:recordingNativeStop", (event, id) => { assertBrowserIPC(event); return nativeRecording?.stop(id); });
+ipcMain.handle("lazymind:recordingNativeCancel", (event) => { assertBrowserIPC(event); return nativeRecording?.cancel(); });
+ipcMain.handle("lazymind:recordingNativeSettings", (event) => { assertBrowserIPC(event); return nativeRecording?.settings(); });
+const inputRecorder = createInputRecorder({
+  spawn: () => utilityProcess.fork(path.join(__dirname, "input-recording-worker.js"), [], { stdio: "ignore", serviceName: "LazyMind Skill Recording" }),
+});
+ipcMain.handle("lazymind:recordingInputPermission", (event) => {
+  assertBrowserIPC(event);
+  return { granted: process.platform !== "darwin" || systemPreferences.isTrustedAccessibilityClient(true) };
+});
+ipcMain.handle("lazymind:recordingInputSettings", (event) => {
+  assertBrowserIPC(event);
+  if (process.platform === "darwin") return shell.openExternal("x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility");
+});
+ipcMain.handle("lazymind:recordingInputStart", (event, startedAt) => {
+  assertBrowserIPC(event);
+  if (process.platform === "darwin" && !systemPreferences.isTrustedAccessibilityClient(false)) throw new Error("recording-input-permission");
+  return inputRecorder.start(startedAt);
+});
+ipcMain.handle("lazymind:recordingInputStop", (event, id) => { assertBrowserIPC(event); return inputRecorder.stop(id); });
+ipcMain.handle("lazymind:recordingInputCancel", (event, id) => { assertBrowserIPC(event); inputRecorder.cancelSession(id); });
+app.on("web-contents-created", (_event, contents) => {
+  const cancel = () => { if (mainWindow?.webContents === contents) { inputRecorder.cancel(); nativeRecording?.dispose(); } };
+  contents.on("did-start-navigation", (_event, _url, isInPlace, isMainFrame) => { if (isMainFrame && !isInPlace) cancel(); });
+  contents.on("render-process-gone", cancel);
+  // Keep identity independently of mainWindow, which may be cleared by its close handler first.
+  contents.on("destroyed", () => { if (nativeRecordingOwner === contents) { nativeRecording?.dispose(); nativeRecordingOwner = null; } if (recordingOwner === contents) { inputRecorder.cancel(); recordingOwner = null; } });
+});
+let recordingOwner = null;
+app.on("before-quit", () => { inputRecorder.cancel(); nativeRecording?.dispose(); });
 let browserSessionUpdate = Promise.resolve();
 const browserStatus = () => ({ ...managedBrowser.status(), engine: browserEngine, edgeAvailable: Boolean(findEdge()) });
 ipcMain.handle("lazymind:browserSessionSet", (event, value) => {
@@ -2262,10 +2462,49 @@ ipcMain.handle("lazymind:browserOpen", async (event, url) => {
 });
 app.on("will-quit", () => { void managedBrowser.clear(); });
 
-ipcMain.handle("lazymind:assistantSessionSet", (_event, value) =>
-  runConnectorJSON(["internal", "session", "set"], agentConnectorActionTimeoutMs, value));
-ipcMain.handle("lazymind:assistantSessionClear", () =>
-  runConnectorJSON(["internal", "session", "clear"], agentConnectorActionTimeoutMs));
+ipcMain.handle("lazymind:assistantSessionSet", async (event, value) => {
+  if (isQuitting || !isTrustedNotificationSender(event, mainWindow, notificationFrontendOrigin())) {
+    throw new Error("DESKTOP_SESSION_UNAVAILABLE");
+  }
+  value = notificationSession.restore(value) || value;
+  notificationRenewalCandidate = undefined;
+  notificationSession.remember(value);
+  const revision = ++notificationSessionRevision;
+  desktopNotifications.suspendSession(value);
+  let result;
+  try {
+    result = await (sessionWrites = sessionWrites.catch(() => {}).then(() =>
+      runConnectorJSON(["internal", "session", "set"], agentConnectorActionTimeoutMs, value)));
+  } catch (error) {
+    if (revision === notificationSessionRevision) {
+      notificationSession.clear();
+      desktopNotifications.clearSession();
+    }
+    throw error;
+  }
+  if (revision === notificationSessionRevision && !isQuitting
+    && isTrustedNotificationSender(event, mainWindow, notificationFrontendOrigin())) {
+    void desktopNotifications.setSession(value);
+  }
+  return result;
+});
+ipcMain.handle("lazymind:assistantSessionClear", async (event) => {
+  if (isQuitting || !isTrustedNotificationSender(event, mainWindow, notificationFrontendOrigin())) {
+    throw new Error("DESKTOP_SESSION_UNAVAILABLE");
+  }
+  notificationSessionRevision += 1;
+  notificationRenewalCandidate = undefined;
+  notificationSession.clear();
+  desktopNotifications.clearSession();
+  return (sessionWrites = sessionWrites.catch(() => {}).then(() =>
+    runConnectorJSON(["internal", "session", "clear"], agentConnectorActionTimeoutMs)));
+});
+ipcMain.on("lazymind:notificationSessionRestore", (event, value) => {
+  // Synchronous, memory-only lookup runs in preload before application code.
+  // It never waits for disk/network or exposes credentials to a different frame.
+  event.returnValue = !isQuitting && isTrustedNotificationSender(event, mainWindow, notificationFrontendOrigin())
+    ? notificationSession.restore(value) : null;
+});
 ipcMain.handle("lazymind:restartRuntime", async () => {
   return restartRuntimeAfterFolderAccessChange();
 });
@@ -2592,6 +2831,25 @@ ipcMain.handle("lazymind:authorizeLocalWorkspace", async (event, selectionToken)
   }
   return responseBody.data;
 });
+ipcMain.handle("lazymind:obsidianConfigStatus", () => obsidianConfigSnapshot());
+ipcMain.handle("lazymind:selectObsidianRoot", async () => {
+  const result = await dialog.showOpenDialog(activeWindow(), {
+    title: "选择 Obsidian 扫描根目录",
+    properties: ["openDirectory"],
+  });
+  if (result.canceled || result.filePaths.length === 0) {
+    return { ...obsidianConfigSnapshot(), canceled: true };
+  }
+
+  const [root] = resolveExistingDirectories([result.filePaths[0]]);
+  saveObsidianConfig(obsidianConfigPath, root);
+  return { ...obsidianConfigSnapshot(), canceled: false };
+});
+ipcMain.handle("lazymind:clearObsidianRoot", async () => {
+  clearObsidianConfig(obsidianConfigPath);
+  await restartRuntimeAfterFolderAccessChange();
+  return obsidianConfigSnapshot();
+});
 ipcMain.handle("lazymind:selectExecutable", async (_event, target = "") => {
   const agentExecutable = agentBindingTargets.has(target);
   const result = await dialog.showOpenDialog(activeWindow(), {
@@ -2799,6 +3057,15 @@ if (!hasSingleInstanceLock) {
     void showActiveWindow();
   });
   app.whenReady().then(async () => {
+    installScreenCapture({ session: session.defaultSession, desktopCapturer, Menu, getWindow: () => mainWindow,
+      log: (stage, details = {}) => appendStartupLog("screen-capture", `${stage} ${JSON.stringify(details)}`),
+      onSelected: (source) => {
+        const display = screen.getAllDisplays().find((display) => String(display.id) === source.display_id);
+        const bounds = display ? (process.platform === "win32" ? screen.dipToScreenRect(null, display.bounds) : display.bounds) : undefined;
+        recordingOwner = mainWindow?.webContents;
+        inputRecorder.authorize(bounds);
+      },
+    });
     startupMetricsRecorder.mark("electronReady");
     try {
       await clearFrontendCaches(session.defaultSession, (message) => appendStartupLog("desktop", message));

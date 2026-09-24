@@ -625,6 +625,7 @@ func algorithmServiceEnv(cfg RuntimeConfig, paths RuntimePaths, service string) 
 		"LAZYMIND_UPLOAD_DIR=" + paths.UploadRoot,
 		"LAZYMIND_UPLOAD_ROOT=" + paths.UploadRoot,
 		"LAZYMIND_DOCUMENT_SERVICE_STORAGE_DIR=" + paths.UploadRoot,
+		"LAZYMIND_OBSERVABILITY_DIR=" + filepath.Join(paths.DataDir, "observability"),
 		"http_proxy=" + envText("http_proxy", ""),
 		"https_proxy=" + envText("https_proxy", ""),
 		"HTTP_PROXY=" + envText("HTTP_PROXY", ""),
@@ -695,6 +696,7 @@ func algorithmServiceEnv(cfg RuntimeConfig, paths RuntimePaths, service string) 
 		"LAZYMIND_DEFAULT_CHAT_DATASET=algo",
 		"LAZYMIND_CORE_API_URL=" + fmt.Sprintf("http://127.0.0.1:%d", cfg.LocalProxy.CoreHostPort),
 		"LAZYMIND_CORE_SERVICE_URL=" + fmt.Sprintf("http://127.0.0.1:%d", cfg.LocalProxy.CoreHostPort),
+		"LAZYMIND_AUTH_SERVICE_URL=" + fmt.Sprintf("http://127.0.0.1:%d/api/authservice", cfg.AuthService.Port),
 		"LAZYMIND_AUTH_SERVICE_INTERNAL_TOKEN=" + internalServiceToken(),
 		"LAZYMIND_WORKFLOW_EXECUTOR_TOKEN=" + envText("LAZYMIND_WORKFLOW_EXECUTOR_TOKEN", "dev-workflow-executor-token"),
 		"LAZYMIND_FILE_URL_SIGN_SECRET=" + envText("LAZYMIND_FILE_URL_SIGN_SECRET", "changeme-in-production"),
@@ -743,6 +745,9 @@ func algorithmServiceEnv(cfg RuntimeConfig, paths RuntimePaths, service string) 
 	}
 	if libPath := editablePPTLibraryPath(exportDeps); libPath != "" {
 		env = append(env, "LD_LIBRARY_PATH="+joinPathList(libPath, os.Getenv("LD_LIBRARY_PATH")))
+	}
+	if pandocPath := strings.TrimSpace(paths.PandocBin); pandocPath != "" {
+		env = append(env, "LAZYMIND_PANDOC_PATH="+pandocPath)
 	}
 	return env
 }

@@ -18,6 +18,7 @@ import (
 	"lazymind/core/common"
 	"lazymind/core/common/orm"
 	"lazymind/core/workflow/artifactgraph"
+	"lazymind/core/workflow/controlstore"
 	"lazymind/core/workflow/document"
 	workflowstore "lazymind/core/workflow/store"
 )
@@ -364,18 +365,40 @@ func CreateSessionStep(ctx context.Context, db *gorm.DB, sessionID, stepID, task
 // Terminal states are first-writer-wins: once a step has been interrupted by the
 // user, delayed start/done/error frames from the SubAgent stream cannot revive it.
 func UpdateStepStatus(ctx context.Context, db *gorm.DB, taskID, status string) error {
-	q := db.WithContext(ctx).Model(&orm.WorkflowSessionStep{}).
-		Where("task_id = ?", taskID).
-		Where("NOT (status = ? AND terminal_code = ?)", StepStatusInterrupted, "WORKFLOW_STOPPED")
-	terminal := []string{StepStatusSucceeded, StepStatusFailed, StepStatusInterrupted}
-	if status == StepStatusRunning || status == StepStatusSucceeded ||
-		status == StepStatusFailed || status == StepStatusInterrupted {
-		q = q.Where("status NOT IN ? OR status = ?", terminal, status)
-	}
-	return q.Updates(map[string]any{
-		"status":     status,
-		"updated_at": time.Now().UTC(),
-	}).Error
+	return db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var rows []orm.WorkflowSessionStep
+		if err := tx.Where("task_id = ?", taskID).Find(&rows).Error; err != nil {
+			return err
+		}
+		for _, row := range rows {
+			if row.Status == status {
+				continue
+			}
+			q := tx.Model(&orm.WorkflowSessionStep{}).Where("id = ? AND status <> ?", row.ID, status).
+				Where("NOT (status = ? AND terminal_code = ?)", StepStatusInterrupted, "WORKFLOW_STOPPED")
+			terminal := []string{StepStatusSucceeded, StepStatusFailed, StepStatusInterrupted}
+			if status == StepStatusRunning || status == StepStatusSucceeded || status == StepStatusFailed || status == StepStatusInterrupted {
+				q = q.Where("status NOT IN ?", terminal)
+			}
+			now := time.Now().UTC()
+			updated := q.Updates(map[string]any{"status": status, "updated_at": now})
+			if updated.Error != nil {
+				return updated.Error
+			}
+			if updated.RowsAffected == 0 {
+				continue
+			}
+			var session orm.WorkflowSession
+			if err := tx.Where("id = ?", row.SessionID).First(&session).Error; err != nil {
+				return err
+			}
+			payload, _ := json.Marshal(map[string]any{"attempt_id": row.ID, "status": status})
+			if err := tx.Create(&orm.WorkflowEvent{SessionID: row.SessionID, OwnerUserID: session.CreateUserID, ContractVersion: "workflow.v1", EventType: "attempt.patch", EntityID: row.ID, StateVersion: session.StateVersion, PayloadJSON: payload, CreatedAt: now}).Error; err != nil {
+				return err
+			}
+		}
+		return nil
+	})
 }
 
 // GetLatestStep returns the most recent execution instance of step_id within a session.
@@ -1131,6 +1154,18 @@ func orderSlotRevisions(ctx context.Context, db *gorm.DB, sessionID string, rows
 // by each step attempt. The selected rows still define the current artifact value; the
 // extra step-scoped rows let the UI render each step tab as it looked when that step ran.
 func LoadDisplaySlots(ctx context.Context, db *gorm.DB, sessionID string) ([]orm.WorkflowSlotRevision, error) {
+	var session orm.WorkflowSession
+	if err := db.WithContext(ctx).First(&session, "id = ?", sessionID).Error; err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
+		return nil, err
+	}
+	if controlstore.Controlled(session) {
+		var rows []orm.WorkflowSlotRevision
+		if err := db.WithContext(ctx).Where("session_id = ? AND selected = ? AND validity = ?", sessionID, true, "effective").Order("slot_id ASC, list_index ASC").Find(&rows).Error; err != nil {
+			return nil, err
+		}
+		return orderSlotRevisions(ctx, db, sessionID, rows), nil
+	}
+
 	selected, err := LoadSelectedSlots(ctx, db, sessionID)
 	if err != nil {
 		return nil, err
@@ -1264,6 +1299,13 @@ func UpdateSelectedHumanArtifactValue(
 			return ErrDraftVersionRequired
 		}
 		requiresCopyOnWrite := selected.ChangeSource != "human"
+		if controlstore.Controlled(*session) {
+			sealed, err := controlstore.IsSealedRevision(tx, sessionID, selected.ID)
+			if err != nil {
+				return err
+			}
+			requiresCopyOnWrite = requiresCopyOnWrite || sealed
+		}
 		if !requiresCopyOnWrite {
 			var binding orm.WorkflowAttemptInputBinding
 			err := tx.Select("id").

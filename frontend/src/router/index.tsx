@@ -16,6 +16,9 @@ import { isVocabularyEnabled } from "@/runtime/mode";
 import UserAgreementPage from "@/pages/UserAgreementPage";
 import SettingsPage from "@/modules/settings";
 
+const McpOAuthCallback = lazy(() => import("@/modules/modelProvider/pages/McpOAuthCallback"));
+
+const WorkflowRunPage = lazy(() => import("@/modules/chat/pages/workflowRun"));
 const ShowcaseGalleryPage = lazy(() => import("@/modules/showcase/GalleryPage"));
 const ShowcaseDetailPage = lazy(() => import("@/modules/showcase/DetailPage"));
 const KnowledgeApp = lazy(() => import("@/modules/knowledge/KnowledgeApp"));
@@ -40,6 +43,7 @@ const GoogleDriveSetupGuide = lazy(() => import("@/modules/modelProvider/pages/G
 const LocalDataSourcePage = lazy(() => import("@/modules/modelProvider/pages/LocalDataSourcePage"));
 const FeishuSetupGuide = lazy(() => import("@/modules/modelProvider/pages/FeishuSetupGuide"));
 const GitHubSetupGuide = lazy(() => import("@/modules/modelProvider/pages/GitHubSetupGuide"));
+const ObsidianSetupGuide = lazy(() => import("@/modules/modelProvider/pages/ObsidianSetupGuide"));
 const WeChatSetupGuide = lazy(() => import("@/modules/modelProvider/pages/WeChatSetupGuide"));
 const NotionSetupGuide = lazy(() => import("@/modules/modelProvider/pages/NotionSetupGuide"));
 const DatasetListPage = lazy(() => import("@/modules/datasetManagement/pages/list"));
@@ -87,6 +91,7 @@ export default function AppRouter() {
     >
       <Suspense fallback={<Spin style={{ display: "flex", justifyContent: "center", alignItems: "center", height: "100%" }} />}>
       <Routes>
+        <Route path="/oauth/mcp/callback" element={<McpOAuthCallback />} />
         <Route
           path="/legal/user-agreement"
           element={<UserAgreementPage />}
@@ -147,7 +152,9 @@ export default function AppRouter() {
             )
           }
         />
+        <Route path="/workflow-runs/:sessionId/embed" element={<WorkflowRunPage embedded />} />
         <Route path="/" element={<MainLayout />}>
+          <Route path="workflow-runs/:sessionId" element={<WorkflowRunPage />} />
           <Route index element={<Navigate to="/agent/chat" replace />} />
           <Route path="agent/chat" element={<ChatApp />}>
             <Route index element={<Navigate to="home" replace />} />
@@ -200,6 +207,7 @@ export default function AppRouter() {
             <Route path="google-drive" element={<GoogleDriveConnectionPage />} />
             <Route path="docs/feishu-setup" element={<FeishuSetupGuide />} />
             <Route path="docs/github-setup" element={<GitHubSetupGuide />} />
+            <Route path="docs/obsidian-setup" element={<ObsidianSetupGuide />} />
             <Route path="docs/wechat-official-account-setup" element={<WeChatSetupGuide />} />
             <Route path="docs/notion-setup" element={<NotionSetupGuide />} />
             <Route path="docs/google-drive-setup" element={<GoogleDriveSetupGuide />} />
