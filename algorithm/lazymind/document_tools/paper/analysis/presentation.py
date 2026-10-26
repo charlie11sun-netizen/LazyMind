@@ -57,8 +57,9 @@ def interval_text(finding):
     interval = finding['interval']
     if not interval:
         return '—'
-    return (f'{interval["level"] * 100:g}% {INTERVALS[interval["kind"]]} '
-            f'[{interval["lower"]:.5g}, {interval["upper"]:.5g}]')
+    lower = f'{interval["lower"]:.5g}' if interval['lower'] is not None else '−∞'
+    upper = f'{interval["upper"]:.5g}' if interval['upper'] is not None else '+∞'
+    return f'{interval["level"] * 100:g}% {INTERVALS[interval["kind"]]} [{lower}, {upper}]'
 
 
 def numeric_table(findings, jobs=None, anchors=None, compact=False):
@@ -68,7 +69,7 @@ def numeric_table(findings, jobs=None, anchors=None, compact=False):
         '结果', '指标与比较', '估计值', '有效样本 / 排除', '区间', '原始 p / 校正 p']
     lines = ['| ' + ' | '.join(headers) + ' |', '| ' + ' | '.join(['---'] * len(headers)) + ' |']
     for index, finding in enumerate(findings, 1):
-        value = f'{finding["value"]:.5g}' + (' ' + finding['unit'] if finding['unit'] else '')
+        value = (f'{finding["value"]:.5g}' if finding["value"] is not None else '—') + (' ' + finding['unit'] if finding['unit'] else '')
         label = finding_label(finding, jobs.get(finding['id']))
         if compact:
             row = [label, value, interval_text(finding)]

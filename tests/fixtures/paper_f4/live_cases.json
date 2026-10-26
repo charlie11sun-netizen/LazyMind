@@ -1,0 +1,1647 @@
+{
+  "version": 1,
+  "repetitions": 3,
+  "cases": [
+    {
+      "id": "01_mean",
+      "input": {
+        "topic": "F4 固定验收 01_mean",
+        "request": "报告 score 的算术均值。仅描述模拟数据，不作因果推断。",
+        "data": {
+          "columns": [
+            "score"
+          ],
+          "rows": [
+            [
+              1
+            ],
+            [
+              2
+            ],
+            [
+              4
+            ],
+            [
+              9
+            ]
+          ],
+          "column_types": [
+            "number"
+          ],
+          "units": [
+            null
+          ]
+        },
+        "study_design": {
+          "description": "软件验收模拟数据，每行是独立个体，无重复测量，组间独立。"
+        }
+      },
+      "oracle": {
+        "values": [
+          4.0
+        ]
+      },
+      "min_charts": 0
+    },
+    {
+      "id": "02_renamed",
+      "input": {
+        "topic": "F4 固定验收 02_renamed",
+        "request": "报告测量甲的算术均值。；提供一张对应结果图。仅描述模拟数据，不作因果推断。",
+        "data": {
+          "columns": [
+            "测量甲"
+          ],
+          "rows": [
+            [
+              2
+            ],
+            [
+              6
+            ],
+            [
+              10
+            ],
+            [
+              14
+            ]
+          ],
+          "column_types": [
+            "number"
+          ],
+          "units": [
+            null
+          ]
+        },
+        "study_design": {
+          "description": "软件验收模拟数据，每行是独立个体，无重复测量，组间独立。"
+        }
+      },
+      "oracle": {
+        "values": [
+          8.0
+        ]
+      },
+      "min_charts": 1
+    },
+    {
+      "id": "03_sparse_groups",
+      "input": {
+        "topic": "F4 固定验收 03_sparse_groups",
+        "request": "按 arm 和 site 的实际组合，分别报告 score 均值；不补不存在的组合。；提供一张对应结果图。仅描述模拟数据，不作因果推断。",
+        "data": {
+          "columns": [
+            "arm",
+            "site",
+            "score"
+          ],
+          "rows": [
+            [
+              "a",
+              "x",
+              1
+            ],
+            [
+              "a",
+              "x",
+              3
+            ],
+            [
+              "b",
+              "y",
+              4
+            ],
+            [
+              "b",
+              "y",
+              8
+            ]
+          ],
+          "column_types": [
+            "string",
+            "string",
+            "number"
+          ],
+          "units": [
+            null,
+            null,
+            null
+          ]
+        },
+        "study_design": {
+          "description": "软件验收模拟数据，每行是独立个体，无重复测量，组间独立。"
+        }
+      },
+      "oracle": {
+        "values": [
+          2.0,
+          6.0
+        ]
+      },
+      "min_charts": 1
+    },
+    {
+      "id": "04_missing",
+      "input": {
+        "topic": "F4 固定验收 04_missing",
+        "request": "分别报告 x 和 y 的均值，各列独立排除该列缺失值，报告各自样本量。仅描述模拟数据，不作因果推断。",
+        "data": {
+          "columns": [
+            "x",
+            "y"
+          ],
+          "rows": [
+            [
+              1,
+              null
+            ],
+            [
+              3,
+              10
+            ],
+            [
+              null,
+              20
+            ]
+          ],
+          "column_types": [
+            "number",
+            "number"
+          ],
+          "units": [
+            null,
+            null
+          ]
+        },
+        "study_design": {
+          "description": "软件验收模拟数据，每行是独立个体，无重复测量，组间独立。"
+        }
+      },
+      "oracle": {
+        "values": [
+          2.0,
+          15.0
+        ],
+        "ns": [
+          2,
+          2
+        ]
+      },
+      "min_charts": 0
+    },
+    {
+      "id": "05_count",
+      "input": {
+        "topic": "F4 固定验收 05_count",
+        "request": "按 arm 报告 score 非空记录数。仅描述模拟数据，不作因果推断。",
+        "data": {
+          "columns": [
+            "arm",
+            "score"
+          ],
+          "rows": [
+            [
+              "a",
+              1
+            ],
+            [
+              "a",
+              null
+            ],
+            [
+              "b",
+              3
+            ],
+            [
+              "b",
+              4
+            ]
+          ],
+          "column_types": [
+            "string",
+            "number"
+          ],
+          "units": [
+            null,
+            null
+          ]
+        },
+        "study_design": {
+          "description": "软件验收模拟数据，每行是独立个体，无重复测量，组间独立。"
+        }
+      },
+      "oracle": {
+        "values": [
+          1.0,
+          2.0
+        ]
+      },
+      "min_charts": 0
+    },
+    {
+      "id": "06_difference",
+      "input": {
+        "topic": "F4 固定验收 06_difference",
+        "request": "报告 a 组均值减 b 组均值的描述性差，不需要检验或区间。仅描述模拟数据，不作因果推断。",
+        "data": {
+          "columns": [
+            "arm",
+            "score"
+          ],
+          "rows": [
+            [
+              "a",
+              3
+            ],
+            [
+              "a",
+              5
+            ],
+            [
+              "b",
+              1
+            ],
+            [
+              "b",
+              2
+            ]
+          ],
+          "column_types": [
+            "string",
+            "number"
+          ],
+          "units": [
+            null,
+            null
+          ]
+        },
+        "study_design": {
+          "description": "软件验收模拟数据，每行是独立个体，无重复测量，组间独立。"
+        }
+      },
+      "oracle": {
+        "values": [
+          2.5
+        ]
+      },
+      "min_charts": 0
+    },
+    {
+      "id": "07_pairs",
+      "input": {
+        "topic": "F4 固定验收 07_pairs",
+        "request": "id 是配对键，同一 id 两行是同一个体，个体之间独立；按 id 配对，报告 a 减 b 的平均配对差，不需检验或区间。仅描述模拟数据，不作因果推断。",
+        "data": {
+          "columns": [
+            "id",
+            "arm",
+            "score"
+          ],
+          "rows": [
+            [
+              1,
+              "a",
+              3
+            ],
+            [
+              1,
+              "b",
+              1
+            ],
+            [
+              2,
+              "a",
+              8
+            ],
+            [
+              2,
+              "b",
+              4
+            ],
+            [
+              3,
+              "a",
+              5
+            ],
+            [
+              3,
+              "b",
+              2
+            ]
+          ],
+          "column_types": [
+            "integer",
+            "string",
+            "number"
+          ],
+          "units": [
+            null,
+            null,
+            null
+          ]
+        },
+        "study_design": {
+          "description": "id 是配对实验个体键，同一 id 的两行属于同一个体，个体间独立。"
+        }
+      },
+      "oracle": {
+        "values": [
+          3.0
+        ]
+      },
+      "min_charts": 0
+    },
+    {
+      "id": "08_pearson",
+      "input": {
+        "topic": "F4 固定验收 08_pearson",
+        "request": "报告 x 与 y 的 Pearson 相关系数，不做检验和区间。仅描述模拟数据，不作因果推断。",
+        "data": {
+          "columns": [
+            "x",
+            "y"
+          ],
+          "rows": [
+            [
+              1,
+              2
+            ],
+            [
+              2,
+              3
+            ],
+            [
+              3,
+              5
+            ],
+            [
+              4,
+              7
+            ],
+            [
+              5,
+              8
+            ]
+          ],
+          "column_types": [
+            "number",
+            "number"
+          ],
+          "units": [
+            null,
+            null
+          ]
+        },
+        "study_design": {
+          "description": "软件验收模拟数据，每行是独立个体，无重复测量，组间独立。"
+        }
+      },
+      "oracle": {
+        "kind": "correlation",
+        "method": "pearson"
+      },
+      "min_charts": 0
+    },
+    {
+      "id": "09_spearman",
+      "input": {
+        "topic": "F4 固定验收 09_spearman",
+        "request": "报告 x 与 y 的 Spearman 秩相关系数，不做检验和区间。仅描述模拟数据，不作因果推断。",
+        "data": {
+          "columns": [
+            "x",
+            "y"
+          ],
+          "rows": [
+            [
+              1,
+              9
+            ],
+            [
+              2,
+              5
+            ],
+            [
+              2,
+              5
+            ],
+            [
+              4,
+              2
+            ],
+            [
+              5,
+              1
+            ]
+          ],
+          "column_types": [
+            "number",
+            "number"
+          ],
+          "units": [
+            null,
+            null
+          ]
+        },
+        "study_design": {
+          "description": "软件验收模拟数据，每行是独立个体，无重复测量，组间独立。"
+        }
+      },
+      "oracle": {
+        "kind": "correlation",
+        "method": "spearman"
+      },
+      "min_charts": 0
+    },
+    {
+      "id": "10_ols",
+      "input": {
+        "topic": "F4 固定验收 10_ols",
+        "request": "使用带截距的普通最小二乘 y ~ x，报告截距和 x 系数；不需要置信区间。仅描述模拟数据，不作因果推断。",
+        "data": {
+          "columns": [
+            "x",
+            "y"
+          ],
+          "rows": [
+            [
+              0,
+              1.1
+            ],
+            [
+              1,
+              2.8
+            ],
+            [
+              2,
+              5.2
+            ],
+            [
+              3,
+              6.9
+            ],
+            [
+              4,
+              9.1
+            ],
+            [
+              5,
+              10.9
+            ]
+          ],
+          "column_types": [
+            "number",
+            "number"
+          ],
+          "units": [
+            null,
+            null
+          ]
+        },
+        "study_design": {
+          "description": "软件验收模拟数据，每行是独立个体，无重复测量，组间独立。"
+        }
+      },
+      "oracle": {
+        "kind": "ols"
+      },
+      "min_charts": 0
+    },
+    {
+      "id": "11_quantiles",
+      "input": {
+        "topic": "F4 固定验收 11_quantiles",
+        "request": "报告 score 的中位数及线性插值的四分位距 IQR。仅描述模拟数据，不作因果推断。",
+        "data": {
+          "columns": [
+            "score"
+          ],
+          "rows": [
+            [
+              1
+            ],
+            [
+              2
+            ],
+            [
+              4
+            ],
+            [
+              8
+            ],
+            [
+              16
+            ],
+            [
+              32
+            ]
+          ],
+          "column_types": [
+            "number"
+          ],
+          "units": [
+            null
+          ]
+        },
+        "study_design": {
+          "description": "软件验收模拟数据，每行是独立个体，无重复测量，组间独立。"
+        }
+      },
+      "oracle": {
+        "values": [
+          6.0,
+          11.5
+        ]
+      },
+      "min_charts": 0
+    },
+    {
+      "id": "12_chisquare",
+      "input": {
+        "topic": "F4 固定验收 12_chisquare",
+        "request": "进行 arm 与 outcome 的 Pearson 卡方独立性检验，禁用连续性校正，报告统计量和 p 值。仅描述模拟数据，不作因果推断。",
+        "data": {
+          "columns": [
+            "arm",
+            "outcome"
+          ],
+          "rows": [
+            [
+              "a",
+              0
+            ],
+            [
+              "a",
+              0
+            ],
+            [
+              "a",
+              0
+            ],
+            [
+              "a",
+              0
+            ],
+            [
+              "a",
+              0
+            ],
+            [
+              "a",
+              0
+            ],
+            [
+              "a",
+              0
+            ],
+            [
+              "a",
+              0
+            ],
+            [
+              "a",
+              0
+            ],
+            [
+              "a",
+              0
+            ],
+            [
+              "a",
+              0
+            ],
+            [
+              "a",
+              0
+            ],
+            [
+              "a",
+              1
+            ],
+            [
+              "a",
+              1
+            ],
+            [
+              "a",
+              1
+            ],
+            [
+              "a",
+              1
+            ],
+            [
+              "a",
+              1
+            ],
+            [
+              "a",
+              1
+            ],
+            [
+              "a",
+              1
+            ],
+            [
+              "a",
+              1
+            ],
+            [
+              "b",
+              0
+            ],
+            [
+              "b",
+              0
+            ],
+            [
+              "b",
+              0
+            ],
+            [
+              "b",
+              0
+            ],
+            [
+              "b",
+              0
+            ],
+            [
+              "b",
+              1
+            ],
+            [
+              "b",
+              1
+            ],
+            [
+              "b",
+              1
+            ],
+            [
+              "b",
+              1
+            ],
+            [
+              "b",
+              1
+            ],
+            [
+              "b",
+              1
+            ],
+            [
+              "b",
+              1
+            ],
+            [
+              "b",
+              1
+            ],
+            [
+              "b",
+              1
+            ],
+            [
+              "b",
+              1
+            ],
+            [
+              "b",
+              1
+            ],
+            [
+              "b",
+              1
+            ],
+            [
+              "b",
+              1
+            ],
+            [
+              "b",
+              1
+            ],
+            [
+              "b",
+              1
+            ]
+          ],
+          "column_types": [
+            "string",
+            "integer"
+          ],
+          "units": [
+            null,
+            null
+          ]
+        },
+        "study_design": {
+          "description": "软件验收模拟数据，每行是独立个体，无重复测量，组间独立。"
+        }
+      },
+      "oracle": {
+        "kind": "chi2"
+      },
+      "min_charts": 0
+    },
+    {
+      "id": "13_fisher",
+      "input": {
+        "topic": "F4 固定验收 13_fisher",
+        "request": "进行 arm 与 outcome 的双侧 Fisher 精确检验，报告优势比与 p 值。仅描述模拟数据，不作因果推断。",
+        "data": {
+          "columns": [
+            "arm",
+            "outcome"
+          ],
+          "rows": [
+            [
+              "a",
+              0
+            ],
+            [
+              "a",
+              0
+            ],
+            [
+              "a",
+              0
+            ],
+            [
+              "a",
+              0
+            ],
+            [
+              "a",
+              0
+            ],
+            [
+              "a",
+              0
+            ],
+            [
+              "a",
+              0
+            ],
+            [
+              "a",
+              0
+            ],
+            [
+              "a",
+              1
+            ],
+            [
+              "a",
+              1
+            ],
+            [
+              "b",
+              0
+            ],
+            [
+              "b",
+              1
+            ],
+            [
+              "b",
+              1
+            ],
+            [
+              "b",
+              1
+            ],
+            [
+              "b",
+              1
+            ],
+            [
+              "b",
+              1
+            ],
+            [
+              "b",
+              1
+            ],
+            [
+              "b",
+              1
+            ],
+            [
+              "b",
+              1
+            ],
+            [
+              "b",
+              1
+            ]
+          ],
+          "column_types": [
+            "string",
+            "integer"
+          ],
+          "units": [
+            null,
+            null
+          ]
+        },
+        "study_design": {
+          "description": "软件验收模拟数据，每行是独立个体，无重复测量，组间独立。"
+        }
+      },
+      "oracle": {
+        "kind": "fisher"
+      },
+      "min_charts": 0
+    },
+    {
+      "id": "14_mannwhitney",
+      "input": {
+        "topic": "F4 固定验收 14_mannwhitney",
+        "request": "对 a 与 b 的 score 做双侧 Mann Whitney U 检验，使用 exact 方法，报告 a 对 b 的 U 及 p 值。仅描述模拟数据，不作因果推断。",
+        "data": {
+          "columns": [
+            "arm",
+            "score"
+          ],
+          "rows": [
+            [
+              "a",
+              1
+            ],
+            [
+              "a",
+              3
+            ],
+            [
+              "a",
+              5
+            ],
+            [
+              "a",
+              7
+            ],
+            [
+              "b",
+              2
+            ],
+            [
+              "b",
+              4
+            ],
+            [
+              "b",
+              8
+            ],
+            [
+              "b",
+              10
+            ]
+          ],
+          "column_types": [
+            "string",
+            "number"
+          ],
+          "units": [
+            null,
+            null
+          ]
+        },
+        "study_design": {
+          "description": "软件验收模拟数据，每行是独立个体，无重复测量，组间独立。"
+        }
+      },
+      "oracle": {
+        "kind": "mannwhitney"
+      },
+      "min_charts": 0
+    },
+    {
+      "id": "15_anova",
+      "input": {
+        "topic": "F4 固定验收 15_anova",
+        "request": "进行普通单因素方差分析，假设各组正态且方差齐，报告 F 和 p 值。仅描述模拟数据，不作因果推断。",
+        "data": {
+          "columns": [
+            "arm",
+            "score"
+          ],
+          "rows": [
+            [
+              "a",
+              1
+            ],
+            [
+              "a",
+              2
+            ],
+            [
+              "a",
+              4
+            ],
+            [
+              "a",
+              5
+            ],
+            [
+              "b",
+              2
+            ],
+            [
+              "b",
+              4
+            ],
+            [
+              "b",
+              6
+            ],
+            [
+              "b",
+              8
+            ],
+            [
+              "c",
+              5
+            ],
+            [
+              "c",
+              6
+            ],
+            [
+              "c",
+              8
+            ],
+            [
+              "c",
+              9
+            ]
+          ],
+          "column_types": [
+            "string",
+            "number"
+          ],
+          "units": [
+            null,
+            null
+          ]
+        },
+        "study_design": {
+          "description": "软件验收模拟数据，每行是独立个体，无重复测量，组间独立。"
+        }
+      },
+      "oracle": {
+        "kind": "anova"
+      },
+      "min_charts": 0
+    },
+    {
+      "id": "16_bootstrap",
+      "input": {
+        "topic": "F4 固定验收 16_bootstrap",
+        "request": "报告 score 均值及百分位 Bootstrap 95% 置信区间，个体为重抽样单位，2000 次重抽样。；提供一张对应结果图。仅描述模拟数据，不作因果推断。",
+        "data": {
+          "columns": [
+            "score"
+          ],
+          "rows": [
+            [
+              1
+            ],
+            [
+              2
+            ],
+            [
+              3
+            ],
+            [
+              4
+            ],
+            [
+              5
+            ],
+            [
+              6
+            ],
+            [
+              7
+            ],
+            [
+              8
+            ],
+            [
+              9
+            ],
+            [
+              10
+            ],
+            [
+              11
+            ],
+            [
+              12
+            ],
+            [
+              13
+            ],
+            [
+              14
+            ],
+            [
+              15
+            ],
+            [
+              16
+            ],
+            [
+              17
+            ],
+            [
+              18
+            ],
+            [
+              19
+            ],
+            [
+              20
+            ]
+          ],
+          "column_types": [
+            "number"
+          ],
+          "units": [
+            null
+          ]
+        },
+        "study_design": {
+          "description": "软件验收模拟数据，每行是独立个体，无重复测量，组间独立。"
+        }
+      },
+      "oracle": {
+        "values": [
+          10.5
+        ],
+        "intervals": 1,
+        "bootstrap": true
+      },
+      "min_charts": 1
+    },
+    {
+      "id": "17_logistic",
+      "input": {
+        "topic": "F4 固定验收 17_logistic",
+        "request": "拟合带截距的二项 Logistic 回归 y ~ x，报告 x 系数及其 Wald 95% 置信区间、x 优势比及其对应区间，并检查收敛。；提供一张对应结果图。仅描述模拟数据，不作因果推断。",
+        "data": {
+          "columns": [
+            "x",
+            "y"
+          ],
+          "rows": [
+            [
+              -3.5,
+              1
+            ],
+            [
+              -2.5,
+              0
+            ],
+            [
+              -1.5,
+              0
+            ],
+            [
+              -0.5,
+              1
+            ],
+            [
+              0.5,
+              0
+            ],
+            [
+              1.5,
+              0
+            ],
+            [
+              2.5,
+              0
+            ],
+            [
+              3.5,
+              1
+            ],
+            [
+              -3.5,
+              0
+            ],
+            [
+              -2.5,
+              0
+            ],
+            [
+              -1.5,
+              0
+            ],
+            [
+              -0.5,
+              1
+            ],
+            [
+              0.5,
+              1
+            ],
+            [
+              1.5,
+              0
+            ],
+            [
+              2.5,
+              1
+            ],
+            [
+              3.5,
+              1
+            ],
+            [
+              -3.5,
+              0
+            ],
+            [
+              -2.5,
+              0
+            ],
+            [
+              -1.5,
+              1
+            ],
+            [
+              -0.5,
+              0
+            ],
+            [
+              0.5,
+              1
+            ],
+            [
+              1.5,
+              1
+            ],
+            [
+              2.5,
+              1
+            ],
+            [
+              3.5,
+              1
+            ],
+            [
+              -3.5,
+              0
+            ],
+            [
+              -2.5,
+              0
+            ],
+            [
+              -1.5,
+              0
+            ],
+            [
+              -0.5,
+              0
+            ],
+            [
+              0.5,
+              0
+            ],
+            [
+              1.5,
+              1
+            ],
+            [
+              2.5,
+              1
+            ],
+            [
+              3.5,
+              1
+            ],
+            [
+              -3.5,
+              0
+            ],
+            [
+              -2.5,
+              0
+            ],
+            [
+              -1.5,
+              0
+            ],
+            [
+              -0.5,
+              1
+            ],
+            [
+              0.5,
+              0
+            ],
+            [
+              1.5,
+              1
+            ],
+            [
+              2.5,
+              0
+            ],
+            [
+              3.5,
+              1
+            ],
+            [
+              -3.5,
+              0
+            ],
+            [
+              -2.5,
+              0
+            ],
+            [
+              -1.5,
+              0
+            ],
+            [
+              -0.5,
+              1
+            ],
+            [
+              0.5,
+              1
+            ],
+            [
+              1.5,
+              1
+            ],
+            [
+              2.5,
+              1
+            ],
+            [
+              3.5,
+              1
+            ],
+            [
+              -3.5,
+              0
+            ],
+            [
+              -2.5,
+              1
+            ],
+            [
+              -1.5,
+              0
+            ],
+            [
+              -0.5,
+              0
+            ],
+            [
+              0.5,
+              1
+            ],
+            [
+              1.5,
+              1
+            ],
+            [
+              2.5,
+              1
+            ],
+            [
+              3.5,
+              0
+            ],
+            [
+              -3.5,
+              0
+            ],
+            [
+              -2.5,
+              0
+            ],
+            [
+              -1.5,
+              0
+            ],
+            [
+              -0.5,
+              0
+            ],
+            [
+              0.5,
+              0
+            ],
+            [
+              1.5,
+              0
+            ],
+            [
+              2.5,
+              1
+            ],
+            [
+              3.5,
+              0
+            ],
+            [
+              -3.5,
+              0
+            ],
+            [
+              -2.5,
+              0
+            ],
+            [
+              -1.5,
+              0
+            ],
+            [
+              -0.5,
+              1
+            ],
+            [
+              0.5,
+              0
+            ],
+            [
+              1.5,
+              1
+            ],
+            [
+              2.5,
+              1
+            ],
+            [
+              3.5,
+              1
+            ],
+            [
+              -3.5,
+              0
+            ],
+            [
+              -2.5,
+              0
+            ],
+            [
+              -1.5,
+              0
+            ],
+            [
+              -0.5,
+              0
+            ],
+            [
+              0.5,
+              0
+            ],
+            [
+              1.5,
+              0
+            ],
+            [
+              2.5,
+              0
+            ],
+            [
+              3.5,
+              1
+            ]
+          ],
+          "column_types": [
+            "number",
+            "integer"
+          ],
+          "units": [
+            null,
+            null
+          ]
+        },
+        "study_design": {
+          "description": "软件验收模拟数据，每行是独立个体，无重复测量，组间独立。"
+        }
+      },
+      "oracle": {
+        "kind": "logistic",
+        "intervals": 2
+      },
+      "min_charts": 1
+    },
+    {
+      "id": "18_join",
+      "input": {
+        "topic": "F4 固定验收 18_join",
+        "request": "将测量表按 id 与分组表一对一关联，报告 a 和 b 各自 score 均值。仅描述模拟数据，不作因果推断。",
+        "data": {
+          "tables": [
+            {
+              "id": "measure",
+              "description": "测量",
+              "table": {
+                "columns": [
+                  "id",
+                  "score"
+                ],
+                "column_types": [
+                  "integer",
+                  "number"
+                ],
+                "units": [
+                  null,
+                  null
+                ],
+                "rows": [
+                  [
+                    1,
+                    2
+                  ],
+                  [
+                    2,
+                    4
+                  ],
+                  [
+                    3,
+                    8
+                  ],
+                  [
+                    4,
+                    10
+                  ]
+                ]
+              }
+            },
+            {
+              "id": "groups",
+              "description": "分组",
+              "table": {
+                "columns": [
+                  "id",
+                  "arm"
+                ],
+                "column_types": [
+                  "integer",
+                  "string"
+                ],
+                "units": [
+                  null,
+                  null
+                ],
+                "rows": [
+                  [
+                    1,
+                    "a"
+                  ],
+                  [
+                    2,
+                    "a"
+                  ],
+                  [
+                    3,
+                    "b"
+                  ],
+                  [
+                    4,
+                    "b"
+                  ]
+                ]
+              }
+            }
+          ]
+        },
+        "study_design": {
+          "description": "软件验收模拟数据，每行是独立个体，无重复测量，组间独立。"
+        }
+      },
+      "oracle": {
+        "values": [
+          3.0,
+          9.0
+        ]
+      },
+      "min_charts": 0
+    },
+    {
+      "id": "19_transform",
+      "input": {
+        "topic": "F4 固定验收 19_transform",
+        "request": "每行是一个体，将宽表转成长表理解测量阶段，计算每个体 after-before，再报告这些差的中位数；保留个体来源。仅描述模拟数据，不作因果推断。",
+        "data": {
+          "columns": [
+            "id",
+            "before",
+            "after"
+          ],
+          "rows": [
+            [
+              1,
+              2,
+              4
+            ],
+            [
+              2,
+              4,
+              7
+            ],
+            [
+              3,
+              8,
+              13
+            ],
+            [
+              4,
+              10,
+              16
+            ]
+          ],
+          "column_types": [
+            "integer",
+            "number",
+            "number"
+          ],
+          "units": [
+            null,
+            null,
+            null
+          ]
+        },
+        "study_design": {
+          "description": "软件验收模拟数据，每行是独立个体，无重复测量，组间独立。"
+        }
+      },
+      "oracle": {
+        "values": [
+          4.0
+        ]
+      },
+      "min_charts": 0
+    },
+    {
+      "id": "20_matrix",
+      "input": {
+        "topic": "F4 固定验收 20_matrix",
+        "request": "报告 a、b、c 的三对不重复 Pearson 相关系数，不需要对角线、检验或置信区间。；提供一张对应结果图。仅描述模拟数据，不作因果推断。",
+        "data": {
+          "columns": [
+            "a",
+            "b",
+            "c"
+          ],
+          "rows": [
+            [
+              1,
+              3,
+              8
+            ],
+            [
+              2,
+              4,
+              7
+            ],
+            [
+              4,
+              8,
+              5
+            ],
+            [
+              5,
+              7,
+              1
+            ],
+            [
+              7,
+              9,
+              3
+            ]
+          ],
+          "column_types": [
+            "number",
+            "number",
+            "number"
+          ],
+          "units": [
+            null,
+            null,
+            null
+          ]
+        },
+        "study_design": {
+          "description": "软件验收模拟数据，每行是独立个体，无重复测量，组间独立。"
+        }
+      },
+      "oracle": {
+        "kind": "matrix"
+      },
+      "min_charts": 1
+    }
+  ]
+}

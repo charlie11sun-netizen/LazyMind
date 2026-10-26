@@ -1,32 +1,8 @@
-"""Lossless execution plans and smaller model views of verified figure evidence."""
+"""Compact model views of verified findings and figure evidence."""
 import copy
 import ast
 import json
 import re
-
-from .plan import Job
-
-
-def runtime_plan(plan):
-    """Translate spelling only; scientific directions/scopes and the locked plan stay unchanged."""
-    result = copy.deepcopy(plan)
-    for job in result['jobs']:
-        job['alternative'] = job.get('alternative', 'two_sided').replace('_', '-')
-    return result
-
-
-def execution_plan(plan):
-    """Runtime still gets the complete locked plan; generation sees only executable choices."""
-    jobs = [Job.model_validate(job).model_dump(exclude_defaults=True) for job in plan['jobs']]
-    defaults = {name: field.get_default(call_default_factory=True)
-                for name, field in Job.model_fields.items() if not field.is_required()}
-    for job in jobs:
-        if 'alternative' in job:
-            job['alternative'] = job['alternative'].replace('_', '-')
-    defaults['alternative'] = defaults['alternative'].replace('_', '-')
-    return dict(jobs=jobs, models=copy.deepcopy(plan.get('models', [])),
-                joins=copy.deepcopy(plan.get('joins', []))), defaults
-
 
 def figure_statistics(analysis):
     """Keep every estimate, interval, sample count, test and assumption; omit repeated prose."""
@@ -92,7 +68,8 @@ def interpretation_evidence(analysis, plan):
             item['id'].removeprefix('verified_') for item in passed],
             criteria=list(dict.fromkeys(item.get('threshold') for item in passed)),
             details=list(dict.fromkeys(item['details'] for item in passed)))
-    jobs = {job['id']: job for job in plan['jobs']}
+    jobs = {identifier: job for job in plan['jobs']
+            for identifier in [job['id'], *[job['id'] + ':' + output['id'] for output in job.get('outputs', [])]]}
     scopes, definitions, designs = {}, {}, {}
 
     def intern(catalog, value, prefix):

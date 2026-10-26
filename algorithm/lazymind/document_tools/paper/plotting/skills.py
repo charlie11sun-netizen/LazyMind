@@ -63,6 +63,13 @@ class PlotSkills:
         return {**available,
                 'custom': 'other chart geometry; MUST inherit appearance from a named catalog base_style'}
 
+    def resource_digest(self):
+        """Include configured skill overrides in presentation recovery identity."""
+        from ..analysis.schema import digest
+        return digest([(str(path.relative_to(self.root)), hashlib.sha256(path.read_bytes()).hexdigest())
+                       for path in sorted(self.root.rglob('*'))
+                       if path.is_file() and path.suffix in ('.py', '.md', '.json')])
+
     def script(self, style: str) -> str:
         name = STYLES[style][0]
         path = 'scripts/' + name

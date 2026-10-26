@@ -38,6 +38,7 @@ pandas==2.3.3
 pydantic>=2,<3
 numpy>=1.26,<3
 scipy>=1.11,<2
+statsmodels>=0.14.5,<0.15
 matplotlib==3.10.8
 seaborn==0.13.2
 opentelemetry-sdk>=1.27.0,<2.0.0

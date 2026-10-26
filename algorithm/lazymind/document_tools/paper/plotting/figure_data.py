@@ -4,7 +4,7 @@ import math
 import json
 
 from .result_api import result_grid
-from .labels import DIFFERENCES, display_name, axis_label, result_label, result_unit, english_display, CJK
+from .labels import DIFFERENCES, display_name, axis_label, result_label, result_unit, english_display
 from .observations import grid_observations, observation_note
 
 
@@ -103,8 +103,6 @@ def english_panel_labels(panels, aliases):
     """Apply presentation aliases without touching values, scopes or artist identities."""
     def label(value):
         text = english_display(value, aliases)
-        if CJK.search(text):
-            raise ValueError('Supply English data_mapping display labels for: ' + text)
         return text
 
     for panel in panels:

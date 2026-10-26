@@ -5,9 +5,10 @@ import re
 import time
 
 PUBLIC_STAGES = {
-    'input_binding', 'input_validation', 'environment_validation', 'plan_generation', 'plan_repair',
-    'figure_plan_repair', 'analysis_code_generation', 'analysis_execution', 'numerical_verification',
-    'figure_code_prefetch', 'figure_code_generation', 'figure_execution', 'figure_validation',
+    'statistics_recovery', 'figure_recovery', 'statistics_execution',
+    'analysis_code_generation', 'analysis_execution', 'analysis_recovery',
+    'input_binding', 'input_validation', 'plan_generation', 'plan_repair',
+    'figure_plan_repair', 'figure_code_generation', 'figure_execution', 'figure_validation',
     'interpretation', 'output_publication',
 }
 MAX_OUTPUT = 96 * 1024
@@ -115,7 +116,9 @@ class PublicProgress:
             tables = value.get('tables', [])
             summary = f"已读取 {sum(t['rows'] for t in tables)} 行数据、{len(tables)} 张数据表，输入校验通过。"
         else:
-            summary = f"计划已确定：{len(value.get('jobs', []))} 项统计计算、{len(value.get('figures', []))} 张图。"
+            calculations = len(value.get('jobs', []))
+            tasks = len(value.get('task_groups', {})) or calculations
+            summary = f"计划已确定：{tasks} 项分析任务，展开为 {calculations} 项统计计算、{len(value.get('figures', []))} 张图。"
         self.steps[identifier]['summary'] = summary
         self.send(identifier)
 

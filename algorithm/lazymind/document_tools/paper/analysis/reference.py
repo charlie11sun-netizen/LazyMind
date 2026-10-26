@@ -1,8 +1,4 @@
-"""Independent numerical checks on original observations selected by the locked plan.
-
-This is a verifier, not the production analysis program. Unsupported estimators are
-rejected until a reference and its diagnostics have been registered.
-"""
+"""Registered estimators on the full observations selected by a validated plan."""
 from __future__ import annotations
 
 import math
@@ -223,43 +219,10 @@ def reference(job, inputs, models, views=None):
             function = stats.beta.sf if job['operator'] in ('gt', 'ge') else stats.beta.cdf
             numeric['value'] = float(function(job['threshold'], alpha, beta))
     if any(v is not None and not math.isfinite(v) for v in numeric.values()):
-        raise ValueError('参考结果非有限值')
+        raise ValueError('统计结果非有限值')
     provenance = {}
     for row_id in set(used + control):
         for table_id, source_row in lineage[job['table_id']][row_id].items():
             provenance.setdefault(table_id, set()).add(source_row)
     return numeric, {'source_rows': [{'table_id': key, 'count': len(provenance[key])} for key in sorted(provenance)],
                      'n': n, 'unit': unit, 'excluded_n': None if dropped.get(job['table_id']) else excluded}
-
-
-def verify(result, plan, inputs, references=None):
-    if not isinstance(result, dict) or set(result) != {job['id'] for job in plan['jobs']}:
-        raise ValueError('生成代码的任务结果缺失或多出未知任务')
-    models = {m['id']: m for m in plan['models']}
-    views = materialize(inputs, plan['joins']) if references is None else None
-    verified, errors = {}, []
-    for job in plan['jobs']:
-        expected, size = references[job['id']] if references is not None else reference(job, inputs, models, views)
-        actual = result[job['id']]
-        if not isinstance(actual, dict) or set(actual) != set(expected):
-            errors.append(f'{job["id"]} 结果字段错误')
-            continue
-        for key, value in expected.items():
-            number = actual[key]
-            if value is None:
-                if number is not None:
-                    errors.append(f'{job["id"]}.{key} 不应存在')
-            elif (type(number) not in (int, float) or not math.isfinite(number)
-                  or not math.isclose(number, value, rel_tol=1e-7, abs_tol=1e-10)):
-                errors.append(f'{job["id"]}.{key} 未通过独立数值复核')
-        verified[job['id']] = (actual, size)
-    if errors:
-        # Give actionable semantics together, without revealing reference answers to copy into generated code.
-        rules = ('区间契约：interval_level 非空时必须返回双侧区间，两端均为数值；'
-                 '均值/差/OLS 半宽=t.ppf((1+interval_level)/2, df)*SE；Pearson 使用 Fisher-z 区间。'
-                 '相关分析按两列共同非缺失观测计算，Spearman 对并列值取平均秩。'
-                 'correlation_test=false 时 statistic/p_value 均为 null。alternative 仅控制检验 p 值，'
-                 '不能改变区间方向。paired_difference 只估计匹配差及区间，statistic/p_value 必须为 null。'
-                 '所有值仍须从原始观测计算，不能硬编码答案。')
-        raise ValueError('；'.join(errors[:24]) + '。' + rules)
-    return verified

@@ -43,12 +43,24 @@ class PlanRepairError(ValueError):
 
 def preserve_scope(job, changed, issue):
     """Only an unidentifiable regression may revise its numeric predictor range."""
+    for field in ('required', 'method_locked', 'result_key', 'outputs', 'required_diagnostics'):
+        if field in job and changed.get(field, job[field]) != job[field]:
+            raise ValueError('局部修复不能删减必需结果、诊断或把必需任务改成可选')
+        if field in job:
+            changed[field] = copy.deepcopy(job[field])
+    if job.get('method_locked', True):
+        for field in ('operation', 'procedure', 'interval_level', 'alternative', 'missing_policy',
+                      'predictors', 'coefficient', 'trials_column', 'threshold', 'operator', 'correlation_test', 'inputs'):
+            if field in job and changed.get(field, job[field]) != job[field]:
+                raise ValueError('用户指定的方法与参数不能在修复时替换')
+            if field in job:
+                changed[field] = copy.deepcopy(job[field])
     defaults = dict(other_column=None, baseline_filters=[], pair_by=[], alternative='two_sided')
     for field in ('table_id', 'column', 'other_column', 'baseline_filters', 'pair_by', 'alternative'):
         if field in job and changed.get(field, defaults.get(field)) != job[field]:
             raise ValueError('任务修复不能改变原始响应、比较基线或检验方向')
     for rule in job.get('filters', []):
-        adjustable = (issue.get('reason_code') == 'OLS_NOT_IDENTIFIABLE'
+        adjustable = (not job.get('method_locked', True) and issue.get('reason_code') == 'OLS_NOT_IDENTIFIABLE'
                       and isinstance(rule, dict) and rule.get('column') in job.get('predictors', [])
                       and rule.get('operator') in ('gt', 'ge', 'lt', 'le'))
         if not adjustable and rule not in changed.get('filters', []):
@@ -57,13 +69,11 @@ def preserve_scope(job, changed, issue):
 
 def apply_updates(plan, response, issues):
     """Patch rejected jobs and their dependencies, keeping unrelated plan content immutable."""
-    if (not isinstance(response, dict) or 'updates' not in response
-            or set(response) - {'updates', 'model_updates', 'figure_updates'}
-            or not isinstance(response['updates'], list)):
-        raise ValueError('局部修复必须只返回 updates 列表')
+    from .repair_contract import PlanPatch
+    response = PlanPatch.model_validate(response).model_dump(exclude_unset=True)
+    response.setdefault('updates', [])
     job_issues = [item for item in issues if 'job_id' in item]
     local_figures = {item['figure_id'] for item in issues if 'figure_id' in item}
-    language_figures = {item['figure_id'] for item in issues if item.get('field') == 'display_language'}
     allowed = {(item['job_id'], item['field']) for item in job_issues}
     by_issue = {(item['job_id'], item['field']): item for item in job_issues}
     whole_jobs = {job_id for job_id, field in allowed if field is None}
@@ -105,6 +115,8 @@ def apply_updates(plan, response, issues):
     if len(set(ids)) != len(ids):
         raise ValueError('修复后的任务 ID 重复')
     result['jobs'] = jobs
+    for task_id, members in result.get('task_groups', {}).items():
+        result['task_groups'][task_id] = [new for old in members for new in replacements.get(old, [old])]
     affected_models = {job.get('model_id') for job in plan['jobs'] if job['id'] in whole_jobs} - {None}
     shared_models = {job.get('model_id') for job in plan['jobs'] if job['id'] not in whole_jobs}
     mutable_models = affected_models - shared_models
@@ -129,16 +141,22 @@ def apply_updates(plan, response, issues):
     result['models'] = [changed_models.get(m['id'], m) for m in result['models']
                         if m['id'] not in mutable_models or m['id'] in used_models]
     result['models'].extend(m for identifier, m in changed_models.items() if identifier not in original_models)
-    affected_figures = {f['id'] for f in plan.get('figures', []) if set(f['finding_ids']) & whole_jobs}
-    for figure in result.get('figures', []):
+    # Statistical field repair also works before figure syntax has been validated.
+    pending_figures = result.get('figures') or []
+    figure_objects = [f for f in pending_figures if isinstance(f, dict) and isinstance(f.get('id'), str)]
+    affected_figures = {f['id'] for f in figure_objects
+                        if isinstance(f.get('finding_ids'), list) and set(f['finding_ids']) & whole_jobs}
+    for figure in figure_objects:
         if figure['id'] not in affected_figures:
             continue
         figure['finding_ids'] = [new for old in figure['finding_ids'] for new in replacements.get(old, [old])]
         figure['finding_ids'] = list(dict.fromkeys(figure['finding_ids']))
     figure_updates = response.get('figure_updates', [])
+    if not figure_updates and not local_figures:
+        return result
     if not isinstance(figure_updates, list):
         raise ValueError('figure_updates 必须为图表列表')
-    figures = {f['id']: f for f in result.get('figures', [])}
+    figures = {f['id']: f for f in figure_objects}
     seen = set()
     for update in figure_updates:
         if not isinstance(update, dict) or set(update) != {'figure_id', 'figure'}:
@@ -148,12 +166,12 @@ def apply_updates(plan, response, issues):
             raise ValueError('不能修复无关图表或重复修复图表')
         if any(figure.get(k) != figures[identifier].get(k) for k in ('id', 'columns', 'finding_ids')):
             raise ValueError('图表修复不能删除结果或改变原始来源')
-        if identifier in local_figures and identifier not in affected_figures and any(
-            figure.get(key) != figures[identifier].get(key)
-            for key in figure.keys() | figures[identifier].keys()
-            if key not in ({'data_mapping', 'title', 'caption'} if identifier in language_figures else {'data_mapping'})
-        ):
-            raise ValueError('映射字段修复不能改变图型、研究目的或其他图表字段')
+        if identifier in local_figures and identifier not in affected_figures:
+            from .plan import FigurePlan
+            figure = FigurePlan.model_validate(figure).model_dump()
+            original = FigurePlan.model_validate(figures[identifier]).model_dump()
+            if any(figure[key] != original[key] for key in original if key != 'data_mapping'):
+                raise ValueError('映射字段修复不能改变图型、研究目的或其他图表字段')
         seen.add(identifier)
         figures[identifier] = copy.deepcopy(figure)
     if not local_figures <= seen:

@@ -1,12 +1,12 @@
-"""Run model-generated analysis and figures from the current F4 input contract."""
+"""Run validated statistical plans with recoverable analysis and figure stages."""
 import re
 
-from .analysis.pipeline import run as generated_analysis
+from .analysis.pipeline import run as execute_analysis
 
 
 def run(inputs: dict) -> dict:
-    """Generate, execute and independently verify the requested analysis."""
-    return generated_analysis(inputs)
+    """Execute registered statistics and complete the requested presentation."""
+    return execute_analysis(inputs)
 
 
 def retry_request(params, request):

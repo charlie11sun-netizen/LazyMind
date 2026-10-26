@@ -1,4 +1,4 @@
-"""Compact offline F4 integration checks; run inside the Chat container."""
+"""Offline F4 integration checks for registered statistics and recoverable figures."""
 import copy
 import json
 import shutil
@@ -13,26 +13,10 @@ from lazymind.chat.engine.subagent.context import SubAgentContext
 from lazymind.document_tools.paper import workflow
 from lazymind.document_tools.paper.analysis import model
 from lazymind.document_tools.paper.analysis.schema import ContractError
+from lazymind.document_tools.paper.analysis.interpretation import interpret
 from lazymind.document_tools.paper.plotting import analysis as plots
+from lazymind.document_tools.paper.plotting import pipeline as plot_pipeline
 
-
-ANALYSIS_CODE = """
-import pandas as pd
-
-def prepare(tables, plan):
-    return {key: pd.DataFrame(table['rows'], columns=table['columns'])
-            for key, table in tables.items()}
-
-def analyze(prepared, plan, rng):
-    results = {}
-    for job in plan['jobs']:
-        frame = prepared[job['table_id']]
-        for condition in job['filters']:
-            frame = frame[frame[condition['column']] == condition['value']]
-        results[job['id']] = dict(value=float(frame[job['column']].mean()),
-                                  lower=None, upper=None, statistic=None, p_value=None)
-    return results
-"""
 
 PLOT_CODE = """
 import matplotlib.pyplot as plt
@@ -87,18 +71,30 @@ def replay(monkeypatch, tmp_path):
         mechanism_explanation='当前数据不足以解释差异机制。',
         limitations=['模拟观测不能证明因果关系或泛化能力。'],
     )
-    structured = Mock(side_effect=[plan, conclusion])
-    analysis = Mock(return_value={'code': ANALYSIS_CODE})
+    model_plan = copy.deepcopy(plan)
+    model_plan['tasks'] = [{**{k: v for k, v in job.items() if k != 'column'},
+                            'kind': 'summary', 'metrics': [job['column']]}
+                           for job in model_plan.pop('jobs')]
+    model_plan.pop('figures')
+    model_plan['figure_requests'] = [dict(id='means', purpose='Compare group means', task_ids=list(groups))]
+    late_figure = Mock(side_effect=lambda *args: copy.deepcopy(plan['figures'][0]))
+    monkeypatch.setattr(model, 'plan_figure', late_figure)
+    structured = Mock(return_value=model_plan)
+    explanation = Mock(return_value=conclusion)
     plot = Mock(return_value={'code': PLOT_CODE})
     monkeypatch.setattr(model, 'call_model', structured)
-    monkeypatch.setattr(model, 'call_code_model', analysis)
+    monkeypatch.setattr(model, 'interpret_results', lambda inputs, result, locked, attempts:
+                        interpret(inputs, result, locked, attempts, explanation))
     monkeypatch.setattr(plots, 'call_code_model', plot)
     monkeypatch.setattr(lazyllm, 'AutoModel', Mock(side_effect=AssertionError('Unexpected live model call')))
-    monkeypatch.setenv('LAZYMIND_PAPER_GENERATED_ANALYSIS_ATTEMPTS', '2')
+    monkeypatch.setenv('LAZYMIND_PAPER_ANALYSIS_ATTEMPTS', '2')
     monkeypatch.setenv('LAZYMIND_PAPER_PLOT_ATTEMPTS', '2')
     monkeypatch.delenv('LAZYMIND_PAPER_PLOT_SKILLS', raising=False)
     source = tmp_path / 'input.json'
     request = inputs['request'] = '只执行 F4，分析上传的 input.json，输出分析、结论和图表。'
+    from lazymind.document_tools.paper.analysis.requirements import request_parts
+    model_plan['requirements'] = [dict(id='req', source_ids=[p['id'] for p in request_parts(inputs)],
+        description=request, results=[dict(task_id=t) for t in groups], figure_ids=['means'])]
     source.write_text(json.dumps(inputs), encoding='utf-8')
     lazyllm.globals['agentic_config'] = {
         'user_id': 'f4-test', 'conversation_id': 'f4-test', 'query': request,
@@ -116,28 +112,33 @@ def replay(monkeypatch, tmp_path):
         db=None, emit=events.append,
     )
     lazyllm.globals['subagent_ctx'] = context
-    return SimpleNamespace(source=source, plan=plan, conclusion=conclusion, structured=structured,
-                           analysis=analysis, plot=plot, events=events, context=context)
+    return SimpleNamespace(source=source, plan=plan, model_plan=model_plan, conclusion=conclusion, structured=structured,
+                           explanation=explanation, plot=plot, late_figure=late_figure, events=events, context=context)
 
 
-@pytest.mark.parametrize('fault', ['none', 'plan', 'mapping', 'interpretation', 'analysis', 'plot'])
-def test_f4_workflow_publishes_verified_files(replay, fault):
+@pytest.mark.parametrize('fault', ['none', 'plan', 'mapping', 'interpretation', 'plot'])
+def test_f4_workflow_publishes_verified_files(replay, fault, monkeypatch):
     if fault == 'plan':
-        replay.structured.side_effect = [{}, replay.plan, replay.conclusion]
+        replay.structured.side_effect = [{}, replay.model_plan]
     elif fault == 'mapping':
-        incomplete = copy.deepcopy(replay.plan)
-        incomplete['figures'][0].pop('data_mapping')
+        incomplete = copy.deepcopy(replay.plan['figures'][0])
+        incomplete.pop('data_mapping')
+        replay.late_figure.side_effect = [incomplete]
         repair = dict(updates=[], figure_updates=[dict(figure_id='means', figure=replay.plan['figures'][0])])
-        replay.structured.side_effect = [incomplete, repair, replay.conclusion]
+        replay.structured.side_effect = [replay.model_plan, repair]
     elif fault == 'interpretation':
         invalid = {**replay.conclusion, 'summary': replay.conclusion['summary'] + '[结果:baseline]'}
-        replay.structured.side_effect = [replay.plan, invalid, replay.conclusion]
-    elif fault == 'analysis':
-        replay.analysis.side_effect = [{'code': ANALYSIS_CODE.replace('.mean()', '.sum()')},
-                                       {'code': ANALYSIS_CODE}]
+        replay.explanation.side_effect = [invalid, replay.conclusion]
     elif fault == 'plot':
-        replay.plot.side_effect = [{'code': 'def draw(data, statistics, spec):\n    return missing_name'},
-                                   {'code': PLOT_CODE}]
+        original = plot_pipeline.execute_plot
+        calls = []
+
+        def fail_once(payload):
+            calls.append(payload)
+            if len(calls) == 1:
+                raise RuntimeError('temporary rendering failure')
+            return original(payload)
+        monkeypatch.setattr(plot_pipeline, 'execute_plot', fail_once)
 
     assert workflow.run_paper_step()['status'] == 'completed'
 
@@ -155,11 +156,12 @@ def test_f4_workflow_publishes_verified_files(replay, fault):
     assert next(p for p in paths if p.suffix == '.png').read_bytes().startswith(b'\x89PNG\r\n\x1a\n')
     assert next(p for p in paths if p.suffix == '.pdf').read_bytes().startswith(b'%PDF-')
     assert [item['node'] for item in pool['history']] == ['F4']
-    assert (replay.structured.call_count, replay.analysis.call_count, replay.plot.call_count) == (
-        2 + (fault in ('plan', 'mapping', 'interpretation')), 1 + (fault == 'analysis'), 1 + (fault == 'plot'))
+    assert replay.structured.call_count == 1 + (fault in ('plan', 'mapping'))
+    assert replay.plot.call_count == (fault == 'plot')
+    assert replay.explanation.call_count == 1 + (fault == 'interpretation')
 
 
-@pytest.mark.parametrize('fault', ['input', 'calculation'])
+@pytest.mark.parametrize('fault', ['input', 'interpretation'])
 def test_f4_failure_is_not_published_and_can_resume(replay, fault):
     original = replay.source.read_bytes()
     if fault == 'input':
@@ -167,7 +169,7 @@ def test_f4_failure_is_not_published_and_can_resume(replay, fault):
         value['data']['rows'][0].pop()
         replay.source.write_text(json.dumps(value), encoding='utf-8')
     else:
-        replay.analysis.return_value = {'code': ANALYSIS_CODE.replace('.mean()', '.sum()')}
+        replay.explanation.side_effect = RuntimeError('temporary interpretation failure')
     with pytest.raises(ContractError):
         workflow.run_paper_step()
     assert not any(event['type'] == 'artifact' for event in replay.events)
@@ -175,10 +177,9 @@ def test_f4_failure_is_not_published_and_can_resume(replay, fault):
     trace = json.loads((replay.source.parent / 'f4-trace' / latest['summary']).read_text())
     assert trace['status'] == 'failed' and trace['error']
     assert replay.structured.call_count == (0 if fault == 'input' else 1)
-    assert replay.analysis.call_count == (0 if fault == 'input' else 2)
     replay.source.write_bytes(original)
-    replay.analysis.return_value = {'code': ANALYSIS_CODE}
-    replay.structured.side_effect = [replay.plan, replay.conclusion]
+    replay.explanation.side_effect = None
+    replay.structured.side_effect = None
     replay.context.params['retry_hint'] = 'Recovery request for this rerun only: 重试'
     assert workflow.run_paper_step()['status'] == 'completed'
     saved_path = next(event['value']['path'] for event in reversed(replay.events)
@@ -186,6 +187,19 @@ def test_f4_failure_is_not_published_and_can_resume(replay, fault):
     saved = workflow._read_bound(saved_path)
     assert saved['history'][-1]['request'] == replay.context.params['user_input']
     assert workflow.material(saved, 'analysis')['content']['findings'][0]['value'] == 2.
+    assert replay.structured.call_count == 1
+    assert saved['history'][-1]['analysis_execution'][0]['statistics_reused'] == (fault == 'interpretation')
+
+
+def test_workflow_publishes_without_generated_programs(replay):
+    replay.plot.side_effect = AssertionError('Unexpected code model request')
+    assert workflow.run_paper_step()['status'] == 'completed'
+    outputs = [event for event in replay.events if event['type'] == 'artifact']
+    pool_path = next(event['value']['path'] for event in outputs if event['slot'] == 'data_analysis_pool')
+    pool = workflow._read_bound(pool_path)
+    assert [f['value'] for f in workflow.material(pool, 'analysis')['content']['findings']] == [2., 5.]
+    assert {Path(event['value']['path']).suffix for event in outputs} >= {'.json', '.md', '.svg', '.png', '.pdf'}
+    replay.plot.assert_not_called()
 
 
 def test_chat_hands_f4_to_workflow_and_stops(monkeypatch):

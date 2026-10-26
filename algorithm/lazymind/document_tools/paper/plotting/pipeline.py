@@ -8,7 +8,7 @@ from .code import validate_code
 from .executor import PlotEnvironmentError, execute_plot
 from .model import PlotModelError
 from .figure_data import panel_caption
-from .templates import compose_native_program, validate_native_program
+from .templates import compose_native_program, validate_native_program, prepared_program
 from ..analysis.validation import validate_charts
 from ..analysis import trace as diagnostics
 
@@ -33,13 +33,15 @@ def draw_one(bound: dict, measured: dict, spec: dict, reference: str, attempts: 
              code_generator) -> tuple[dict, dict]:
     previous, error = '', ''
     history = []
+    standard = prepared_program(bound, spec)
     for attempt in range(1, attempts + 1):
         candidate = previous
         candidate_spec = dict(spec)
         try:
             details = dict(figure_id=spec['id'], attempt=attempt)
             with diagnostics.stage('figure_code_generation', **details):
-                candidate = code_generator(bound, measured, candidate_spec, reference, previous, error)
+                candidate = (standard if attempt == 1 and standard is not None else
+                             code_generator(bound, measured, candidate_spec, reference, previous, error))
                 name = diagnostics.figure_name(spec['id'])
                 diagnostics.save(f'figure-{name}-code-{attempt}.py', candidate)
             with diagnostics.stage('figure_code_validation', **details):
@@ -73,6 +75,7 @@ def draw_one(bound: dict, measured: dict, spec: dict, reference: str, attempts: 
                      'style_contract': spec.get('style_contract', {}),
                      'code_sha256': hashlib.sha256(previous.encode()).hexdigest(), 'attempts': history,
                      'first_attempt_passed_execution_and_file_checks': attempt == 1}
+            trace['renderer'] = 'registered_template' if attempt == 1 and standard is not None else 'generated'
             return chart, trace
         except (PlotEnvironmentError, PlotModelError):
             raise

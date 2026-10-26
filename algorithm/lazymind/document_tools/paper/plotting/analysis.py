@@ -1,8 +1,6 @@
 """Reuse approved plotting skills and Docker renderer for verified v2.1 findings."""
 import json
 import copy
-import os
-from contextlib import contextmanager
 from concurrent.futures import as_completed
 
 from .model import call_code_model
@@ -96,7 +94,7 @@ Keep fonts/styles unchanged. Use native appearance
 from grid identities, with display_labels for legend text. Preserve every selected finding and its sign/units.
 Captions state actual interval meaning, n/missing handling and synthetic-data status. No unsupported significance
 claims, causal claims, extra panels, changed endpoints or invented observations.
-Use English for all visible chart text and any returned caption, including repair responses.
+Use the planned display language for chart text and captions, including repair responses.
 ''' + BOUND_GUIDANCE[spec['style']] + '\n'
     if previous:
         prompt += REPAIR_INSTRUCTION + 'A repair response may also include the corrected caption.\n'
@@ -151,10 +149,8 @@ runtime_api supplies the actual Matplotlib signatures, legend object types and m
 on the FIRST response. BarContainer is not a Patch: never call its set_linewidth; use legend.get_patches() for
 bar legend key borders. Use get_label(), not .label; legacy legendHandles does not exist in the pinned runtime.
 Draw ONLY the requested figure from already VERIFIED findings. data.columns/rows contain finding_id/value/lower/upper
-During early code generation, numbers may be host reference previews for the locked plan. Your code must bind
-runtime values, never hardcode preview numbers. Execution occurs only after the generated statistics pass independent
-verification, using those actual verified results with the same structure. No plotting execution happens in advance.
 plus exact grouping columns such as runs.method/runs.benchmark/baseline.runs.method and metric/unit/n/n_unit.
+These are the actual registered statistical results. Bind their runtime values; never hardcode measurements.
 Use these actual columns to filter/pivot result cells; they are already materialized, so no ID parsing is needed.
 metadata.finding_scopes maps exact finding IDs to their verified filters and metric. Use this mapping to select
 cells by their actual method/benchmark values; NEVER construct or guess a finding ID from a naming pattern.
@@ -279,8 +275,7 @@ Row categories already name their actual scopes/comparisons when no separate ser
 short quantity/unit label unchanged; full figure titles and explanations belong only in title/caption fields.
 The HOST also draws any original-observation overlays, verified tradeoff intervals and a compact statistical footer.
 Do not draw extra dots, recompute samples, add footer text, reserve a blank footer strip or alter data/spec.
-All visible chart text must be English. Keep the supplied English display labels; do not copy Chinese request,
-report or raw column text onto the canvas. Full English figure titles/captions remain external metadata.
+Use the planned display language and labels. Titles/captions remain external metadata.
 ''' + (REPAIR_INSTRUCTION if previous else '')
     compact = figure_spec(spec, table)
     for field in ('rc', 'rules', 'series_colors', 'bar_series_colors', 'series_edges', 'series_markers',
@@ -309,7 +304,10 @@ def prepare_figures(analysis, figures, inputs=None, jobs=None):
     prepared = []
     for figure in figures:
         selected = [findings[i] for i in figure['finding_ids']]
-        selected_jobs = [job for job in (jobs or []) if job['id'] in figure['finding_ids']]
+        from ..analysis.plan import uses_program
+        selected_jobs = [job for job in (jobs or []) if job['id'] in figure['finding_ids'] and not uses_program(job)]
+        if len(selected_jobs) != len(selected):
+            selected_jobs = []
         columns, rows = finding_table(selected, selected_jobs, inputs)
         bound = dict(columns=columns, rows=rows,
                      metadata={'description': '已验证分析结果；区间语义以 Finding.interval 为准。'})
@@ -318,7 +316,8 @@ def prepare_figures(analysis, figures, inputs=None, jobs=None):
                                   'column_indices': {c: i for i, c in enumerate(bound['columns'])}},
                 'style_contract': bind_series(skills.style_contract(figure['style'], figure['base_style']),
                                               figure['finding_ids'])}
-        spec['style_contract'], context = bind_context(spec['style_contract'], inputs, jobs or selected_jobs)
+        context_jobs = [job for job in (jobs or []) if not uses_program(job)] if selected_jobs else []
+        spec['style_contract'], context = bind_context(spec['style_contract'], inputs, context_jobs)
         spec['style_contract']['quantity_semantics'] = figure_semantics(selected, selected_jobs, analysis['findings'])
         bound['metadata'].update(context)
         view = result_view(selected, selected_jobs, inputs, spec['style_contract'], context)
@@ -338,94 +337,98 @@ def prepare_figures(analysis, figures, inputs=None, jobs=None):
     return prepared
 
 
-def prefetch_key(analysis, figures, inputs, jobs):
-    return digest(dict(input_sha256=analysis.get('input_sha256'), figures=figures,
-                       inputs=inputs, jobs=jobs))
+def prepare_recoverable(analysis, figure, inputs, jobs, plan, references, attempts):
+    """Repair one figure without spending statistical retries or changing its jobs."""
+    from ..analysis import model
+    from ..analysis.plan_repair import PlanRepairError
+    from ..analysis.figure_plan import check_figure_plan, FigurePlanRepairError, validate_figure
+    candidate = {**copy.deepcopy(plan), 'figures': [copy.deepcopy(figure)]}
+    issues, error, kind = [], '', ''
+    for attempt in range(attempts + 1):
+        try:
+            if issues:
+                with diagnostics.stage('figure_plan_repair', figure_id=figure['id'], attempt=attempt):
+                    repair = model.repair_plan if kind == 'mapping' else model.repair_figures
+                    candidate = repair(inputs, candidate, issues, previous_error=error)
+            candidate['figures'] = [validate_figure(candidate['figures'][0], analysis, inputs, jobs)]
+            check_figure_plan(candidate, references)
+            return prepare_figures(analysis, candidate['figures'], inputs, jobs)[0]
+        except (ValueError, TypeError, KeyError) as exc:
+            error = str(exc)[-4000:]
+            if isinstance(exc, PlanRepairError):
+                if exc.plan is not None:
+                    candidate = exc.plan
+                issues, kind = exc.issues, 'mapping'
+            elif isinstance(exc, FigurePlanRepairError):
+                issues, kind = exc.issues, 'figure'
+            elif not issues:
+                issues, kind = [dict(figure_id=figure['id'], message=error)], 'figure'
+    raise ValueError('图表计划修复失败: ' + error)
 
 
-class PrefetchedCodes:
-    """Only first code requests run ahead; no generated program executes here."""
-
-    def __init__(self, analysis, figures, inputs, jobs):
-        _, concurrency = limits()
-        self.key = prefetch_key(analysis, figures, inputs, jobs)
-        self.used = set()
-        prepared = prepare_figures(copy.deepcopy(analysis), copy.deepcopy(figures), inputs, copy.deepcopy(jobs))
-        self.pool = ThreadPoolExecutor(max_workers=min(concurrency, len(figures)))
-        self.futures = {item[0]['id']: self.pool.submit(self.generate, item) for item in prepared}
-
-    @staticmethod
-    def generate(item):
-        _, bound, analysis, spec, reference, _ = item
-        with diagnostics.stage('figure_code_prefetch', figure_id=spec['id'], attempt=1):
-            code = generate_code(bound, analysis, spec, reference, '', '')
-            name = diagnostics.figure_name(spec['id'])
-            diagnostics.save(f'figure-{name}-code-1.py', code)
-        return code, spec.get('caption')
-
-    def consume(self, bound, analysis, spec, reference, previous, error):
-        identifier = spec['id']
-        if identifier in self.used:
-            return generate_code(bound, analysis, spec, reference, previous, error)
-        self.used.add(identifier)
-        code, caption = self.futures[identifier].result()
-        if caption:
-            spec['caption'] = caption
-        return code
-
-    def close(self):
-        for future in self.futures.values():
-            future.cancel()
-        self.pool.shutdown(wait=True, cancel_futures=True)
-
-
-@contextmanager
-def prefetch_codes(analysis, figures, inputs=None, jobs=None):
-    enabled = os.environ.get('LAZYMIND_PAPER_PLOT_PREFETCH', '1')
-    if enabled not in ('0', '1'):
-        raise ValueError('绘图代码预生成开关必须为 0 或 1')
-    if not figures or enabled == '0':
-        yield None
-        return
-    pending = PrefetchedCodes(analysis, figures, inputs, jobs)
-    try:
-        yield pending
-    finally:
-        pending.close()
-
-
-def draw(analysis, figures, inputs=None, jobs=None, prefetched=None):
+def draw(analysis, figures, *, inputs, jobs, plan, references, recovery):
     attempts, concurrency = limits()
-    prepared = prepare_figures(analysis, figures, inputs, jobs)
-    if not prepared:
+    if not isinstance(figures, list) or len(figures) > 20:
+        raise ValueError('图表计划必须是 0..20 项数组')
+    if not figures:
         return [], []
-    generator = generate_code
-    if prefetched is not None and prefetched.key == prefetch_key(analysis, figures, inputs, jobs):
-        generator = prefetched.consume
+    identifiers = [figure.get('id') for figure in figures if isinstance(figure, dict)]
+    if (len(identifiers) != len(figures) or any(not isinstance(value, str) or not value for value in identifiers)
+            or len(set(identifiers)) != len(identifiers)):
+        raise ValueError('图表计划必须提供唯一的图表 ID')
+    def validate_result(chart, trace):
+        from ..analysis.schema import validate_charts
+        from ..analysis.validation import validate_charts as validate_exports
+        validate_charts([chart], analysis)
+        # The export validator uses the older qualified-string column contract.
+        exported = {key: value for key, value in chart.items() if key != 'finding_ids'}
+        exported['columns'] = [ref['table_id'] + '.' + ref['column'] for ref in chart['columns']]
+        exported['exports'] = trace['exports']
+        validate_exports([exported])
 
-    def render_one(item):
+    def render_one(figure):
+        identity = digest(dict(analysis=analysis, figure=figure, jobs=jobs))
+        saved = recovery.load('figure', identity)
+        if saved:
+            try:
+                chart, trace = saved
+                validate_result(chart, trace)
+                with diagnostics.stage('figure_recovery', figure_id=figure['id']):
+                    return chart, {**trace, 'reused': True}
+            except (ValueError, KeyError, TypeError):
+                pass
+        item = prepare_recoverable(analysis, figure, inputs, jobs, plan, references, attempts)
         figure, bound, figure_analysis, spec, reference, hashes = item
         if bound.get('figure'):
             diagnostics.save(f"figure-{diagnostics.figure_name(figure['id'])}-data.json", bound['figure'])
-        legacy_chart, trace = draw_one(bound, figure_analysis, spec, reference, attempts, code_generator=generator)
+        rendered_chart, trace = draw_one(bound, figure_analysis, spec, reference, attempts, code_generator=generate_code)
         chart = dict(id=figure['id'], title=figure['title'], columns=figure['columns'],
-                     svg=legacy_chart['svg'], finding_ids=figure['finding_ids'], caption=spec['caption'])
-        trace['exports'] = legacy_chart.get('exports', {})
+                     svg=rendered_chart['svg'], finding_ids=figure['finding_ids'], caption=spec['caption'])
+        trace['exports'] = rendered_chart.get('exports', {})
         trace['skill_resources_sha256'] = hashes
-        trace['concurrency'] = min(concurrency, len(prepared))
-        trace['first_code_generation_overlapped_statistics'] = generator != generate_code
+        trace['figure_plan'] = figure
+        trace['concurrency'] = min(concurrency, len(figures))
+        validate_result(chart, trace)
+        recovery.save('figure', identity, [chart, trace])
         return chart, trace
 
-    ordered = [None] * len(prepared)
-    # LazyLLM's pool carries request/session ContextVars to each independent figure job.
-    with ThreadPoolExecutor(max_workers=min(concurrency, len(prepared))) as pool:
-        futures = {pool.submit(render_one, item): index for index, item in enumerate(prepared)}
-        try:
-            for future in as_completed(futures):
-                ordered[futures[future]] = future.result()
-        except BaseException:
-            for future in futures:
-                future.cancel()
-            raise
-    charts, traces = map(list, zip(*ordered))
-    return charts, traces
+    ordered, failures, optional_failures = [None] * len(figures), [], []
+    optional_ids = {f['id'] for f in plan.get('figure_requests', []) if not f['required']}
+    with ThreadPoolExecutor(max_workers=min(concurrency, len(figures))) as pool:
+        futures = {pool.submit(render_one, figure): index for index, figure in enumerate(figures)}
+        for future in as_completed(futures):
+            index = futures[future]
+            try:
+                ordered[index] = future.result()
+            except (ValueError, TypeError, KeyError, SyntaxError, RuntimeError) as exc:
+                identifier = figures[index]['id']
+                if identifier in optional_ids:
+                    optional_failures.append(dict(figure_id=identifier, required=False, error=str(exc)[-1200:]))
+                else:
+                    failures.append(f'{identifier}: {str(exc)[-1200:]}')
+    if failures:
+        # Successful figures have already been checkpointed. Do not cancel or regenerate them.
+        raise RuntimeError('部分图表尚未完成，重试可复用有效的图表恢复点：' + '；'.join(failures))
+    completed = [item for item in ordered if item is not None]
+    charts, traces = map(list, zip(*completed)) if completed else ([], [])
+    return charts, traces + optional_failures

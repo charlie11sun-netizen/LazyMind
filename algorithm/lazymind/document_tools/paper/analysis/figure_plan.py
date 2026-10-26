@@ -2,6 +2,28 @@
 import copy
 
 
+def validate_figure(figure, analysis, inputs, jobs):
+    """Check only the new figure against immutable findings, never rerun statistical validation."""
+    from .plan import FigurePlan, uses_program
+    from .schema import parse, refs_exist, table_map
+    from .plan_bindings import bind_figure_mapping
+    from .plan_repair import PlanRepairError
+    figure = parse(FigurePlan, figure, 'analysis.figure')
+    findings = {f['id']: f for f in analysis['findings']}
+    if not figure['finding_ids'] or not set(figure['finding_ids']) <= findings.keys():
+        raise ValueError('图表必须引用已完成的实际结果')
+    if len(set(figure['finding_ids'])) != len(figure['finding_ids']):
+        raise ValueError('图表结果引用重复')
+    sources = table_map(inputs)
+    refs_exist(figure['columns'], sources, 'analysis.figure.columns')
+    indexed = {j['id']: j for j in jobs}
+    if all(identifier in indexed and not uses_program(indexed[identifier]) for identifier in figure['finding_ids']):
+        issues = bind_figure_mapping(figure, indexed, sources)
+        if issues:
+            raise PlanRepairError(issues)
+    return figure
+
+
 class FigurePlanRepairError(ValueError):
     def __init__(self, issues):
         self.issues = issues
@@ -14,8 +36,9 @@ def check_figure_plan(plan, references):
     for figure in plan['figures']:
         if figure['style'] != 'bar_paired_delta':
             continue
-        selected = [jobs[identifier] for identifier in figure['finding_ids']]
-        if any(job['operation'] != 'mean' for job in selected) or any(
+        selected = [jobs[identifier] for identifier in figure['finding_ids'] if identifier in jobs]
+        if len(selected) != len(figure['finding_ids']) or any(
+            job['operation'] != 'mean' or job['id'] not in references for job in selected) or any(
             references[job['id']][0]['value'] < 0 for job in selected
         ):
             issues.append(dict(figure_id=figure['id'], message=(
@@ -27,8 +50,8 @@ def check_figure_plan(plan, references):
 
 
 def apply_figure_updates(plan, response, issues):
-    if not isinstance(response, dict) or set(response) != {'updates'} or not isinstance(response['updates'], list):
-        raise ValueError('图表局部修复必须仅返回 updates')
+    from .repair_contract import FigurePatch
+    response = FigurePatch.model_validate(response).model_dump(exclude_unset=True)
     allowed = {issue['figure_id'] for issue in issues}
     previous = {figure['id']: figure for figure in plan['figures']}
     updates = {}

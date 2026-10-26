@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import copy
 from typing import Literal
 
 from pydantic import Field, model_validator
@@ -12,7 +13,8 @@ from .schema import (
 )
 from .views import materialize
 from .plan_repair import PlanRepairError, material_claim
-from .plan_bindings import evidence_catalog, bind_job_columns, bind_job_fields, bind_figure_mapping, bind_figure_language
+from .plan_bindings import evidence_catalog, bind_job_columns, bind_job_fields, bind_figure_mapping
+from .requirements import Requirement, FigureRequest
 
 
 class Filter(Object):
@@ -21,11 +23,60 @@ class Filter(Object):
     value: str | int | Number | bool | list[str | int | Number | bool] | None = None
 
 
+BUILTIN_OPERATIONS = {'mean', 'difference', 'paired_difference', 'welch_t', 'paired_t',
+                      'ols_coefficient', 'beta_mean', 'beta_probability', 'count', 'pearson', 'spearman'}
+
+
+def uses_program(job):
+    return job['execution'] == 'code'
+
+
+class ResultSpec(Object):
+    id: Text
+    label: Text
+
+
+class InputBinding(Object):
+    table_id: Text
+    columns: list[Text] = Field(min_length=1)
+    filters: list[Filter] = Field(default_factory=list)
+    missing_policy: Literal['error', 'complete_case', 'custom'] = 'error'
+
+
+class ComponentSpec(Object):
+    operation: Literal['mean', 'count', 'difference', 'paired_difference', 'welch_t', 'paired_t',
+                       'pearson', 'spearman', 'ols_coefficient', 'beta_mean', 'beta_probability']
+    other_column: Text | None = None
+    correlation_test: bool = False
+    predictors: list[Text] = Field(default_factory=list)
+    coefficient: Text | None = None
+    trials_column: Text | None = None
+    interval_level: Level | None = None
+    threshold: Number | None = None
+    operator: Literal['gt', 'ge', 'lt', 'le'] = 'gt'
+    alternative: Literal['two_sided', 'greater', 'less'] = 'two_sided'
+
+
+def component_job(job):
+    spec = job.get('equivalent_component')
+    if not spec or spec['operation'] != job['operation'] or len(job['outputs']) != 1:
+        raise ValueError('等价组件须明确声明同一标准方法及完整参数，且对应唯一结果')
+    if job['missing_policy'] == 'custom' or job['required_diagnostics'] or job['inputs']:
+        raise ValueError('自定义转换或必要代码诊断不能用常规组件代替')
+    return {**job, **spec, 'execution': 'component', 'procedure': '', 'outputs': [],
+            'equivalent_component': None, 'columns': []}
+
+
 class Job(Object):
     id: Text
     target_id: Text
-    operation: Literal['mean', 'difference', 'paired_difference', 'welch_t', 'paired_t',
-                       'ols_coefficient', 'beta_mean', 'beta_probability', 'count', 'pearson', 'spearman']
+    operation: Text
+    execution: Literal['component', 'code'] = 'component'
+    inputs: dict[Text, InputBinding] = Field(default_factory=dict)
+    procedure: str = ''
+    columns: list[Text] = Field(default_factory=list)
+    outputs: list[ResultSpec] = Field(default_factory=list, max_length=200)
+    inference: bool = False
     table_id: Text
     column: Text
     other_column: Text | None = None
@@ -41,10 +92,15 @@ class Job(Object):
     threshold: Number | None = None
     operator: Literal['gt', 'ge', 'lt', 'le'] = 'gt'
     alternative: Literal['two_sided', 'greater', 'less'] = 'two_sided'
-    missing_policy: Literal['error', 'complete_case'] = 'error'
+    missing_policy: Literal['error', 'complete_case', 'custom'] = 'error'
     design_evidence: str = Field(default='', json_schema_extra={'readOnly': True})
     design_evidence_refs: list[Text] = Field(default_factory=list)
     unit: Text | None = None
+    required: bool = True
+    method_locked: bool = True
+    result_key: Text | None = None
+    required_diagnostics: list[Text] = Field(default_factory=list)
+    equivalent_component: ComponentSpec | None = None
 
 
 class FigureMapping(Object):
@@ -65,6 +121,7 @@ class FigurePlan(Object):
     kind: Text
     style: Text
     base_style: Text | None = None
+    render_mode: Literal['template', 'code'] = 'template'
     finding_ids: list[Text]
     columns: list[ColumnRef]
     instructions: Text
@@ -87,6 +144,9 @@ class Plan(Object):
     methods: list[Text]
     limitations: list[Text]
     jobs: list[Job]
+    task_groups: dict[str, list[Text]] = Field(default_factory=dict)
+    requirements: list[Requirement] = Field(default_factory=list)
+    figure_requests: list[FigureRequest] = Field(default_factory=list)
     joins: list[Join] = Field(default_factory=list)
     figures: list[FigurePlan] = Field(default_factory=list)
     multiplicity: Literal['none', 'holm'] = 'none'
@@ -95,15 +155,26 @@ class Plan(Object):
 
     @model_validator(mode='after')
     def sizes(self):
-        if len(self.jobs) > 100 or len(self.figures) > 20 or len(self.joins) > 10:
+        if len(self.jobs) > 1000 or len(self.figures) > 20 or len(self.joins) > 10:
             raise ValueError('分析任务或图表过多')
         return self
 
 
-def validate_plan(value, inputs):
+def validate_plan(value, inputs, *, figures=True, findings=None):
     if isinstance(value, dict) and set(value) == {'missing_materials'}:
         raise material_claim(value['missing_materials'])
-    plan = parse(Plan, value)
+    value = copy.deepcopy(value)
+    if isinstance(value, dict):
+        items = [item for field in ('targets', 'figures') if isinstance(value.get(field), list)
+                 for item in value[field]]
+        for item in items:
+            if isinstance(item, dict) and isinstance(item.get('columns'), list):
+                # Repeating the exact same provenance reference carries no additional evidence.
+                refs = {json.dumps(ref, sort_keys=True): ref for ref in item['columns']}
+                item['columns'] = list(refs.values())
+    # Figure syntax/appearance must not prevent a valid statistical plan from running.
+    figure_values = copy.deepcopy(value.get('figures', [])) if isinstance(value, dict) else []
+    plan = parse(Plan, value if figures or not isinstance(value, dict) else {**value, 'figures': []})
     if plan['unavailable_method']:
         raise ContractError('EXECUTION_FAILED', 'analysis.method', plan['unavailable_method'])
     if plan['missing_materials']:
@@ -125,17 +196,17 @@ def validate_plan(value, inputs):
         model_jobs = [j for j in jobs.values() if j['model_id'] == model['id']]
         if not model_jobs:
             raise ValueError('计划包含未实际使用的模型')
-        if model['priors'] and any(not j['operation'].startswith('beta_') for j in model_jobs):
+        if model['priors'] and any(not uses_program(j) and not j['operation'].startswith('beta_') for j in model_jobs):
             raise ValueError('当前已注册先验复核仅适用于解析 Beta 模型')
-        if model['priors']:
+        if model['priors'] and all(not uses_program(j) for j in model_jobs):
             fields = ('table_id', 'column', 'filters', 'trials_column', 'missing_policy')
             if any(any(j[k] != model_jobs[0][k] for k in fields) for j in model_jobs[1:]):
                 raise ValueError('同一后验模型的任务必须使用相同观测范围；不同范围需要不同模型 ID')
     missing = []
     catalog = {item['id']: item for item in evidence_catalog(inputs)}
     for job in jobs.values():
-        missing.extend(bind_job_fields(job, tables, catalog))
-        inference = (job['interval_level'] is not None
+        missing.extend(bind_job_fields(job, tables, catalog, bind_unit=not uses_program(job)))
+        inference = (job['inference'] or job['interval_level'] is not None
                      or job['correlation_test']
                      or job['operation'] in ('paired_t', 'welch_t', 'ols_coefficient')
                      or job['operation'].startswith('beta_'))
@@ -148,23 +219,35 @@ def validate_plan(value, inputs):
     for job in jobs.values():
         try:
             validate_job(job, tables, sources, targets, models)
+            if job['equivalent_component']:
+                fallback = component_job(job)
+                validate_job(fallback, tables, sources, targets, models)
         except (ValueError, KeyError, TypeError) as exc:
             missing.append(dict(job_id=job['id'], field=None, message=str(exc)))
+    program_ids = [j['id'] + ':' + o['id'] for j in jobs.values() for o in j['outputs']]
+    exported_ids = program_ids + [j['id'] for j in jobs.values() if not uses_program(j)]
+    if len(set(exported_ids)) != len(exported_ids) or set(program_ids) & jobs.keys():
+        raise ValueError('任务及输出 ID 冲突；使用互不重叠的任务/输出标识')
     correlation_tests = set()
     for job in jobs.values():
-        if job['correlation_test']:
+        if job['correlation_test'] and not uses_program(job):
             signature = (job['operation'], job['table_id'], tuple(sorted((job['column'], job['other_column']))),
                          json.dumps(sorted(job['filters'], key=lambda f: json.dumps(f, sort_keys=True)), sort_keys=True))
             if signature in correlation_tests:
                 raise ValueError('同一范围的同一变量对不能反向重复检验或重复计入校正')
             correlation_tests.add(signature)
     unique(plan['figures'], 'plan.figures')
+    result_ids = ({f['id'] for f in findings} if findings is not None else
+                  set(jobs) | {j['id'] + ':' + o['id'] for j in jobs.values() for o in j['outputs']})
     for figure in plan['figures']:
-        if not figure['finding_ids'] or not set(figure['finding_ids']) <= jobs.keys():
+        if not figure['finding_ids'] or not set(figure['finding_ids']) <= result_ids:
             raise ValueError('结果图须引用实际计算任务')
         refs_exist(figure['columns'], sources, 'plan.figures.columns')
-        missing.extend(bind_figure_mapping(figure, jobs, sources))
-        missing.extend(bind_figure_language(figure, jobs))
+        if all(identifier in jobs and not uses_program(jobs[identifier]) for identifier in figure['finding_ids']):
+            missing.extend(bind_figure_mapping(figure, jobs, sources))
+        # Display language is a presentation preference, not a statistical prerequisite.
+    if not figures:
+        plan['figures'] = figure_values
     if missing:
         raise PlanRepairError(missing, plan=plan)
     return plan
@@ -175,7 +258,7 @@ def paired_operation(operation):
 
 
 def validate_job(job, tables, sources, targets, models):
-    columns = [job['column'], *job['pair_by'], *job['predictors'],
+    columns = [job['column'], *job['columns'], *job['pair_by'], *job['predictors'],
                *[f['column'] for f in job['filters'] + job['baseline_filters']]]
     if job['other_column']:
         columns.append(job['other_column'])
@@ -184,7 +267,7 @@ def validate_job(job, tables, sources, targets, models):
     refs_exist([dict(table_id=job['table_id'], column=c) for c in dict.fromkeys(columns)], tables, 'plan.jobs')
     tab = tables[job['table_id']]
     target_refs = {(ref['table_id'], ref['column']) for ref in targets[job['target_id']]['columns']}
-    numeric_columns = [job['column'], *job['predictors']]
+    numeric_columns = [job['column'], *job['columns'], *job['predictors']]
     if job['other_column']:
         numeric_columns.append(job['other_column'])
     if job['trials_column']:
@@ -209,6 +292,23 @@ def validate_job(job, tables, sources, targets, models):
     model = models.get(job['model_id'])
     if job['model_id'] is not None and (model is None or job['target_id'] not in model['target_ids']):
         raise ValueError('任务引用的模型无效')
+    if uses_program(job):
+        if {'analysis', 'baseline', 'combined'} & job['inputs'].keys():
+            raise ValueError('附加输入不能覆盖 analysis、baseline 或 combined')
+        for name, source in job['inputs'].items():
+            refs_exist([dict(table_id=source['table_id'], column=c) for c in source['columns']], tables, 'plan.inputs')
+            refs = {(source['table_id'], c) if source['table_id'] in sources else tuple(c.split('.', 1))
+                    for c in source['columns']}
+            if not refs <= target_refs:
+                raise ValueError('分析目标遗漏附加输入来源列: ' + name)
+        if not job['procedure'].strip() or not job['outputs']:
+            raise ValueError('代码任务须说明 procedure 和非空 outputs；可以一次输出多个系数、分组或诊断数值')
+        unique(job['outputs'], 'plan.jobs.outputs')
+        return
+    if job['operation'] not in BUILTIN_OPERATIONS:
+        raise ValueError('组件名称未知；专用方法须声明 execution=code')
+    if job['inputs'] or job['outputs'] or job['procedure'] or job['missing_policy'] == 'custom':
+        raise ValueError('自定义输出或缺失处理需要填写 procedure，使用代码任务')
     op = job['operation']
     if op in ('pearson', 'spearman'):
         if not job['other_column']:

@@ -14,10 +14,12 @@ DESCRIPTIONS = {
 }
 
 
-def executed_methods(plan):
-    jobs = plan['jobs']
+def executed_methods(plan, findings):
+    from .plan import uses_program
+    jobs = [job for job in plan['jobs'] if not uses_program(job)]
     operations = list(dict.fromkeys(job['operation'] for job in jobs))
     methods = [DESCRIPTIONS[operation] for operation in operations]
+    methods.extend(job['operation'] + '：' + job['procedure'] for job in plan['jobs'] if uses_program(job))
     if any(job['interval_level'] is not None and job['operation'] in
            ('mean', 'difference', 'paired_difference', 'paired_t', 'welch_t', 'ols_coefficient') for job in jobs):
         methods.append('按各任务锁定的置信水平计算双侧 Student t 区间；独立两组差采用 Welch 自由度。'
@@ -30,7 +32,7 @@ def executed_methods(plan):
         methods.append('Pearson 零相关检验使用独立二元正态零假设下的精确 Beta 分布，方向按 alternative。')
     if any(job.get('correlation_test') and job['operation'] == 'spearman' for job in jobs):
         methods.append('Spearman 零秩相关检验使用大样本 t 近似，要求 n>500，方向按 alternative。')
-    if not any(job['operation'] in ('paired_t', 'welch_t') or job.get('correlation_test') for job in jobs):
+    if not any(finding['test'] for finding in findings):
         methods.append('本轮未执行显著性检验或多重检验校正。')
     elif plan['multiplicity'] == 'holm':
         methods.append('对锁定检验族的原始 p 值应用 Holm 多重检验校正。')

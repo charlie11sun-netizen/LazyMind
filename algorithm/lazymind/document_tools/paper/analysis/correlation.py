@@ -1,4 +1,4 @@
-"""Independent correlation reference; generated production programs do not call this."""
+"""Reusable correlation calculations with explicit data and method prerequisites."""
 import math
 
 
@@ -16,7 +16,7 @@ def correlation(job, x, y):
         raise ValueError('当前仅支持至少四个独立观测的 Pearson Fisher-z 双侧区间')
     if test and op == 'spearman' and n <= 500:
         raise ValueError('小样本 Spearman 置换检验尚未注册；不允许用渐近 p 值替代，请仅报告描述系数')
-    # Scaled, centered dot products independently check scipy.pearsonr/spearmanr.
+    # Use scaled, centered dot products for stable correlation estimates.
     vectors = []
     for values in (x, y):
         if op == 'spearman':

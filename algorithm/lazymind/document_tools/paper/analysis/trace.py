@@ -18,19 +18,20 @@ _parent = ContextVar('paper_f4_trace_parent', default=None)
 MAX_ARTIFACT_BYTES = 2 * 1024 * 1024
 MAX_TOTAL_BYTES = 8 * 1024 * 1024
 MAX_EVENTS = 2048
-MILESTONES = {'input_validation': 10, 'reference_validation': 30, 'numerical_verification': 55,
+MILESTONES = {'input_validation': 10, 'statistics_execution': 55, 'statistics_recovery': 55,
               'output_validation': 90, 'output_publication': 100}
 LABELS = {
-    'input_binding': '读取输入', 'input_validation': '校验输入', 'environment_validation': '检查执行环境',
+    'input_binding': '读取输入', 'input_validation': '校验输入',
     'plan_generation': '生成分析计划', 'plan_repair': '修复分析计划', 'figure_plan_repair': '修复绘图计划',
-    'plan_validation': '校验分析计划', 'reference_validation': '检查统计任务',
-    'analysis_code_generation': '生成分析代码', 'analysis_code_validation': '校验分析代码',
-    'analysis_execution': '执行分析代码', 'numerical_verification': '核对计算结果',
-    'interpretation': '生成结论', 'figure_code_prefetch': '预生成绘图代码',
+    'plan_validation': '校验分析计划', 'statistics_execution': '执行常规统计计算',
+    'analysis_code_generation': '生成分析任务代码', 'analysis_execution': '执行分析任务',
+    'analysis_recovery': '复用已完成分析任务',
+    'interpretation': '生成结论',
     'figure_code_generation': '生成绘图代码', 'figure_code_validation': '校验绘图代码',
     'figure_execution': '执行绘图代码', 'figure_validation': '检查图表文件',
     'output_validation': '校验最终结果', 'output_publication': '保存产物', 'model_request': '等待模型响应',
     'model_transport_attempt': '等待模型通信',
+    'statistics_recovery': '复用已验证统计结果', 'figure_recovery': '复用已完成图表',
 }
 PRIVATE_FIELDS = {'reasoning', 'reasoning_content', 'thinking', 'chain_of_thought',
                   'api_key', 'authorization', 'password', 'access_token', 'secret'}
@@ -321,6 +322,8 @@ def workflow_trace(function):
         context = require_context()
         if context.params.get('step_id') != 'data_analysis':
             return function()
-        with capture(context.workspace_path, context.task_id, context.emit):
-            return function()
+        from .recovery import workspace
+        with workspace(context.workspace_path, context.task_id, context.conversation_id):
+            with capture(context.workspace_path, context.task_id, context.emit):
+                return function()
     return wrapped

@@ -13,6 +13,33 @@ Only third-party/standard modules in execution_rules.allowed_imports may be impo
 '''
 
 
+def prepared_program(table, spec):
+    """Standard figures need only a deterministic arrangement of host-bound panels."""
+    if spec.get('style') == 'custom' or spec.get('render_mode') == 'code' or not table.get('figure', {}).get('panels'):
+        return None
+    name = spec['style_contract']['native_template']
+    if not re.fullmatch(r'[A-Za-z][A-Za-z0-9_]*', name):
+        raise ValueError('Invalid native template name')
+    return '''import matplotlib.pyplot as plt
+
+def draw(data, statistics, spec):
+    panels = data['figure']['panels']
+    count = len(panels)
+    layout = spec['style_contract']['layout']
+    size = layout['single_inches'] if count == 1 else layout['two_inches']
+    columns = min(2, count)
+    rows = (count + columns - 1) // columns
+    fig, axes = plt.subplots(rows, columns, figsize=(size[0], size[1] * rows), squeeze=False)
+    fig.subplots_adjust(**layout['single_panel' if count == 1 else 'two_panels'])
+    axes = axes.ravel()
+    for index, panel in enumerate(panels):
+        ''' + name + '''(axes[index], **panel['arguments'])
+    for axis in axes[count:]:
+        axis.set_visible(False)
+    return fig
+'''
+
+
 def _called_functions(function, functions):
     """Resolve direct calls and simple local aliases/literal dispatch dictionaries."""
     aliases = {}
