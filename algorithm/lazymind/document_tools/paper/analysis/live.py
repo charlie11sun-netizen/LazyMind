@@ -5,9 +5,9 @@ import re
 import time
 
 PUBLIC_STAGES = {
-    'input_binding', 'input_validation', 'environment_validation', 'plan_generation', 'plan_repair',
-    'figure_plan_repair', 'analysis_code_generation', 'analysis_execution', 'numerical_verification',
-    'figure_code_prefetch', 'figure_code_generation', 'figure_execution', 'figure_validation',
+    'input_binding', 'input_validation', 'environment_validation', 'plan_generation', 'figure_planning',
+    'analysis_code_generation', 'analysis_execution', 'result_contract_validation',
+    'figure_code_generation', 'figure_execution', 'figure_validation',
     'interpretation', 'output_publication',
 }
 MAX_OUTPUT = 96 * 1024
@@ -103,10 +103,11 @@ class PublicProgress:
         self.send(identifier)
 
     def note(self, name, value):
-        if name == 'locked-plan.json':
+        if name in ('figure-plan.json', 'locked-plan.json'):
             self.figures = {f['id']: f.get('title', f['id']) for f in value.get('figures', [])}
         stages = ({'input_validation'} if name == 'input-summary.json' else
-                  {'plan_generation', 'plan_repair', 'figure_plan_repair'} if name == 'locked-plan.json' else set())
+                  {'plan_generation'} if name == 'analysis-plan.json' else
+                  {'figure_planning'} if name == 'figure-plan.json' else set())
         identifier = next((k for k in reversed(self.steps)
                            if next(s for s in self.recorder.summary['stages'] if s['id'] == k)['stage'] in stages), None)
         if not identifier:
@@ -114,42 +115,31 @@ class PublicProgress:
         if name == 'input-summary.json':
             tables = value.get('tables', [])
             summary = f"已读取 {sum(t['rows'] for t in tables)} 行数据、{len(tables)} 张数据表，输入校验通过。"
+        elif name == 'analysis-plan.json':
+            summary = f"分析提纲已确定：{len(value.get('questions', []))} 个研究问题，具体结果由分析代码生成。"
         else:
-            summary = f"计划已确定：{len(value.get('jobs', []))} 项统计计算、{len(value.get('figures', []))} 张图。"
+            summary = f"已根据执行结果安排 {len(value.get('figures', []))} 张图，将分别生成绘图代码。"
         self.steps[identifier]['summary'] = summary
         self.send(identifier)
 
 
 class ResponsePreview:
     """Keep provider-returned reasoning and formal text in separate bounded previews."""
-    def __init__(self, recorder, parent_id, json_output):
+    def __init__(self, recorder, parent_id, json_output, *, output_format=None):
         self.recorder = recorder
         item = next((s for s in recorder.summary['stages'] if s['id'] == parent_id), None)
         self.owner = recorder.public.owner(item)
-        self.buffer = ''
         self.text = ''
-        self.leading = True
-        self.inside = None
         self.received_text = False
         self.truncated = False
-        self.format = 'json' if json_output else 'python'
+        self.format = output_format or ('json' if json_output else 'python')
         self.reasoning = ''
         self.reasoning_bytes = 0
         self.reasoning_truncated = False
         self.received_reasoning = False
-        from ..runtime_events import StructuredPreview
+        from ..runtime_events import current_events
         owner = next((s for s in recorder.summary['stages'] if s['id'] == self.owner), {})
-        self.document_preview = StructuredPreview(self._interpretation_preview) if owner.get('stage') == 'interpretation' else None
-
-    @staticmethod
-    def _interpretation_preview(value):
-        parts = ['# 数据分析', '', '> 结论生成中，尚未完成最终校验。']
-        if isinstance(value.get('summary'), str):
-            parts.extend(['', '## 分析结论', value['summary']])
-        for answer in value.get('answers', []) if isinstance(value.get('answers'), list) else []:
-            if isinstance(answer, dict) and isinstance(answer.get('conclusion'), str):
-                parts.extend(['', answer['conclusion']])
-        return '\n'.join(parts) if len(parts) > 3 else ''
+        self.document_preview = current_events() if owner.get('stage') == 'interpretation' and self.format == 'markdown' else None
 
     def _append_reasoning(self, text):
         if not text:
@@ -180,14 +170,6 @@ class ResponsePreview:
                 step['summary'] = '已收到推理片段，等待模型返回正文。'
             self.recorder.public.send(self.owner, force or first)
 
-    @staticmethod
-    def _partial_closing_tag(text, tag):
-        """Hold only a possible split closing tag, leaving its preceding text visible."""
-        for size in range(min(len(text), len(tag) - 1), 0, -1):
-            if text[-size:].lower() == tag[:size].lower():
-                return size
-        return 0
-
     def _publish(self, mode, force=False):
         if not self.owner:
             return
@@ -196,7 +178,7 @@ class ResponsePreview:
             first = 'output' not in self.recorder.public.steps[self.owner]
             visible = redact(self.text).encode('utf-8')[:MAX_OUTPUT].decode('utf-8', errors='ignore')
             self.recorder.public.steps[self.owner]['output'] = dict(
-                text=visible, format=self.format, mode=mode,
+                text=visible, format='text' if self.format == 'markdown' else self.format, mode=mode,
                 truncated=self.truncated or len(self.text.encode('utf-8')) > MAX_OUTPUT)
             self.recorder.public.steps[self.owner]['summary'] = (
                 '正在接收模型返回的正文' if mode == 'streaming' else
@@ -205,89 +187,44 @@ class ResponsePreview:
                 '模型返回已结束，后续将解析与校验。')
             self.recorder.public.send(self.owner, force or first)
 
-    def _note_reasoning(self):
-        if not self.owner or self.text:
-            return
-        with self.recorder.lock:
-            step = self.recorder.public.steps[self.owner]
-            summary = '已收到推理片段，等待模型返回正文。'
-            if step['summary'] != summary:
-                step['summary'] = summary
-                self.recorder.public.send(self.owner)
-
     def sink(self, payload):
-        if payload.get('tag') == 'think' and payload.get('delta'):
-            self._append_reasoning(str(payload['delta']))
+        delta = payload.get('delta')
+        if not delta:
             return
-        if payload.get('tag') != 'text' or not payload.get('delta'):
+        if payload.get('tag') == 'think':
+            self._append_reasoning(str(delta))
+            return
+        if payload.get('tag') != 'text':
             return
         self.received_text = True
-        self.buffer += str(payload['delta'])
-        while self.leading:
-            if self.inside:
-                closing = '</' + self.inside + '>'
-                match = re.search(closing, self.buffer, re.I)
-                if not match:
-                    held = self._partial_closing_tag(self.buffer, closing)
-                    self._append_reasoning(self.buffer[:-held] if held else self.buffer)
-                    self.buffer = self.buffer[-held:] if held else ''
-                    return
-                self._append_reasoning(self.buffer[:match.start()])
-                self.buffer = self.buffer[match.end():]
-                self.inside = None
-            stripped = self.buffer.lstrip()
-            if not stripped:
-                return
-            lower = stripped.lower()
-            tags = ('<think>', '<thinking>')
-            if any(tag.startswith(lower) and tag != lower for tag in tags):
-                return
-            match = re.match(r'<(think|thinking)>', stripped, re.I)
-            if match:
-                self._note_reasoning()
-                self.inside = match[1]
-                self.buffer = stripped[match.end():]
-                continue
-            self.leading = False
-            self.buffer = stripped
-            self._publish_reasoning('complete', force=True)
-        self.truncated = self.truncated or len(self.text) + len(self.buffer) > MAX_OUTPUT
-        if len(self.text) < MAX_OUTPUT:
-            self.text += self.buffer[:MAX_OUTPUT - len(self.text)]
-        self.buffer = ''
+        text = str(delta)
+        self.truncated |= len(self.text) + len(text) > MAX_OUTPUT
+        self.text += text[:max(0, MAX_OUTPUT - len(self.text))]
         self._publish('streaming')
         if self.document_preview:
-            self.document_preview.buffer = self.text
-            if time.monotonic() - self.document_preview.last_parse >= 0.2:
-                self.document_preview.flush()
+            self.document_preview.preview(self.text)
 
-    def finish(self, raw):
-        from ..plotting.code_response import response_text
-        # Non-streaming providers may include public reasoning in leading tagged envelopes.
-        remaining = str(raw or '').strip() if not isinstance(raw, dict) else ''
-        parts = []
-        while opening := re.match(r'<(think|thinking)>', remaining, re.I):
-            closing = re.search(r'</' + opening[1] + r'>', remaining[opening.end():], re.I)
-            parts.append(remaining[opening.end():opening.end() + closing.start()] if closing
-                         else remaining[opening.end():])
-            if not closing:
-                break
-            remaining = remaining[opening.end() + closing.end():].lstrip()
+    def finish(self, raw, *, normalized=None):
+        from ..plotting.code_response import normalize_response
+        normalized = normalized or normalize_response(raw)
         streamed_reasoning = self.received_reasoning
-        if parts:
-            encoded = '\n'.join(parts).encode('utf-8')
-            self.reasoning = encoded[:MAX_REASONING].decode('utf-8', errors='ignore')
-            self.reasoning_bytes = len(self.reasoning.encode('utf-8'))
-            self.reasoning_truncated = len(encoded) > MAX_REASONING
-        # Display normalization does not change the value returned to the algorithm.
-        text = json.dumps(raw, ensure_ascii=False) if isinstance(raw, dict) else response_text(raw or '')[0]
+        encoded = normalized.reasoning.encode('utf-8')
+        self.reasoning = encoded[:MAX_REASONING].decode('utf-8', errors='ignore')
+        self.reasoning_bytes = len(self.reasoning.encode('utf-8'))
+        self.reasoning_truncated = len(encoded) > MAX_REASONING
+        if self.owner and not self.reasoning:
+            with self.recorder.lock:
+                step = self.recorder.public.steps[self.owner]
+                if 'reasoning' in step:
+                    step['reasoning'] = dict(text='', format='text', mode='complete', truncated=False)
+        text = (json.dumps(normalized.body, ensure_ascii=False) if isinstance(normalized.body, dict)
+                else normalized.body)
         self._publish_reasoning('complete' if streamed_reasoning else 'buffered', force=True)
         self.truncated = len(text.encode('utf-8')) > MAX_OUTPUT
         self.text = text[:MAX_OUTPUT]
-        self._publish('complete' if self.received_text and not self.leading else 'buffered', force=True)
+        self._publish('complete' if self.received_text else 'buffered', force=True)
         if self.document_preview:
-            self.document_preview.buffer = text
-            self.document_preview.flush()
+            self.document_preview.preview(text)
 
     def abort(self):
         self._publish_reasoning('interrupted', force=True)

@@ -193,14 +193,33 @@ def test_review_projects_partial_results_while_preserving_strict_review_validati
 def test_f4_keeps_diagnostics_and_projects_interpretation_to_shared_document_stream(tmp_path):
     from lazymind.document_tools.paper.analysis import trace
     emitted = []
-    value = {'summary': '结果仅适用于当前样本。', 'answers': [{'conclusion': '仍需补充验证。'}]}
+    value = '结果仅适用于当前样本，仍需补充验证。'
     with bind_runtime_events(emitted.append, 'data_analysis_document') as events:
         with trace.capture(tmp_path, 'analysis', emitted.append):
             with trace.stage('interpretation'):
-                preview = trace.response_preview(True)
-                preview.sink({'tag': 'text', 'delta': json.dumps(value, ensure_ascii=False)})
+                preview = trace.response_preview(False, output_format='markdown')
+                preview.sink({'tag': 'text', 'delta': value})
                 assert any(e['type'] == 'artifact_stream' for e in emitted)
                 preview.finish(value)
         events.complete()
     assert list(tmp_path.glob('f4-trace/*/public.json'))
     assert any(e.get('slot') == 'data_analysis_document' for e in emitted)
+
+
+def test_f4_progress_counts_estimated_tokens_without_changing_output(tmp_path, monkeypatch):
+    from lazymind.common.token_estimation import estimate_tokens
+    from lazymind.document_tools.paper.analysis import progress_routes, trace
+
+    task_id = 'test-token-display'
+    monkeypatch.setattr(progress_routes, 'WORKSPACES', tmp_path)
+    body, reasoning = 'The observed mean is 2. 本次结果仅适用于模拟样本。', 'Compare the observed conditions.'
+    with trace.capture(tmp_path / 'user' / task_id, task_id, emit=lambda _: None):
+        with trace.stage('interpretation'):
+            preview = trace.response_preview(False, output_format='markdown')
+            preview.finish(dict(content=body, reasoning_content=reasoning))
+    snapshot = progress_routes.read_snapshot(task_id, dict(status='succeeded'))
+    step = snapshot['process_steps'][0]
+    for channel, text in [('output', body), ('reasoning', reasoning)]:
+        assert step[channel]['text'] == text
+        assert step[channel]['estimated_tokens'] == estimate_tokens(text)
+        assert step[channel]['estimated_tokens'] != len(text)

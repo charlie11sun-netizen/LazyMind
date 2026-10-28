@@ -411,7 +411,7 @@ def execute_step(step: str, pool: dict, request: str = '', fail: bool = False, *
     structured_analysis = main == 'analysis' and isinstance(generated[main], dict)
     if structured_analysis:
         from .analysis.render import render
-        document = render(generated[main], '数据分析 · ' + pool['topic'])
+        document = render(generated[main])
     else:
         document = render_material(main, generated[main])
     provenance = generated.get('result_meta') or (material(pool, 'result_meta') or {}).get('content')
@@ -497,7 +497,7 @@ def pool_from_inputs(inputs: dict[str, Any]) -> dict:
             if kind == 'analysis' and isinstance(content, dict):
                 from .analysis.render import render
                 from .analysis.schema import ContractError
-                previous_document = render(content, '数据分析 · ' + pool['topic'])
+                previous_document = render(content)
                 previous_document = with_source_notice(
                     previous_document, current['mock'], (material(pool, 'result_meta') or {}).get('content'))
                 if previous_document != document:
@@ -712,9 +712,6 @@ def _run_paper_step(context, stream=None) -> dict:
                 bound = bind_attachment(bound, context.workspace_path, request)
             with diagnostics.stage('input_validation'):
                 pool = initialize_pool(bound, request)
-                if step == 'data_analysis':
-                    from .analysis.schema import normalize_input
-                    normalize_input(business_input(step, pool, _step_request(step, pool, context.params, bound)))
         elif step in {'research_topic', 'reading_reflection'} and not any(
             key.endswith('_pool') for key in bound
         ):

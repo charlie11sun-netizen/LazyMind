@@ -31,9 +31,8 @@ def draw_heatmap(ax, values, row_labels, column_labels, title, xlabel, ylabel,
     if mode not in ['matrix', 'difference', 'correlation', 'correlation_pairs', 'confusion_counts', 'confusion_row']:
         raise ValueError('Choose a heatmap mode explicitly')
     signed_modes = ['difference', 'correlation', 'correlation_pairs']
-    allowed = ['viridis', 'cividis'] if mode == 'matrix' else ['PuOr'] if mode in signed_modes else ['Blues']
-    if palette not in allowed or signed != (mode in signed_modes):
-        raise ValueError('Use the approved quantitative palette and zero-centered semantics for this mode')
+    if signed != (mode in signed_modes):
+        raise ValueError('Use zero-centered semantics for signed quantities')
     if mode.startswith('confusion'):
         if values.ndim != 2 or values.shape[0] != values.shape[1] or list(row_labels) != list(column_labels):
             raise ValueError('Confusion matrices require the same ordered true/predicted class labels')
@@ -98,9 +97,12 @@ def draw_heatmap(ax, values, row_labels, column_labels, title, xlabel, ylabel,
 
 
 def draw_point_intervals(ax, summaries, methods, categories, colors, edges, markers, title, xlabel, xlim,
-                         category_styles):
-    """Verified [estimate, low, high] triples; null endpoints mean a point without an interval."""
-    if (not methods or len(set(methods)) != len(methods)
+                         category_styles, *, method_labels=None):
+    """summaries[actual_key] contains triples; method_labels maps keys to display names only."""
+    if not methods:
+        raise ValueError('No observed series selected: methods must use actual coordinate/summary keys, '
+                         'not display labels; available summary keys: ' + repr(list(summaries)))
+    if (len(set(methods)) != len(methods)
             or any(len(style) != len(methods) for style in [colors, edges, markers])):
         raise ValueError('Every distinct method needs its own supplied appearance; do not truncate groups')
     if category_styles is not None and len(category_styles) != len(categories):
@@ -108,7 +110,11 @@ def draw_point_intervals(ax, summaries, methods, categories, colors, edges, mark
     paper_axes(ax, title, xlabel, '', False)
     offsets = np.linspace(-.22, .22, len(methods)) if len(methods) > 1 else [0]
     for method, color, edge, marker, offset in zip(methods, colors, edges, markers, offsets):
-        rows = np.asarray(summaries[method], dtype=float)
+        try:
+            rows = np.asarray(summaries[method], dtype=float)
+        except KeyError:
+            raise KeyError(f'Unknown summary key {method!r}; available keys: {list(summaries)!r}. '
+                           'Pass display names through method_labels, without renaming data keys.') from None
         if rows.shape != (len(categories), 3) or np.any(np.isinf(rows)):
             raise ValueError('Provide one estimate/low/high triple per category and method; missing cells stay null')
         estimate, low, high = rows.T
@@ -116,24 +122,33 @@ def draw_point_intervals(ax, summaries, methods, categories, colors, edges, mark
         interval = np.isfinite(low) & np.isfinite(high)
         if np.any(np.isnan(low) != np.isnan(high)) or np.any(interval & ~observed):
             raise ValueError('An interval needs both endpoints and an observed estimate')
-        if np.any(low[interval] > estimate[interval]) or np.any(high[interval] < estimate[interval]):
-            raise ValueError('Interval endpoints must enclose their estimate')
+        if np.any(low[interval] > high[interval]):
+            raise ValueError('Interval endpoints must be ordered')
         finite = rows[np.isfinite(rows)]
         if len(finite) and (finite.min() < xlim[0] or finite.max() > xlim[1]):
             raise ValueError('Do not crop uncertainty intervals')
         error = np.full((2, len(estimate)), np.nan)
-        error[:, interval] = np.vstack([estimate[interval] - low[interval], high[interval] - estimate[interval]])
-        groups = [(np.flatnonzero(observed), method, color, edge, marker)]
+        enclosed = interval & (low <= estimate) & (estimate <= high)
+        error[:, enclosed] = np.vstack([estimate[enclosed] - low[enclosed], high[enclosed] - estimate[enclosed]])
+        label = (method_labels or {}).get(method, method)
+        groups = [(np.flatnonzero(observed), label, color, edge, marker)]
         if category_styles is not None:
-            groups = [(np.array([i]), style['artist_label'] if len(methods) == 1 else method,
+            groups = [(np.array([i]), style['artist_label'] if len(methods) == 1 else label,
                        style['color'], style['edge'], style['marker'] if len(methods) == 1 else marker)
                       for i, style in enumerate(category_styles) if observed[i]]
         for indices, name, face, outline, shape in groups:
             ax.errorbar(estimate[indices], (np.arange(len(categories)) + offset)[indices],
-                        xerr=error[:, indices] if interval[indices].any() else None, fmt=shape,
+                        xerr=error[:, indices] if enclosed[indices].any() else None, fmt=shape,
                         markersize=3.7, color=face, markerfacecolor=face, markeredgecolor=outline,
                         markeredgewidth=.5, ecolor=outline, elinewidth=.85,
                         capsize=2, capthick=.65, label=name, zorder=3)
+            separate = indices[interval[indices] & ~enclosed[indices]]
+            if len(separate):
+                positions = (np.arange(len(categories)) + offset)[separate]
+                ax.hlines(positions, low[separate], high[separate], colors=outline, linewidth=.85, zorder=3)
+                for ends in (low[separate], high[separate]):
+                    ax.plot(ends, positions, linestyle='none', marker='|', markersize=4,
+                            markeredgewidth=.65, color=outline, label='_nolegend_', zorder=3)
     ax.set_yticks(np.arange(len(categories)), categories)
     ax.set_ylim(len(categories) - .55, -.55)
     ax.set_xlim(xlim)
@@ -355,8 +370,8 @@ def draw_hexbin(ax, x, y, title, xlabel, ylabel, xlim, ylim, gridsize, palette):
         raise ValueError('Supply paired coordinate vectors; infinite coordinates are invalid')
     valid = np.isfinite(x) & np.isfinite(y)
     x, y = x[valid], y[valid]
-    if not len(x) or palette != 'viridis':
-        raise ValueError('Density requires observed pairs and the approved viridis count scale')
+    if not len(x):
+        raise ValueError('Density requires observed pairs')
     bounds = np.asarray([xlim, ylim], dtype=float)
     if bounds.shape != (2, 2) or not np.all(np.isfinite(bounds)) or np.any(bounds[:, 0] >= bounds[:, 1]):
         raise ValueError('Choose finite ordered coordinate limits')
@@ -380,10 +395,10 @@ def draw_contour(ax, x, y, values, levels, line_levels, title, xlabel, ylabel, p
             or not np.all(np.isfinite(x)) or not np.all(np.isfinite(y))
             or not np.all(np.diff(x) > 0) or not np.all(np.diff(y) > 0)):
         raise ValueError('Contours need an ordered complete measured grid; do not invent cells')
-    if (palette != 'viridis' or levels.ndim != 1 or len(levels) < 2
+    if (levels.ndim != 1 or len(levels) < 2
             or not np.all(np.isfinite(levels)) or not np.all(np.diff(levels) > 0)
             or values.min() < levels[0] or values.max() > levels[-1]):
-        raise ValueError('Contour levels must enclose the observed values on the approved viridis scale')
+        raise ValueError('Contour levels must enclose the observed values')
     if line_levels.ndim != 1 or np.any(line_levels < levels[0]) or np.any(line_levels > levels[-1]):
         raise ValueError('Line levels must remain within the supplied response scale')
     paper_axes(ax, title, xlabel, ylabel, False)

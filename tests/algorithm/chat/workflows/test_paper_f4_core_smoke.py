@@ -1,8 +1,10 @@
-"""Compact offline F4 integration checks; run inside the Chat container."""
+"""Compact offline F4 checks using the real generated-code executors."""
 import copy
 import json
 import shutil
+from contextvars import ContextVar
 from pathlib import Path
+from threading import Barrier, Event
 from types import SimpleNamespace
 from unittest.mock import Mock
 
@@ -12,37 +14,33 @@ import pytest
 from lazymind.chat.engine.subagent.context import SubAgentContext
 from lazymind.document_tools.paper import workflow
 from lazymind.document_tools.paper.analysis import model
-from lazymind.document_tools.paper.analysis.job_identity import bind_jobs
 from lazymind.document_tools.paper.analysis.schema import ContractError
 from lazymind.document_tools.paper.plotting import analysis as plots
 
 
-ANALYSIS_CODE = """
-import pandas as pd
-
-def prepare(tables, plan):
-    return {key: pd.DataFrame(table['rows'], columns=table['columns'])
-            for key, table in tables.items()}
-
-def analyze(prepared, plan, rng):
-    results = {}
-    for job in plan['jobs']:
-        frame = prepared[job['table_id']]
-        for condition in job['filters']:
-            frame = frame[frame[condition['column']] == condition['value']]
-        results[job['id']] = dict(value=float(frame[job['column']].mean()),
-                                  lower=None, upper=None, statistic=None, p_value=None)
-    return results
+ANALYSIS_CODE = """def analyze(tables: InputTables, plan, rng) -> AnalysisResults:
+    table = tables['data']
+    rows, metric = table['rows'], table['columns'][1]
+    results = []
+    for group in dict.fromkeys(row[0] for row in rows):
+        selected = [row for row in rows if row[0] == group]
+        values = [row[1] for row in selected if row[1] is not None]
+        results.append(dict(question_id=plan['questions'][0]['id'], label=group + ' mean', metric=metric,
+            method='Arithmetic mean', value=sum(values) / len(values), unit=table['units'][1],
+            columns=[dict(table_id='data', column=metric)], scope=plan['facts']['topic'],
+            coordinates={table['columns'][0]: group}, sample_size=dict(
+                source_rows=[dict(table_id='data', count=len(selected))],
+                n=len(values), unit='observation', excluded_n=len(selected)-len(values))))
+    return dict(results=results)
 """
+# Annotation-only names must not require an additional runtime import.
+PLOT_CODE = """import matplotlib.pyplot as plt
 
-PLOT_CODE = """
-import matplotlib.pyplot as plt
-
-def draw(data, statistics, spec):
-    layout = spec['style_contract']['layout']
-    fig, ax = plt.subplots(figsize=tuple(layout['single_inches']))
-    fig.subplots_adjust(**layout['single_panel'])
-    draw_reference_panel(ax, **data['figure']['panels'][0]['arguments'])
+def draw(data, statistics, spec) -> matplotlib.figure.Figure:
+    rows = [row for row in data['analysis_results'] if row['id'] in spec['finding_ids']]
+    fig, ax = plt.subplots()
+    ax.bar([row['label'] for row in rows], [row['value'] for row in rows])
+    ax.set_ylabel(rows[0]['metric'] + ' (' + rows[0]['unit'] + ')')
     return fig
 """
 
@@ -60,136 +58,288 @@ def runtime_state():
 
 @pytest.fixture
 def replay(monkeypatch, tmp_path):
-    groups = {'baseline': [1., 2., 3.], 'candidate': [4., 5., 6.]}
-    columns = [dict(table_id='data', column=name) for name in ('method', 'score')]
-    inputs = dict(
-        topic='模拟：方法得分比较', request='比较各组平均得分，输出分析、结论和图表。',
-        data=dict(columns=['method', 'score'], column_types=['string', 'number'],
-                  units=[None, 'point'],
-                  rows=[[name, score] for name, scores in groups.items() for score in scores]),
-    )
-    plan = dict(
-        targets=[dict(id='comparison', question='各方法的平均得分如何？',
-                      estimand='组内算术均值', scope='全部输入观测', columns=columns)],
-        models=[], methods=['按方法计算平均得分，仅作描述性比较。'],
-        limitations=['模拟数据不能用于实际研究结论。'],
-        jobs=[dict(id=name, target_id='comparison', operation='mean', table_id='data',
-                   column='score', filters=[dict(column='method', operator='eq', value=name)])
-              for name in groups],
-        figures=[dict(id='means', title='Mean scores', caption='Synthetic data; group means.',
-                      kind='bar', style='bar_grouped_hatch', finding_ids=list(groups),
-                      columns=columns, instructions='Compare observed group means.',
-                      data_mapping=dict(category_column='data.method'))],
-    )
-    # Interpretation consumes the host-assigned IDs, not the planner's aliases.
-    plan = bind_jobs(plan)
-    finding_ids = [job['id'] for job in plan['jobs']]
-    conclusion = dict(
-        summary='候选方法在这组模拟观测中的平均得分较高。',
-        answers=[dict(target_id='comparison', conclusion='结果仅反映当前样本的描述性差异。',
-                      finding_ids=finding_ids, key_finding_ids=finding_ids)],
-        mechanism_explanation='当前数据不足以解释差异机制。',
-        limitations=['模拟观测不能证明因果关系或泛化能力。'],
-    )
-    structured = Mock(side_effect=[plan, conclusion])
+    request = '只执行 F4，分析上传的 input.json，输出分析、结论和图表。'
+    inputs = dict(topic='模拟：方法得分比较', request=request,
+                  data=dict(columns=['method', 'score'], column_types=['string', 'number'],
+                            units=[None, 'point'], rows=[['baseline', 1.], ['baseline', 3.],
+                                                       ['candidate', 4.], ['candidate', 6.]]))
+    plan = dict(questions=['各组平均得分如何？'], outline='按方法计算得分均值，仅作模拟描述。')
+    arrangement = dict(figures=[dict(title='Mean scores', purpose='Compare group means.',
+                                    style='bar_grouped_hatch', result_indices=[0, 1])],
+                       terminology={'baseline': 'Baseline', 'candidate': 'Candidate'},
+                       series_order=['baseline', 'candidate'])
+    conclusion = '候选组均值为 5 分，基线为 2 分；仅反映当前模拟样本。'
+    structured = Mock(side_effect=[plan, arrangement])
     analysis = Mock(return_value={'code': ANALYSIS_CODE})
-    plot = Mock(return_value={'code': PLOT_CODE})
+    plot = Mock(return_value={'code': PLOT_CODE, 'caption': '模拟样本的组均值。'})
+    repair = Mock()
+    narrative = Mock(return_value=conclusion)
     monkeypatch.setattr(model, 'call_model', structured)
     monkeypatch.setattr(model, 'call_code_model', analysis)
+    monkeypatch.setattr(model, 'call_markdown_model', narrative)
     monkeypatch.setattr(plots, 'call_code_model', plot)
+    monkeypatch.setattr(plots, 'call_model', repair)
     monkeypatch.setattr(lazyllm, 'AutoModel', Mock(side_effect=AssertionError('Unexpected live model call')))
     monkeypatch.setenv('LAZYMIND_PAPER_GENERATED_ANALYSIS_ATTEMPTS', '2')
     monkeypatch.setenv('LAZYMIND_PAPER_PLOT_ATTEMPTS', '2')
     monkeypatch.delenv('LAZYMIND_PAPER_PLOT_SKILLS', raising=False)
     source = tmp_path / 'input.json'
-    request = inputs['request'] = '只执行 F4，分析上传的 input.json，输出分析、结论和图表。'
     source.write_text(json.dumps(inputs), encoding='utf-8')
-    lazyllm.globals['agentic_config'] = {
-        'user_id': 'f4-test', 'conversation_id': 'f4-test', 'query': request,
-        'files': [str(source)], 'history_files_per_turn': {'1': [str(source)]},
-    }
+    lazyllm.globals['agentic_config'] = dict(user_id='f4-test', conversation_id='f4-test',
+                                          query=request, files=[str(source)],
+                                          history_files_per_turn={'1': [str(source)]})
     from lazymind.document_tools.paper.analysis.attachments import workflow_input_bindings
-    slots = ['data_analysis_pool', 'data_analysis_document', 'analysis_chart']
     events = []
+    slots = ['data_analysis_pool', 'data_analysis_document', 'analysis_chart']
     context = SubAgentContext(
         task_id='f4-test', conversation_id='f4-test', agent_type='workflow_step', objective=request,
-        params={'step_id': 'data_analysis', 'user_input': request,
-                'remote_inputs': workflow_input_bindings({}, request),
-                'output_slot_types': dict.fromkeys(slots, 'file')},
+        params=dict(step_id='data_analysis', user_input=request,
+                    remote_inputs=workflow_input_bindings({}, request),
+                    output_slot_types=dict.fromkeys(slots, 'file')),
         workspace_path=str(tmp_path), input_slots=['paper_input'], output_slots=slots,
-        db=None, emit=events.append,
-    )
+        db=None, emit=events.append)
     lazyllm.globals['subagent_ctx'] = context
-    return SimpleNamespace(source=source, plan=plan, conclusion=conclusion, structured=structured,
-                           analysis=analysis, plot=plot, events=events, context=context)
+    return SimpleNamespace(source=source, inputs=inputs, plan=plan, arrangement=arrangement, conclusion=conclusion,
+                           structured=structured, analysis=analysis, plot=plot, repair=repair,
+                           narrative=narrative, events=events, context=context)
 
 
-@pytest.mark.parametrize('fault', ['none', 'plan', 'mapping', 'interpretation', 'analysis', 'plot'])
-def test_f4_workflow_publishes_verified_files(replay, fault):
+def payload(prompt):
+    return json.loads(prompt.split('INPUT_JSON:\n', 1)[1])
+
+
+def published(replay):
+    artifacts = [event for event in replay.events if event['type'] == 'artifact']
+    paths = {Path(event['value']['path']).suffix: Path(event['value']['path']) for event in artifacts}
+    pool = workflow._read_bound(str(paths['.json']))
+    return (workflow.material(pool, 'analysis')['content'], workflow.material(pool, 'charts')['content'],
+            pool['history'][-1]['analysis_execution'][0], paths)
+
+
+@pytest.mark.parametrize('fault', ['none', 'plan', 'figure_plan', 'analysis', 'plot',
+                                 'fallback', 'missing_plot', 'no_figures'])
+def test_f4_workflow_publishes_executed_files(replay, fault, monkeypatch):
     if fault == 'plan':
-        replay.structured.side_effect = [{}, replay.plan, replay.conclusion]
-    elif fault == 'mapping':
-        incomplete = copy.deepcopy(replay.plan)
-        incomplete['figures'][0].pop('data_mapping')
-        repair = dict(updates=[], figure_updates=[dict(figure_id='means', figure=replay.plan['figures'][0])])
-        replay.structured.side_effect = [incomplete, repair, replay.conclusion]
-    elif fault == 'interpretation':
-        invalid = {**replay.conclusion, 'summary': replay.conclusion['summary'] + '[结果:baseline]'}
-        replay.structured.side_effect = [replay.plan, invalid, replay.conclusion]
-    elif fault == 'analysis':
-        replay.analysis.side_effect = [{'code': ANALYSIS_CODE.replace('.mean()', '.sum()')},
-                                       {'code': ANALYSIS_CODE}]
-    elif fault == 'plot':
-        replay.plot.side_effect = [{'code': 'def draw(data, statistics, spec):\n    return missing_name'},
-                                   {'code': PLOT_CODE}]
+        replay.structured.side_effect = [{}, replay.plan, replay.arrangement]
+    elif fault == 'figure_plan':
+        invalid = copy.deepcopy(replay.arrangement)
+        invalid['figures'][0]['result_indices'] = [99]
+        replay.structured.side_effect = [replay.plan, invalid, replay.arrangement]
+    elif fault in ('analysis', 'plot'):
+        source = ANALYSIS_CODE if fault == 'analysis' else PLOT_CODE
+        statement = '    return dict(results=results)' if fault == 'analysis' else '    return fig'
+        line = source.splitlines().index(statement) + 1
+        replacement = dict(replacements=[dict(start_line=line, end_line=line, code=statement)])
+        code = source.replace(statement, '    return missing_name')
+        if fault == 'analysis':
+            replay.analysis.return_value = {'code': code}
+            replay.structured.side_effect = [replay.plan, replacement, replay.arrangement]
+        else:
+            replay.plot.return_value = {'code': code}
+            replay.repair.return_value = replacement
+    elif fault == 'fallback':
+        replay.plot.return_value = {'code': PLOT_CODE.replace('return fig', 'return missing_name')}
+        line = PLOT_CODE.splitlines().index('    return fig') + 1
+        replay.repair.return_value = dict(replacements=[dict(start_line=line, end_line=line,
+                                                           code='    return missing_name')])
+    elif fault == 'missing_plot':
+        replay.arrangement['figures'].append(dict(replay.arrangement['figures'][0], title='Missing comparison'))
+        original = plots.draw_one
+        def draw(*args):
+            if args[2]['id'] == 'fig2':
+                raise plots.FigureRenderError('injected unavailable figure', [])
+            return original(*args)
+        monkeypatch.setattr(plots, 'draw_one', draw)
+    elif fault == 'no_figures':
+        replay.arrangement['figures'] = []
 
     assert workflow.run_paper_step()['status'] == 'completed'
-
     artifacts = [event for event in replay.events if event['type'] == 'artifact']
-    assert {event['slot'] for event in artifacts} == set(replay.context.output_slots)
-    paths = [Path(event['value']['path']) for event in artifacts]
-    assert all(path.is_file() and path.stat().st_size for path in paths)
-    pool = workflow._read_bound(str(next(p for p in paths if p.suffix == '.json')))
-    analysis = workflow.material(pool, 'analysis')['content']
-    assert [item['value'] for item in analysis['findings']] == pytest.approx([2., 5.])
-    assert replay.conclusion['summary'] in next(p for p in paths if p.suffix == '.md').read_text()
-    charts = workflow.material(pool, 'charts')['content']
-    assert len(charts) == 1 and charts[0]['title'] == 'Mean scores' and charts[0]['caption']
-    assert '<svg' in next(p for p in paths if p.suffix == '.svg').read_text()
-    assert next(p for p in paths if p.suffix == '.png').read_bytes().startswith(b'\x89PNG\r\n\x1a\n')
-    assert next(p for p in paths if p.suffix == '.pdf').read_bytes().startswith(b'%PDF-')
-    assert [item['node'] for item in pool['history']] == ['F4']
-    assert (replay.structured.call_count, replay.analysis.call_count, replay.plot.call_count) == (
-        2 + (fault in ('plan', 'mapping', 'interpretation')), 1 + (fault == 'analysis'), 1 + (fault == 'plot'))
+    expected_slots = replay.context.output_slots[:2] if fault == 'no_figures' else replay.context.output_slots
+    assert {event['slot'] for event in artifacts} == set(expected_slots)
+    analysis, charts, execution, paths = published(replay)
+    assert all(path.is_file() and path.stat().st_size for path in paths.values())
+    assert [row['value'] for row in analysis['findings']] == pytest.approx([2., 5.])
+    assert all(json.loads(row['calculation'])['scope'] == replay.inputs['topic'] for row in analysis['findings'])
+    assert payload(replay.analysis.call_args.args[0])['tables']['data']['rows'] == replay.inputs['data']['rows']
+    figure_request = next(payload(call.args[0]) for call in replay.structured.call_args_list
+                          if 'analysis_results' in payload(call.args[0]))
+    assert [row['value'] for row in figure_request['analysis_results']] == [2., 5.]
+    assert set(figure_request['outline']) == {'questions', 'outline'}
+    assert replay.conclusion in analysis['summary']
+    assert replay.conclusion in paths['.md'].read_text()
+    assert '完整统计结果' not in paths['.md'].read_text()
+    replay.narrative.assert_called_once()
+    narrative = payload(replay.narrative.call_args.args[0])
+    assert [row['value'] for row in narrative['analysis_results']] == [2., 5.]
+    assert [figure['title'] for figure in narrative['figures']] == [chart['title'] for chart in charts]
+    if fault == 'no_figures':
+        assert charts == [] and not replay.plot.called
+        return
+    assert len(charts) == 1 and charts[0]['title'] == 'Mean scores'
+    assert charts[0]['finding_ids'] == [row['id'] for row in analysis['findings']]
+    assert bool(execution['figures'][0].get('fallback')) == (fault == 'fallback')
+    if fault in ('fallback', 'missing_plot'):
+        assert '图表部分完成' in analysis['summary']
+        if fault == 'fallback':
+            assert execution['figures'][0]['fallback']['relationship_not_shown']
+            assert len(execution['figures'][0]['original_attempts']) == 2
+        else:
+            assert execution['figures'][1]['status'] == 'failed'
+            assert execution['plan']['failed_figures'][0]['id'] == 'fig2'
+            assert payload(replay.narrative.call_args.args[0])['unavailable_figures'] == ['Missing comparison']
+    assert '<svg' in paths['.svg'].read_text()
+    assert paths['.png'].read_bytes().startswith(b'\x89PNG\r\n\x1a\n')
+    assert paths['.pdf'].read_bytes().startswith(b'%PDF-')
+    assert replay.structured.call_count == 2 + (fault in ('plan', 'figure_plan', 'analysis'))
+    assert replay.analysis.call_count == replay.plot.call_count == 1
+    assert replay.repair.call_count == (fault in ('plot', 'fallback'))
 
 
-@pytest.mark.parametrize('fault', ['input', 'calculation'])
-def test_f4_failure_is_not_published_and_can_resume(replay, fault):
-    original = replay.source.read_bytes()
-    if fault == 'input':
-        value = json.loads(replay.source.read_text())
-        value['data']['rows'][0].pop()
-        replay.source.write_text(json.dumps(value), encoding='utf-8')
+@pytest.mark.parametrize('stage', ['analysis', 'plot'])
+@pytest.mark.parametrize('recover', [True, False])
+def test_four_local_repairs_then_success_or_explicit_failure(replay, monkeypatch, stage, recover):
+    monkeypatch.delenv('LAZYMIND_PAPER_GENERATED_ANALYSIS_ATTEMPTS')
+    monkeypatch.delenv('LAZYMIND_PAPER_PLOT_ATTEMPTS')
+    source = ANALYSIS_CODE if stage == 'analysis' else PLOT_CODE
+    statement = '    return dict(results=results)' if stage == 'analysis' else '    return fig'
+    line = source.splitlines().index(statement) + 1
+    broken = source.replace(statement, '    return missing_name')
+    (replay.analysis if stage == 'analysis' else replay.plot).return_value = {'code': broken}
+    repairs = []
+
+    def repair(prompt):
+        sent = payload(prompt)
+        assert f'{line} |     return missing_name' in sent['previous_code']
+        assert 'missing_name' in sent['error'] and f'line {line}' in sent['error']
+        repairs.append(sent)
+        code = statement if recover and len(repairs) == 4 else '    return missing_name'
+        return dict(replacements=[dict(start_line=line, end_line=line, code=code)])
+
+    def structured(prompt):
+        sent = payload(prompt)
+        if sent.get('previous_code'):
+            return repair(prompt)
+        return replay.arrangement if 'analysis_results' in sent else replay.plan
+
+    replay.structured.side_effect = structured
+    replay.repair.side_effect = repair
+    if stage == 'analysis' and not recover:
+        with pytest.raises(ContractError, match='missing_name'):
+            workflow.run_paper_step()
+        assert not any(event['type'] == 'artifact' for event in replay.events)
+        replay.narrative.assert_not_called()
+        replay.plot.assert_not_called()
     else:
-        replay.analysis.return_value = {'code': ANALYSIS_CODE.replace('.mean()', '.sum()')}
+        assert workflow.run_paper_step()['status'] == 'completed'
+        analysis, _, execution, _ = published(replay)
+        attempts = execution['attempts'] if stage == 'analysis' else execution['figures'][0].get(
+            'original_attempts', execution['figures'][0]['attempts'])
+        assert len(attempts) == 5
+        assert [row['value'] for row in analysis['findings']] == [2., 5.]
+        if recover:
+            field, status = ('outcome', 'passed') if stage == 'analysis' else (
+                'status', 'passed_execution_and_file_checks')
+            assert attempts[-1][field] == status and not execution['figures'][0].get('fallback')
+        else:
+            assert execution['figures'][0]['fallback']['relationship_not_shown']
+            assert '图表部分完成' in analysis['summary']
+    assert len(repairs) == 4 and replay.analysis.call_count == 1
+    assert replay.plot.call_count == (0 if stage == 'analysis' and not recover else 1)
+
+
+@pytest.mark.parametrize('stage,limit', [('plan', 3), ('figure_plan', 2)])
+def test_code_repair_budget_does_not_expand_planning_retries(replay, monkeypatch, stage, limit):
+    monkeypatch.delenv('LAZYMIND_PAPER_GENERATED_ANALYSIS_ATTEMPTS')
+    replay.structured.side_effect = ([{}] * limit if stage == 'plan' else [replay.plan] + [{}] * limit)
+    with pytest.raises(ContractError, match='analysis.plan' if stage == 'plan' else 'analysis.figures'):
+        workflow.run_paper_step()
+    assert replay.structured.call_count == limit + (stage == 'figure_plan')
+    assert replay.analysis.call_count == (stage == 'figure_plan')
+    assert not any(event['type'] == 'artifact' for event in replay.events)
+    replay.plot.assert_not_called()
+
+
+def test_parallel_figures_keep_full_evidence_private_context_and_order(replay, monkeypatch):
+    replay.arrangement['figures'] = [dict(replay.arrangement['figures'][0], result_indices=[index],
+                                        title=f'Mean {index + 1}') for index in range(2)]
+    monkeypatch.setenv('LAZYMIND_PAPER_PLOT_CONCURRENCY', '2')
+    barrier, second_done = Barrier(2), Event()
+    request = ContextVar('f4_test_request', default=None)
+    original, completed = plots.generate_code, []
+    source_bytes = replay.source.read_bytes()
+
+    def generate(data, statistics, spec, reference, previous, error):
+        assert request.get() == 'f4-request'
+        assert lazyllm.globals['agentic_config']['user_id'] == 'f4-test'
+        data['test_marker'] = spec['id']
+        barrier.wait(timeout=10)
+        assert data['test_marker'] == spec['id']
+        if spec['id'] == 'fig1':
+            assert second_done.wait(10)
+        completed.append(spec['id'])
+        second_done.set()
+        return original(data, statistics, spec, reference, previous, error)
+
+    monkeypatch.setattr(plots, 'generate_code', generate)
+    token = request.set('f4-request')
+    try:
+        assert workflow.run_paper_step()['status'] == 'completed'
+    finally:
+        request.reset(token)
+    analysis, charts, execution, _ = published(replay)
+    assert completed == ['fig2', 'fig1'] and [chart['id'] for chart in charts] == ['fig1', 'fig2']
+    assert [chart['finding_ids'] for chart in charts] == [['r1'], ['r2']]
+    for call in replay.plot.call_args_list:
+        sent = payload(call.args[0])
+        assert [row['value'] for row in sent['data']['analysis_results']] == [2., 5.]
+        assert sent['data']['tables']['data']['rows'] == replay.inputs['data']['rows']
+        assert sent['data']['shared_style']['series_order'] == ['baseline', 'candidate']
+        assert sent['data']['shared_style']['terminology']['baseline'] == 'Baseline'
+        assert 'HELPER SOURCE' in sent['skill_reference'] and 'def ' in sent['skill_reference']
+    assert replay.source.read_bytes() == source_bytes and replay.analysis.call_count == 1
+    assert all(item['concurrency'] == 2 and not item.get('fallback') for item in execution['figures'])
+    assert [row['value'] for row in analysis['findings']] == [2., 5.]
+
+
+@pytest.mark.parametrize('fault', ['source', 'nonfinite'])
+def test_invalid_executed_results_are_not_published_or_hidden_by_plot_fallback(replay, monkeypatch, fault):
+    monkeypatch.setenv('LAZYMIND_PAPER_GENERATED_ANALYSIS_ATTEMPTS', '1')
+    source = (ANALYSIS_CODE.replace('column=metric', "column='missing_column'") if fault == 'source' else
+              ANALYSIS_CODE.replace('sum(values) / len(values)', "float('nan')"))
+    replay.analysis.return_value = {'code': source}
     with pytest.raises(ContractError):
         workflow.run_paper_step()
     assert not any(event['type'] == 'artifact' for event in replay.events)
-    latest = json.loads((replay.source.parent / 'f4-trace/latest.json').read_text())
-    trace = json.loads((replay.source.parent / 'f4-trace' / latest['summary']).read_text())
-    assert trace['status'] == 'failed' and trace['error']
-    assert replay.structured.call_count == (0 if fault == 'input' else 1)
-    assert replay.analysis.call_count == (0 if fault == 'input' else 2)
-    replay.source.write_bytes(original)
-    replay.analysis.return_value = {'code': ANALYSIS_CODE}
-    replay.structured.side_effect = [replay.plan, replay.conclusion]
-    replay.context.params['retry_hint'] = 'Recovery request for this rerun only: 重试'
+    replay.plot.assert_not_called()
+    replay.narrative.assert_not_called()
+
+
+def test_short_plan_accepts_changed_columns_groups_units_and_missing_values(replay):
+    inputs = copy.deepcopy(replay.inputs)
+    inputs['data'] = dict(columns=['condition', 'latency'], column_types=['string', 'number'],
+                          units=[None, 'ms'], rows=[['a', 1.], ['a', None], ['a', 3.], ['b', 5.], ['c', 8.]])
+    replay.source.write_text(json.dumps(inputs))
+    replay.plan['questions'] = ['Mean latency by condition?']
+    replay.arrangement['figures'][0]['result_indices'] = [0, 1, 2]
+    replay.narrative.return_value = '三组均值为 2、5、8 ms；仅限本次模拟样本。'
     assert workflow.run_paper_step()['status'] == 'completed'
-    saved_path = next(event['value']['path'] for event in reversed(replay.events)
-                      if event['type'] == 'artifact' and event['slot'] == 'data_analysis_pool')
-    saved = workflow._read_bound(saved_path)
-    assert saved['history'][-1]['request'] == replay.context.params['user_input']
-    assert workflow.material(saved, 'analysis')['content']['findings'][0]['value'] == 2.
+    analysis, charts, _, _ = published(replay)
+    assert [row['value'] for row in analysis['findings']] == [2., 5., 8.]
+    assert {row['unit'] for row in analysis['findings']} == {'ms'}
+    assert [row['sample_size']['excluded_n'] for row in analysis['findings']] == [1, 0, 0]
+    assert len(analysis['targets']) == 1 and charts[0]['finding_ids'] == ['r1', 'r2', 'r3']
+    assert replay.analysis.call_count == replay.plot.call_count == 1
+
+
+def test_invalid_input_is_not_published(replay):
+    inputs = json.loads(replay.source.read_text())
+    inputs['data']['rows'][0].pop()
+    replay.source.write_text(json.dumps(inputs))
+    with pytest.raises(ContractError):
+        workflow.run_paper_step()
+    assert not any(event['type'] == 'artifact' for event in replay.events)
+    replay.structured.assert_not_called()
 
 
 def test_chat_hands_f4_to_workflow_and_stops(monkeypatch):
@@ -206,31 +356,6 @@ def test_chat_hands_f4_to_workflow_and_stops(monkeypatch):
     assert request.handoff and [step.step_id for step in request.steps] == ['data_analysis']
     assert result['task_id'] == 'f4-task' and _tool_result_stop_text(result)
     client.advance.assert_called_once()
-
-
-def test_design_evidence_requires_source_references(replay):
-    from lazymind.document_tools.paper.analysis.plan import validate_plan
-    from lazymind.document_tools.paper.analysis.plan_bindings import evidence_catalog
-    from lazymind.document_tools.paper.analysis.plan_repair import PlanRepairError, apply_updates
-    from lazymind.document_tools.paper.analysis.schema import normalize_input
-
-    value = json.loads(replay.source.read_text())
-    quote = '每条观测是独立测量，按方法分别计算均值区间。'
-    value['study_design'] = dict(description=quote)
-    inputs = normalize_input(value)
-    for job in replay.plan['jobs']:
-        job.update(interval_level=.95, design_evidence=quote)
-    with pytest.raises(PlanRepairError) as error:
-        validate_plan(replay.plan, inputs)
-    issues = error.value.issues
-    assert {issue['field'] for issue in issues} == {'design_evidence_refs'}
-    reference = next(item['id'] for item in evidence_catalog(inputs) if item['text'] == quote)
-    repaired = apply_updates(error.value.plan, dict(updates=[
-        dict(job_id=issue['job_id'], field=issue['field'], value=[reference]) for issue in issues]), issues)
-    locked = validate_plan(repaired, inputs)
-    assert all(job['design_evidence'] == quote for job in locked['jobs'])
-    locked['jobs'][0]['design_evidence'] = '模型改写的原文不能成为依据。'
-    assert validate_plan(locked, inputs)['jobs'][0]['design_evidence'] == quote
 
 
 def test_skill_override_requires_the_actual_skill_root(tmp_path):

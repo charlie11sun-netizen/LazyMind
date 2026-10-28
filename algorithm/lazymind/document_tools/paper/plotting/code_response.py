@@ -1,39 +1,47 @@
-"""Apply model-authored local code edits without changing the execution validators."""
-import copy
+"""Normalize initial Python answers and apply repairs to numbered source lines."""
+from dataclasses import dataclass
 import json
 import re
+
+
+PYTHON_RESPONSE = re.compile(
+    r'```(?:python|py)\s*\n([\s\S]*?)\n```'
+    r'(?:\s*```(?:text|caption)\s*\n([\s\S]*?)\n```)?')
 
 
 CODE_INSTRUCTION = '''Return Python source with actual physical newlines, preferably in ONE ```python``` block.
 Do not JSON-encode the source or put literal \\n between statements. Do not wrap it in a Python string.
 An optional figure caption may follow in ONE ```text``` block. No other explanation or reasoning text.
-Existing JSON code/edits responses remain accepted for compatibility.
+Code may also be returned as a JSON code field. Return the complete initial script.
 '''
 
 
-def response_text(raw):
-    """Separate completed leading reasoning envelopes from the final response.
+@dataclass(frozen=True)
+class ModelResponse:
+    body: str | dict
+    reasoning: str = ''
 
-    Never search for JSON/code inside reasoning or change tags inside the body.
-    An unfinished reasoning envelope has no independently identifiable final response.
-    """
-    text, removed = str(raw or '').strip(), 0
-    while True:
-        opening = re.match(r'<(think|thinking)>', text, flags=re.IGNORECASE)
-        if opening is None:
-            return text, removed
-        closing = re.search(r'</' + opening[1] + r'>', text[opening.end():], flags=re.IGNORECASE)
-        if closing is None:
-            raise ValueError('模型思考段未闭合，不能将其中的 JSON 或代码作为最终正文')
-        text = text[opening.end() + closing.end():].lstrip()
-        removed += 1
+
+def json_body(text):
+    text = text.strip()
+    match = re.fullmatch(r'```(?:json)?\s*([\s\S]*?)\s*```', text)
+    return match[1] if match else text
+
+
+def normalize_response(raw):
+    """Read provider fields verbatim; never recover executable text from reasoning."""
+    if isinstance(raw, dict):
+        if 'content' not in raw and not {'reasoning_content', 'reasoning_details'} & raw.keys():
+            return ModelResponse(raw)
+        return ModelResponse(str(raw.get('content') or ''), str(raw.get('reasoning_content') or ''))
+    return ModelResponse(str(raw or ''))
 
 
 def parse_code_response(raw):
     """Read ordinary Python text without guessing how to repair escaping or source syntax."""
     if isinstance(raw, dict):
         return raw
-    text, _ = response_text(raw)
+    text = normalize_response(raw).body.strip()
     if not text:
         raise ValueError('模型未返回代码')
     if text.startswith('{'):
@@ -41,8 +49,7 @@ def parse_code_response(raw):
         if not isinstance(result, dict):
             raise ValueError('代码响应必须为对象或 Python 文本')
         return result
-    match = re.fullmatch(r'```(?:python|py)\s*\n([\s\S]*?)\n```'
-                         r'(?:\s*```(?:text|caption)\s*\n([\s\S]*?)\n```)?', text)
+    match = PYTHON_RESPONSE.fullmatch(text)
     if match:
         result = {'code': match[1]}
         if match[2] is not None:
@@ -56,34 +63,59 @@ def parse_code_response(raw):
     return {'code': text}
 
 
-REPAIR_INSTRUCTION = '''On repair, prefer JSON {"edits":[{"old":"exact unique source text","new":"replacement"}]}.
-Change only the code responsible for the reported error. Edits are applied in order; each old string must occur
-exactly once in the current source. Use valid JSON escaping for quotes, backslashes and newline characters;
-the DECODED old/new values must match actual source text. Do not return a diff or line numbers.
-If a local edit is insufficient, return complete Python source in a python block; the old JSON code response also works.
+REPAIR_INSTRUCTION = '''Repair the supplied previous_code using the actual error and full numbered source.
+Return ONE JSON object: {"replacements":[{"start_line":12,"end_line":13,"code":"    corrected_statement\\n"}]}.
+Each inclusive, 1-based range refers to the SAME supplied source version. The "N | " prefixes are line numbers,
+not source text. Return raw replacement code as JSON strings, preserving indentation; do not include line prefixes.
+Replace coherent complete statements, loops or functions needed to fix the root cause. When dictionary keys or
+variable dependencies change, update the entire affected logical block and all its uses together, not just the
+throwing line. For a repeated binding error, replace the affected block/function instead of accumulating one-line
+edits. Keep definitions needed by later uses and include matching brackets. Use the current numbered source to
+choose ranges; an error line is not automatically the right replacement range.
+A traceback may point inside an injected helper: fix the incorrect arguments in previous_code, not the
+read-only helper. Do not blindly replace only the throwing line. Multiple ranges must not overlap; the host applies
+them from bottom to top. To insert code, replace an adjacent source line with that line plus the insertion; use an
+empty code string to delete a range. Preserve all other lines, scientific methods, input scope and calculations.
+Do not return a complete script, an old/new text patch, a diff or explanation. A figure caption, only if changed,
+may be included as a "caption" string in the same JSON object. Do not wrap Python or captions in separate blocks.
 '''
 
 
-def code_response(answer, previous='', metadata=()):
-    """Return full code or a strictly anchored patch; ambiguous edits never modify the source."""
-    if not isinstance(answer, dict) or set(answer) - {'code', 'edits', *metadata}:
-        raise ValueError('代码响应只允许 code 或 edits 及声明的附加字段')
-    if ('code' in answer) == ('edits' in answer):
-        raise ValueError('代码响应必须且只能包含 code 或 edits 之一')
-    if 'code' in answer:
-        if not isinstance(answer['code'], str) or not answer['code'].strip():
-            raise ValueError('code 必须为非空文本')
-        return answer['code']
-    edits = answer['edits']
-    if not previous or not isinstance(edits, list) or not edits:
-        raise ValueError('局部代码修复需要已有程序和非空 edits')
-    result = previous
-    for edit in copy.deepcopy(edits):
-        if (not isinstance(edit, dict) or set(edit) != {'old', 'new'}
-                or not isinstance(edit['old'], str) or not edit['old']
-                or not isinstance(edit['new'], str)):
-            raise ValueError('每项代码修复必须包含非空 old 和文本 new')
-        if result.count(edit['old']) != 1:
-            raise ValueError('代码修复 old 必须精确匹配当前程序中的唯一片段')
-        result = result.replace(edit['old'], edit['new'], 1)
-    return result
+def numbered_source(source):
+    return '\n'.join(f'{number} | {line}' for number, line in enumerate(source.splitlines(), 1))
+
+
+def repair_response(answer, previous):
+    """Apply nonoverlapping inclusive ranges against one immutable source version."""
+    replacements = answer.get('replacements') if isinstance(answer, dict) else None
+    if not isinstance(replacements, list) or not replacements:
+        raise ValueError('修复请返回非空 replacements 列表，每项含 start_line、end_line、code；不要返回完整脚本')
+    lines = previous.splitlines(keepends=True)
+    ranges = []
+    for item in replacements:
+        if not isinstance(item, dict):
+            raise ValueError('每项 replacements 必须为对象，含 start_line、end_line、code')
+        start, end, code = item.get('start_line'), item.get('end_line'), item.get('code')
+        if type(start) is not int or type(end) is not int or not 1 <= start <= end <= len(lines):
+            raise ValueError(f'替换行号无效：{start!r}–{end!r}；当前源码共 {len(lines)} 行，使用 1 起始的闭区间')
+        if not isinstance(code, str):
+            raise ValueError(f'替换 {start}–{end} 行的 code 必须是字符串（删除时为空字符串）')
+        ranges.append((start, end, code))
+    ranges.sort(key=lambda item: item[0])
+    for left, right in zip(ranges, ranges[1:]):
+        if left[1] >= right[0]:
+            raise ValueError(f'替换范围重叠：{left[0]}–{left[1]} 与 {right[0]}–{right[1]}；行号必须基于同一份源码')
+    for start, end, code in reversed(ranges):
+        # Keep adjacent untouched lines separate, including when a replacement omits its final newline.
+        ending = '\r\n' if lines[end - 1].endswith('\r\n') else '\n'
+        if code and not code.endswith(('\n', '\r')) and (end < len(lines) or lines[end - 1].endswith(('\n', '\r'))):
+            code += ending
+        lines[start - 1:end] = [code] if code else []
+    return ''.join(lines)
+
+
+def code_response(answer):
+    """Read the complete initial source."""
+    if not isinstance(answer, dict) or not isinstance(answer.get('code'), str) or not answer['code'].strip():
+        raise ValueError('请返回完整 Python 脚本：单个 python 代码块或非空 code 字段')
+    return answer['code']

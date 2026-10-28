@@ -37,6 +37,20 @@ def configure(client, policy):
         # their constructor timeout to each supplier when it is first created.
         # Passing timeout in forward kwargs would also put it in the API body.
         client._timeout = (policy.connect, policy.read)
+        # Keep the provider's content/reasoning fields separate for this F4 call.
+        # The SDK's default formatter concatenates them into <think> text.
+        client.formatter(lambda message: message)
+        if isinstance(client, LazyLLMOnlineChatModuleBase):
+            supplier = client
+        else:
+            from lazyllm import globals
+            with globals.stack_enter(client.identities):
+                supplier = client._get_supplier()
+        if supplier.PROVIDER_NAME == 'minimax':
+            supplier._model_optional_params['reasoning_split'] = True
+            # This F4 request reads native fields; bypass the SDK's lossy details
+            # conversion on this newly created instance only.
+            supplier._convert_msg_format = lambda message: message
     return supported
 
 
