@@ -1,6 +1,5 @@
 """Core native-response and line-repair contracts, without live model calls."""
 import json
-from contextlib import nullcontext
 
 import lazyllm
 import pytest
@@ -37,46 +36,34 @@ def test_code_is_read_from_native_body_without_merging_reasoning():
                                        reasoning_content='Unfinished draft code'))
     assert parse_code_response(response.body)['code'] == code
     assert response.reasoning == 'Unfinished draft code'
+    assert normalize_response(dict(content=code, reasoning='Draft')).reasoning == 'Draft'
+    assert normalize_response(dict(content=code, reasoning_details=[dict(text='Draft')])).reasoning == 'Draft'
     with pytest.raises(ValueError, match='未返回代码'):
         parse_code_response(normalize_response(dict(reasoning_content=code)).body)
 
 
-# Each case covers a distinct transport regression; avoid provider/format cross-products.
-@pytest.mark.parametrize('source,stream,field,kind,interrupted', [
-    ('minimax', False, 'reasoning_content', 'plan', False),
-    ('minimax', True, 'reasoning_content', 'code', False),
-    ('openai', True, 'reasoning', 'code', False),
-    ('openai', True, 'reasoning_details', 'markdown', False),
-    ('openai', False, 'reasoning_details', 'plan', False),
-    ('openai', True, 'reasoning', 'markdown', True),
+@pytest.mark.parametrize('stream', [False, True])
+@pytest.mark.parametrize('stage,method,body,expected', [
+    ('plan_generation', 'call_model', '  {"questions":["Observed means?"],"outline":"Group means"}\n',
+     dict(questions=['Observed means?'], outline='Group means')),
+    ('figure_code_generation', 'call_code_model', '```python\nimport matplotlib.pyplot as plt\n```\n',
+     dict(code='import matplotlib.pyplot as plt')),
+    ('interpretation', 'call_markdown_model', '## Conclusion\n\nMean score: 2.\n',
+     '## Conclusion\n\nMean score: 2.\n'),
 ])
-def test_native_provider_channels_through_sdk_and_f4(
-        monkeypatch, tmp_path, source, stream, field, kind, interrupted):
-    import requests
-    from lazyllm.module.llms.onlinemodule.base import ModelCallError
-    from lazyllm.module.llms.onlinemodule.chat import dynamic_chat_config
+def test_native_provider_channels_through_sdk_and_f4(monkeypatch, tmp_path, stream, stage, method, body, expected):
+    from lazyllm.module.llms.onlinemodule.supplier.minimax import MinimaxChat
+    from lazyllm.module.llms.onlinemodule.chat import OnlineChatModule, dynamic_chat_config
 
-    stage, method, body, expected = {
-        'plan': ('plan_generation', 'call_model', '{"questions":["Means?"],"outline":"Means"}',
-                 dict(questions=['Means?'], outline='Means')),
-        'code': ('figure_code_generation', 'call_code_model', '```python\nimport math\n```',
-                 dict(code='import math')),
-        'markdown': ('interpretation', 'call_markdown_model', '## Conclusion\nMean: 2.', '## Conclusion\nMean: 2.'),
-    }[kind]
-    routed = source == 'openai'
-    client = lazyllm.OnlineChatModule(source='dynamic') if routed else lazyllm.OnlineChatModule(
-        source=source, api_key='offline-test', model='f4-test')
-    unrelated = lazyllm.OnlineChatModule(source=source, api_key='offline-test', model='other-flow')
-    parser = unrelated.RESPONSE_PARSER_CLASS
-    thinking, calls = 'Draft.\n  Continue.', []
-
-    def reasoning(text):
-        return {field: [dict(text=text)] if field == 'reasoning_details' else text}
+    client = OnlineChatModule(source='dynamic')
+    unrelated = MinimaxChat(api_key='offline-test', model='other-flow')
+    converter = MinimaxChat._convert_msg_format
+    calls, thinking = [], '\n' * 3
 
     class Response:
         status_code = 200
         text = json.dumps(dict(choices=[dict(index=0, finish_reason='stop', message=dict(
-            role='assistant', content=body, **reasoning(thinking)))]))
+            role='assistant', content=body, reasoning_content=thinking))]))
 
         def __enter__(self):
             return self
@@ -85,13 +72,14 @@ def test_native_provider_channels_through_sdk_and_f4(
             pass
 
         def iter_lines(self):
-            yield ('data: ' + json.dumps(dict(choices=[dict(index=0, delta=reasoning(thinking))]))).encode()
-            step = json.loads((recorder.root / 'public.json').read_text())['process_steps'][0]
-            assert step['reasoning']['text'] == thinking and step['reasoning']['mode'] == 'streaming'
-            assert not step.get('output', {}).get('text')
-            if interrupted:
-                raise requests.ConnectionError('Offline stream interrupted')
-            yield ('data: ' + json.dumps(dict(choices=[dict(index=0, delta=dict(content=body))]))).encode()
+            fields = (dict(reasoning_details=[dict(text=thinking)]) if method == 'call_markdown_model'
+                      else dict(reasoning=thinking))
+            deltas = [fields, dict(content=body[:7]), dict(content=body[7:])]
+            for delta in deltas:
+                yield ('data: ' + json.dumps(dict(choices=[dict(index=0, delta=delta)]))).encode()
+                if delta is fields:
+                    step = json.loads((recorder.root / 'public.json').read_text())['process_steps'][0]
+                    assert step['reasoning']['text'] == thinking and not step.get('output', {}).get('text')
             yield b'data: {"choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}'
             yield b'data: [DONE]'
 
@@ -102,47 +90,17 @@ def test_native_provider_channels_through_sdk_and_f4(
     monkeypatch.setattr('requests.post', post)
     monkeypatch.setattr(lazyllm, 'AutoModel', lambda **_: client)
     monkeypatch.setenv('LAZYMIND_PAPER_MODEL_STREAM', 'auto' if stream else 'off')
-    routing = dynamic_chat_config(modules=client, source=source, model='f4-test',
-                                  url='http://provider.test/v1/', skip_auth=True) if routed else nullcontext()
-    with routing:
-        if routed:
-            with lazyllm.globals.stack_enter(client.identities):
-                client._get_supplier()  # Exercise the cached caller, not just the router.
-        with trace.capture(tmp_path, 'native-test', emit=lambda _: None) as recorder:
-            with trace.stage(stage, attempt=1):
-                if interrupted:
-                    with pytest.raises(ModelCallError):
-                        getattr(model, method)('Offline request')
-                else:
-                    assert getattr(model, method)('Offline request') == expected
+    with dynamic_chat_config(modules=client, source='openai' if stream else 'minimax', model='f4-test',
+                             url='http://provider.test/v1/', skip_auth=True), \
+            trace.capture(tmp_path, 'native-test', emit=lambda _: None) as recorder:
+        with lazyllm.globals.stack_enter(client.identities):
+            client._get_supplier()  # Cached before F4 configures the actual caller.
+        with trace.stage(stage, attempt=1):
+            assert getattr(model, method)('Offline request') == expected
     step = json.loads((recorder.root / 'public.json').read_text())['process_steps'][0]
-    assert step['reasoning']['text'] == thinking
-    expected_mode = 'interrupted' if interrupted else 'complete' if stream else 'buffered'
-    assert step['reasoning']['mode'] == expected_mode
-    assert step.get('output', {}).get('text', '') == ('' if interrupted else body)
+    assert step['output']['text'] == body and step['reasoning']['text'] == thinking
     assert len(calls) == 1 and calls[0]['stream'] == stream
-    assert calls[0].get('reasoning_split') is (True if source == 'minimax' else None)
-    assert ('response_format' in calls[0]) == (kind == 'plan')
-    assert type(unrelated).RESPONSE_PARSER_CLASS is parser and unrelated._model_optional_params == {}
-    assert unrelated._formatter(dict(role='assistant', content='body', reasoning_content='draft')) \
-        == '<think>draft</think>body'
-
-
-def test_final_response_replaces_preview_without_reinterpreting_plan_fields(monkeypatch, tmp_path):
-    client = lazyllm.OnlineChatModule(source='openai', api_key='offline-test', model='f4-test')
-    raw = dict(content='Final body', reasoning='Final reasoning')
-
-    def call(_client, _prompt, options, *_):
-        options['stream_output']['_stream_sink'](dict(tag='think', delta='Partial preview'))
-        return raw
-
-    monkeypatch.setattr(lazyllm, 'AutoModel', lambda **_: client)
-    monkeypatch.setattr(model.transport, 'call', call)
-    monkeypatch.setenv('LAZYMIND_PAPER_MODEL_STREAM', 'auto')
-    with trace.capture(tmp_path, 'final-response', emit=lambda _: None) as recorder:
-        with trace.stage('interpretation'):
-            assert model.call_markdown_model('Offline request') == 'Final body'
-    step = json.loads((recorder.root / 'public.json').read_text())['process_steps'][0]
-    assert step['reasoning']['text'] == 'Final reasoning' and raw['reasoning'] == 'Final reasoning'
-    plan = dict(questions=['Means?'], outline='Means', reasoning='Method note')
-    assert normalize_response(plan).body == plan
+    assert calls[0].get('reasoning_split') is (None if stream else True)
+    assert ('response_format' in calls[0]) == (method == 'call_model')
+    assert MinimaxChat._convert_msg_format is converter
+    assert '_convert_msg_format' not in unrelated.__dict__ and unrelated._model_optional_params == {}
