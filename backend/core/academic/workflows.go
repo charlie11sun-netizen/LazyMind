@@ -417,7 +417,7 @@ func createPaperHandoff(ctx context.Context, tx *gorm.DB, user, dataset, record 
 		query += "\n先生成阅读心得，再携带心得和原论文清单生成汇报 PPT。"
 	}
 	workflowID := "paper_workflow_mock"
-	if kind == "review" {
+	if kind == "review" || kind == "reflection" {
 		workflowID = "paper-writing"
 	} else if kind == "ppt" && reflectionFirst {
 		workflowID = "paper_ppt_with_reflection_mock"
@@ -1097,6 +1097,9 @@ func academicChatContext(ctx context.Context, db *gorm.DB, user, conversation st
 		if handoff.Kind == "review" {
 			return "Paper review handoff:\n" + context + "\nStart paper-writing at literature_review. F2 reads this Chat's frozen selection and full texts directly; no input transcription is needed. Publish the real review. Do not start paper_expansion or submit a mock receipt."
 		}
+		if handoff.Kind == "reflection" {
+			return "论文任务交接上下文：\n" + context + "\nFor the initial launch, use paper-writing and select reading_reflection with advance_step_and_hand_off. The step tool reads the frozen paper selection and original user_instruction from this Chat's handoff. Do not copy this JSON into paper_input, bind it as a manuscript, or submit a Mock receipt. After this initial reading_reflection execution, stop for user review without rereading published artifacts or advancing automatically. On subsequent turns, follow the current user request and Workflow Runtime. When the user confirms continuation, including through the Continue control, advance the returned ready_steps; if finish is the only Ready step, execute it without asking for another confirmation."
+		}
 		return "论文任务交接上下文：\n" + context + "\n读取完整交接后原样提交。材料已接收，生成能力待对接；不声称已生成正式文稿或 PPT。"
 	}
 	return ""
@@ -1132,12 +1135,22 @@ func AcademicChatContext(w http.ResponseWriter, r *http.Request) {
 	}
 	conversation := r.URL.Query().Get("conversation_id")
 	var conv orm.Conversation
-	if store.DB().Where("id=? AND create_user_id=? AND deleted_at IS NULL", conversation, user).Take(&conv).Error != nil {
+	err := store.DB().Where("id=? AND create_user_id=? AND deleted_at IS NULL", conversation, user).Take(&conv).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
 		replyError(w, 404, "NOT_FOUND", "Chat not found")
 		return
 	}
+	if err != nil {
+		replyError(w, 500, "READ_FAILED", "无法读取论文任务")
+		return
+	}
 	var record orm.AcademicExpansion
-	if store.DB().Where("conversation_id=? AND user_id=? AND deleted_at IS NULL", conversation, user).Take(&record).Error == nil {
+	err = store.DB().Where("conversation_id=? AND user_id=? AND deleted_at IS NULL", conversation, user).Take(&record).Error
+	if err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
+		replyError(w, 500, "READ_FAILED", "无法读取论文任务")
+		return
+	}
+	if err == nil {
 		if !academicDataset(r, user, record.DatasetID) {
 			replyError(w, 403, "FORBIDDEN", "knowledge base unavailable")
 			return
@@ -1170,7 +1183,12 @@ func AcademicChatContext(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var handoff orm.AcademicHandoff
-	if store.DB().Where("conversation_id=? AND user_id=?", conversation, user).Take(&handoff).Error == nil {
+	err = store.DB().Where("conversation_id=? AND user_id=?", conversation, user).Take(&handoff).Error
+	if err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
+		replyError(w, 500, "READ_FAILED", "无法读取论文任务")
+		return
+	}
+	if err == nil {
 		if !academicDataset(r, user, handoff.DatasetID) {
 			replyError(w, 403, "FORBIDDEN", "knowledge base unavailable")
 			return
@@ -1191,5 +1209,5 @@ func AcademicChatContext(w http.ResponseWriter, r *http.Request) {
 		common.ReplyJSON(w, map[string]any{"handoff_id": handoff.ID, "input": json.RawMessage(handoff.InputJSON), "contents": json.RawMessage(handoff.ContentsJSON), "kind": handoff.Kind, "expansion_id": handoff.ExpansionID, "dataset_id": dataset, "version": handoff.Version, "source_conversation_id": source, "source_available": available, "status": "awaiting_downstream"})
 		return
 	}
-	replyError(w, 404, "NOT_FOUND", "paper task not found")
+	replyError(w, 404, "PAPER_TASK_NOT_FOUND", "paper task not found")
 }

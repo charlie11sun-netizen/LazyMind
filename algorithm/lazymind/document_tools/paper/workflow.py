@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Any
 
 from ..artifacts import markdown_filename, persist_artifact_json
-from . import contracts, research_topic
+from . import contracts, reading_reflection, research_topic
 from .api import run_algorithm
 from .contracts import MissingMaterials
 from .entry import MAX_MANUSCRIPT_CHARS, read_manuscript
@@ -574,6 +574,43 @@ def initialize_pool(bound: dict[str, str], request: str = '') -> dict:
     return _pool_from_entry(_read_entry_value(bound), request)
 
 
+def _load_f7_handoff() -> dict | None:
+    from httpx import HTTPStatusError
+    from lazymind.chat.service.academic_handoff import academic_handoff_context
+
+    try:
+        handoff = academic_handoff_context()
+    except HTTPStatusError as exc:
+        if exc.response.status_code == 404 and exc.response.json().get('code') == 'PAPER_TASK_NOT_FOUND':
+            return None
+        raise
+    return handoff if handoff.get('kind') == 'reflection' else None
+
+
+def _read_f7_paper(paper_id: str) -> dict:
+    from lazymind.chat.service.academic_handoff import academic_read_paper
+
+    result = academic_read_paper(paper_id=paper_id)
+    if result['status'] != 'ready':
+        return {'status': result['status']}
+    parts = []
+    while True:
+        for page in result['pages']:
+            text = page['text']
+            if text.strip():
+                parts.append(f'<!-- page:{page["page"]} -->\n{text}' if page['page'] > 0 else text)
+        cursor = result.get('next_cursor')
+        if not cursor:
+            break
+        result = academic_read_paper(cursor=cursor)
+        if result['status'] != 'ready':
+            raise ValueError('论文全文分页读取未完成，请稍后重试。')
+    text = '\n\n'.join(parts)
+    if not text.strip():
+        raise MissingMaterials(f'论文 {paper_id} 的全文为空。')
+    return {'status': 'ready', 'text': text}
+
+
 def _read_entry_value(bound: dict[str, str]) -> dict:
     """Read bound business inputs without creating a pool or selecting paper sources."""
     value = _read_bound(bound['paper_input']) if 'paper_input' in bound else {}
@@ -702,6 +739,7 @@ def _run_paper_step(context, stream=None) -> dict:
     if not isinstance(bound, dict):
         raise ValueError('Runtime remote_inputs 格式错误')
     request, instruction = _runtime_request(context.params)
+    handoff_request = None
     review_context = None
     if step == 'literature_review' and 'paper_input' not in bound:
         from .review_materials import current_handoff
@@ -738,9 +776,26 @@ def _run_paper_step(context, stream=None) -> dict:
             value = _read_entry_value(bound)
             use_attachments = 'paper_input' not in bound
             if use_attachments:
-                papers = _conversation_papers(context.params.get('history_files_per_turn'))
-                if step == 'research_topic':
-                    papers = research_topic.prepare_papers(papers)
+                handoff = _load_f7_handoff() if step == 'reading_reflection' else None
+                if handoff is not None:
+                    selected = handoff['input']
+                    papers = []
+                    for paper in selected['papers']:
+                        contracts.text(paper.get('paper_id'), 'paper.paper_id')
+                        contracts.text(paper.get('title'), 'paper.title')
+                        papers.append({**paper, 'id': paper['paper_id']})
+                    papers = reading_reflection.prepare_papers(papers, read_paper=_read_f7_paper)
+                    for paper in papers:
+                        notes = [note for note in selected.get('notes', []) if note['paper_id'] == paper['id']]
+                        if notes:
+                            paper['notes'] = notes
+                    handoff_request = selected['user_instruction']
+                    value['request'] = handoff_request
+                    value.setdefault('topic', '；'.join(paper['title'] for paper in papers))
+                else:
+                    papers = _conversation_papers(context.params.get('history_files_per_turn'))
+                    if step == 'research_topic':
+                        papers = research_topic.prepare_papers(papers)
                 if papers:
                     # Real attachments take precedence over a demo marker in the request.
                     value['papers'] = papers
@@ -786,7 +841,20 @@ def _run_paper_step(context, stream=None) -> dict:
             papers = material(pool, 'papers')
             if papers is None or not papers['content']:
                 raise MissingMaterials('请先选择至少一篇论文，或上传论文附件，再生成阅读心得。')
-        request = _step_request(step, pool, context.params, bound)
+        request_params = context.params
+        if handoff_request is not None:
+            launch_request = str(
+                context.params.get('launch_user_input')
+                or context.params.get('user_input')
+                or ''
+            ).strip()
+            request_params = {
+                **context.params,
+                'user_input': handoff_request,
+                'launch_user_input': handoff_request,
+                'current_user_input': handoff_request if request == launch_request else request,
+            }
+        request = _step_request(step, pool, request_params, bound)
         if step == 'literature_review':
             import lazyllm
             from .review_materials import prepare

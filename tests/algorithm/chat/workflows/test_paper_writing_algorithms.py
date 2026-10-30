@@ -41,6 +41,63 @@ def mock_reflection_model(monkeypatch):
                         lambda **_kwargs: lambda _prompt: REFLECTION_MARKDOWN)
 
 
+@pytest.mark.parametrize('status', ['ready', 'failed', 'unavailable'])
+def test_f7_prepare_papers_preserves_input_and_uses_available_content(status, monkeypatch):
+    papers = [{'id': 'P1', 'title': '选中论文', 'abstract': '原始摘要', 'doi': '10.1/test'}]
+    before = copy.deepcopy(papers)
+    calls = []
+
+    def read(paper_id):
+        calls.append(paper_id)
+        return {'status': status, 'text': '完整正文'}
+
+    monkeypatch.setattr(reading_reflection.time, 'sleep', lambda _: pytest.fail('unexpected wait'))
+    result = reading_reflection.prepare_papers(papers, read)
+    assert result == ([{**papers[0], 'text': '完整正文'}] if status == 'ready' else papers)
+    assert calls == ['P1'] and papers == before
+
+
+def test_f7_prepare_papers_uses_one_wait_window_and_caches_ready_papers(monkeypatch):
+    clock = [0]
+    monkeypatch.setattr(reading_reflection.time, 'monotonic', lambda: clock[0])
+    monkeypatch.setattr(reading_reflection.time, 'sleep', lambda seconds: clock.__setitem__(0, clock[0] + seconds))
+    calls = []
+
+    def read(paper_id):
+        calls.append(paper_id)
+        if paper_id == 'P1' or (paper_id == 'P2' and clock[0] >= 2):
+            return {'status': 'ready', 'text': f'全文{paper_id}'}
+        return {'status': 'processing'}
+
+    papers = [{'id': f'P{i}', 'title': f'论文{i}', 'abstract': f'摘要{i}'} for i in range(1, 5)]
+    result = reading_reflection.prepare_papers(papers, read)
+    assert clock[0] == 60
+    assert calls[:4] == ['P1', 'P2', 'P3', 'P4']
+    assert calls.count('P1') == 1 and calls.count('P2') == 2
+    assert calls.count('P3') == calls.count('P4') == 30
+    assert [paper.get('text') for paper in result] == ['全文P1', '全文P2', None, None]
+    assert result[2:] == papers[2:]
+
+
+@pytest.mark.parametrize('failure', ['missing', 'empty_ready', 'network', 'duplicate'])
+def test_f7_prepare_papers_does_not_hide_missing_or_invalid_content(failure, monkeypatch):
+    papers = [{'id': 'P1', 'title': '必须阅读的论文', 'abstract': None}]
+    calls = []
+
+    def read(paper_id):
+        calls.append(paper_id)
+        if failure == 'network':
+            raise OSError('read failed')
+        return {'status': 'ready', 'text': ''} if failure == 'empty_ready' else {'status': 'unavailable'}
+
+    if failure == 'duplicate':
+        papers *= 2
+    monkeypatch.setattr(reading_reflection.time, 'sleep', lambda _: pytest.fail('unexpected wait'))
+    with pytest.raises((ValueError, OSError), match='必须阅读的论文|read failed|重复'):
+        reading_reflection.prepare_papers(papers, read)
+    assert calls == ([] if failure == 'duplicate' else ['P1'])
+
+
 @pytest.mark.usefixtures('mock_topic_model', 'mock_reflection_model')
 @pytest.mark.parametrize('step', list(tools.STEP_NODE))
 def test_independent_algorithm_contract(step):
@@ -328,10 +385,15 @@ def test_f1_rejects_invalid_model_output_without_publishing(invalid, monkeypatch
 
 
 @pytest.mark.parametrize('fields,expected', [
-    ({'text': '全文'}, {'text': '全文'}),
-    ({'abstract': '摘要'}, {'abstract': '摘要'}),
-    ({'text': '全文', 'abstract': '摘要'}, {'text': '全文'}),
-    ({'text': ' ', 'abstract': '摘要'}, {'abstract': '摘要'}),
+    ({'text': '全文'}, {'text': '全文', 'source_kind': 'full_text'}),
+    ({'abstract': '摘要'}, {'abstract': '摘要', 'source_kind': 'abstract'}),
+    ({'text': '全文', 'abstract': '摘要'}, {'text': '全文', 'source_kind': 'full_text'}),
+    ({'text': ' ', 'abstract': '摘要'}, {'abstract': '摘要', 'source_kind': 'abstract'}),
+    ({'text': '片段', 'reading': {'truncated': True}}, {'text': '片段', 'source_kind': 'partial_text'}),
+    ({'text': '片段', 'truncated': True}, {'text': '片段', 'source_kind': 'partial_text'}),
+    ({'text': '片段', 'content_type': 'excerpt'}, {'text': '片段', 'source_kind': 'partial_text'}),
+    ({'text': '全文', 'reading': {'truncated': False}}, {'text': '全文', 'source_kind': 'full_text'}),
+    ({'text': ' ', 'abstract': '摘要', 'truncated': True}, {'abstract': '摘要', 'source_kind': 'abstract'}),
 ])
 @pytest.mark.parametrize('user_request', ['总结阅读启发', '结合我的研究方向：证据可追溯性'])
 def test_f7_single_paper_uses_chinese_markdown_prompt_without_evidence(fields, expected, user_request, monkeypatch):
@@ -339,21 +401,22 @@ def test_f7_single_paper_uses_chinese_markdown_prompt_without_evidence(fields, e
     monkeypatch.setattr(reading_reflection, 'AutoModel', lambda **_kwargs: lambda prompt: (
         prompts.append(prompt) or SINGLE_REFLECTION_MARKDOWN
     ))
+    notes = [{'id': 'n-1', 'paper_id': 'P1', 'title': '已有笔记', 'content': '这个结论是否适用于其他数据集？'}]
     inputs = {'topic': '证据组织', 'request': user_request,
-              'papers': [{'id': 'P1', 'title': '论文一', **fields}]}
+              'papers': [{'id': 'P1', 'title': '论文一', 'notes': notes, **fields}]}
     before = copy.deepcopy(inputs)
     result = tools.run_algorithm('reading_reflection', inputs)
     model_input = json.loads(prompts[0].split('Input materials (JSON):\n', 1)[1])
     assert result == {'reflection': SINGLE_REFLECTION_MARKDOWN, 'is_demo': False}
     assert inputs == before
     assert len(prompts) == 1
-    assert model_input['papers'] == [{'id': 'P1', 'title': '论文一', **expected}]
+    assert model_input['papers'] == [{'id': 'P1', 'title': '论文一', 'notes': notes, **expected}]
     assert model_input['request'] == user_request
     assert model_input['evidence'] is None
     assert 'Exactly one paper is provided' in prompts[0]
     assert 'Return only one Markdown document written in Chinese' in prompts[0]
     assert 'do not claim access to any content outside the input' in prompts[0]
-    assert 'Missing details in an abstract do not prove' in prompts[0]
+    assert 'Missing details in partial text or an abstract do not prove' in prompts[0]
     assert 'A generic request to generate a reflection is not a research direction' in prompts[0]
     assert 'Prioritize explicitly stated research interests' in prompts[0]
 
@@ -369,6 +432,7 @@ def test_f7_multiple_papers_uses_f2_evidence_as_supporting_context(monkeypatch):
         'papers': [
             {'id': 'P1', 'title': '论文一', 'text': '研究证据组织。'},
             {'id': 'P2', 'title': '论文二', 'abstract': '研究引用核验。'},
+            {'id': 'P3', 'title': '论文三', 'text': '已读取的部分结果。', 'reading': {'truncated': True}},
         ],
         'evidence': evidence,
     })
@@ -376,6 +440,7 @@ def test_f7_multiple_papers_uses_f2_evidence_as_supporting_context(monkeypatch):
     assert result == {'reflection': REFLECTION_MARKDOWN, 'is_demo': False}
     assert model_input['evidence'] == evidence
     assert 'text' in model_input['papers'][0] and 'abstract' in model_input['papers'][1]
+    assert [paper['source_kind'] for paper in model_input['papers']] == ['full_text', 'abstract', 'partial_text']
     assert 'Multiple papers are provided' in prompts[0]
     assert 'optional evidence field is a literature review' in prompts[0]
     assert 'Do not concatenate paper-by-paper summaries' in prompts[0]
@@ -383,12 +448,17 @@ def test_f7_multiple_papers_uses_f2_evidence_as_supporting_context(monkeypatch):
     assert 'state the evidence scope for each paper, including mixed inputs' in prompts[0]
 
 
-@pytest.mark.parametrize('source_field', ['text', 'abstract'])
-def test_f7_long_paper_condenses_without_mutating_source_pool(source_field, monkeypatch):
+@pytest.mark.parametrize('source_field,metadata,source_kind', [
+    ('text', {}, 'full_text'),
+    ('abstract', {}, 'abstract'),
+    ('text', {'reading': {'truncated': True}}, 'partial_text'),
+])
+def test_f7_long_paper_condenses_without_mutating_source_pool(source_field, metadata, source_kind, monkeypatch):
+    notes = [{'id': 'n-1', 'paper_id': 'P1', 'title': '已有笔记', 'content': '关注复现条件。'}]
     paper = {'id': 'P1', 'title': '长论文', source_field: ''.join(
         f'<!-- page:{page} -->\n第{page}页材料。' + '核心论点、方法、结果与局限。' * 190 + '\n'
         for page in range(1, 5)
-    )}
+    ), 'notes': notes, **metadata}
     papers = [paper, {'id': 'P2', 'title': '另一篇论文', 'abstract': '另一篇摘要'}]
     pool = tools.pool_from_business({'topic': '研究主题', 'papers': papers})
     before = copy.deepcopy(pool)
@@ -410,12 +480,14 @@ def test_f7_long_paper_condenses_without_mutating_source_pool(source_field, monk
     assert len(prompts) > 2
     assert all(len(prompt) <= 5000 for prompt in prompts)
     assert [item['id'] for item in final_input['papers']] == ['P1', 'P2']
-    kind = 'full-text' if source_field == 'text' else 'abstract-only'
+    kind = {'full_text': 'full-text', 'partial_text': 'partial-text', 'abstract': 'abstract-only'}[source_kind]
     assert f'Reading notes derived from {kind}' in final_input['papers'][0][source_field]
+    assert final_input['papers'][0]['source_kind'] == source_kind
+    assert final_input['papers'][0]['notes'] == notes
     assert '[P1]' in final_input['papers'][0][source_field]
     assert '[P2]' in final_input['papers'][1]['abstract']
     note_inputs = [json.loads(prompt.split('\n', 1)[1]) for prompt in prompts[:-1]]
-    assert all(item['source_kind'] == ('full_text' if source_field == 'text' else 'abstract')
+    assert all(item['source_kind'] == source_kind and 'notes' not in item
                for item in note_inputs if item['paper_id'] == 'P1')
     assert result['document'] == SINGLE_REFLECTION_MARKDOWN
     assert pool == before

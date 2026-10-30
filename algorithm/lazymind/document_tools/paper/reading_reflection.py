@@ -2,11 +2,13 @@
 
 import json
 import re
+import time
 
 from lazyllm import AutoModel, ThreadPoolExecutor
 
 from lazymind.common.token_estimation import estimate_tokens
 
+from .contracts import MissingMaterials, normalize_papers, validate_value
 from .research_topic import _prompt_token_limit, group_texts_by_prompt_budget, split_text_by_prompt_budget
 from .prompts.reading_reflection_prompt import (
     CONDENSED_PAPER_GUIDANCE,
@@ -19,6 +21,57 @@ from .prompts.reading_reflection_prompt import (
 
 
 _MAX_WORKERS = 4
+
+
+def prepare_papers(papers: list[dict], read_paper) -> list[dict]:
+    """Prepare selected papers with one shared wait window and abstract fallback."""
+    from .runtime_events import report_progress
+
+    papers = normalize_papers(papers)
+    if not papers:
+        raise MissingMaterials('请先选择至少一篇论文，再生成阅读心得。')
+    report_progress(10, '正在准备论文正文')
+    deadline = time.monotonic() + 60
+    results = {paper['id']: read_paper(paper['id']) for paper in papers}
+    while any(result['status'] == 'processing' for result in results.values()):
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            break
+        time.sleep(min(2, remaining))
+        for paper_id, result in results.items():
+            if time.monotonic() >= deadline:
+                break
+            if result['status'] == 'processing':
+                results[paper_id] = read_paper(paper_id)
+    for paper in papers:
+        result = results[paper['id']]
+        status = result['status']
+        if status == 'ready':
+            if not (result.get('text') or '').strip():
+                raise MissingMaterials(f'论文《{paper["title"]}》的全文为空。')
+            paper['text'] = result['text']
+        elif status in {'processing', 'failed', 'unavailable'}:
+            paper.pop('text', None)
+            if not (paper.get('abstract') or '').strip():
+                raise MissingMaterials(f'论文《{paper["title"]}》暂无可用全文或摘要，请等待解析完成或补充材料。')
+        else:
+            raise ValueError(f'论文《{paper["title"]}》的正文状态无效：{status}')
+    validate_value('papers', papers)
+    return papers
+
+
+def _paper_source_kind(paper: dict) -> str:
+    if not (paper.get('text') or '').strip():
+        return 'abstract'
+    reading = paper.get('reading') or {}
+    if (
+        paper.get('source_kind') == 'partial_text'
+        or reading.get('truncated') is True
+        or paper.get('truncated') is True
+        or paper.get('content_type') == 'excerpt'
+    ):
+        return 'partial_text'
+    return 'full_text'
 
 
 def _paper_chunks(text: str, topic: str, request: str, paper: dict, prompt_limit: int) -> list[str]:
@@ -35,7 +88,7 @@ def _note_prompt(source: str, topic: str, request: str, paper: dict) -> str:
             'request': request,
             'paper_id': paper['id'],
             'title': paper['title'],
-            'source_kind': 'full_text' if 'text' in paper else 'abstract',
+            'source_kind': _paper_source_kind(paper),
             'source': source,
         },
         ensure_ascii=False,
@@ -88,7 +141,11 @@ def _condensed_papers(papers: list[dict], topic: str, request: str, prompt_limit
                     groups,
                 ))
         source_field = 'text' if 'text' in paper else 'abstract'
-        source_kind = 'full-text' if source_field == 'text' else 'abstract-only'
+        source_kind = {
+            'full_text': 'full-text',
+            'partial_text': 'partial-text',
+            'abstract': 'abstract-only',
+        }[_paper_source_kind(paper)]
         result.append({
             **paper,
             source_field: f'Reading notes derived from {source_kind} material, not the original text:\n'
@@ -113,8 +170,17 @@ def run(inputs: dict) -> dict:
     report_progress(15, '正在阅读论文并整理材料')
     papers = []
     for paper in inputs['papers']:
-        source_field = 'text' if (paper.get('text') or '').strip() else 'abstract'
-        papers.append({'id': paper['id'], 'title': paper['title'], source_field: paper[source_field]})
+        source_kind = _paper_source_kind(paper)
+        source_field = 'abstract' if source_kind == 'abstract' else 'text'
+        item = {
+            'id': paper['id'],
+            'title': paper['title'],
+            source_field: paper[source_field],
+            'source_kind': source_kind,
+        }
+        if paper.get('notes'):
+            item['notes'] = paper['notes']
+        papers.append(item)
     prompt_limit = _prompt_token_limit()
     material = {
         'topic': inputs['topic'],

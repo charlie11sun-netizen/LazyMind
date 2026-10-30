@@ -9,13 +9,9 @@ def interpret(inputs, analysis, plan, call):
     from .model import facts
     prompt = '''Write the DATA ANALYSIS section in the requested paper language. Return Markdown directly.
 Do not return JSON, a JSON schema, separate prose fields, or an outer code fence.
-Write ONE integrated ANALYSIS of the full experiment and completed figures, within 1000 characters TOTAL,
-optionally with one short heading. Use 2-4 connected paragraphs when helpful; this is an upper limit, not a quota.
-Lead with the substantive answer to the actual empirical research aim, then develop the relevant evidence:
-key numerical contrasts with their uncertainty; what the patterns indicate about the research questions;
-benefits, costs and conditions of applicability considered together; and the supported conclusion and its limits.
-Use the additional space to explain relationships and implications, not to list more values or repeat captions.
-Support the argument with only a few decisive numerical comparisons and explain their implications together.
+Write ONE integrated ANALYSIS of the full experiment and completed figures, within 500 characters TOTAL,
+optionally with one short heading. Lead with the substantive answer to the actual empirical research aim,
+then support it with only a few decisive numerical comparisons and explain their implications together.
 An inventory of estimates, confidence intervals and rankings is not analysis. Explain what the observed pattern
 indicates about the question: which benefit is robust or conditional, where outcomes and resource costs disagree,
 and what uncertainty prevents concluding. Distinguish the largest raw gain from the most efficient option;
