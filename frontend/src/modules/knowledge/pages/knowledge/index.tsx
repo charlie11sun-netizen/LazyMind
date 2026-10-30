@@ -28,7 +28,6 @@ import KnowledgeTabs from "./components/KnowledgeTabs";
 import {
   DocumentServiceApi,
   SegmentServiceApi,
-  KnowledgeBaseServiceApi,
   normalizeProxyableUrl,
 } from "@/modules/knowledge/utils/request";
 import { useDatasetPermissionStore } from "@/modules/knowledge/store/dataset_permission";
@@ -134,7 +133,7 @@ async function writeTextToClipboard(text: string) {
   }
 }
 
-const Detail = () => {
+const KnowledgeDocumentContent = () => {
   const { t } = useTranslation();
   const [knowledgeDetail, setKnowledgeDetail] = useState<KnowledgeDetail>();
 
@@ -422,8 +421,7 @@ const Detail = () => {
 
   const {
     getDatasetDetail: getKbDetail,
-    setCurrentDataset,
-    clearDataset,
+    loadDataset,
   } = useDatasetPermissionStore();
   const hasWritePermission = useDatasetPermissionStore((state) =>
     state.hasWritePermission(),
@@ -448,24 +446,14 @@ const Detail = () => {
       });
   }, [knowledgeBaseId, knowledgeId]);
 
-  const getDatasetDetail = useCallback(() => {
-    KnowledgeBaseServiceApi()
-      .datasetServiceGetDataset({ dataset: knowledgeBaseId })
-      .then((res) => {
-        const dataset = res.data as unknown as KnowledgeDatasetWithProcessingLevel;
-        setCurrentDataset(dataset);
-        setProcessingLevel(dataset.processing_level || "indexed");
-      });
-  }, [knowledgeBaseId, setCurrentDataset]);
-
   useEffect(() => {
+    let cancelled = false;
     getDetail();
-    getDatasetDetail();
-
-    return () => {
-      clearDataset();
-    };
-  }, [getDetail, getDatasetDetail, clearDataset]);
+    void loadDataset(knowledgeBaseId).then(dataset => {
+      if (!cancelled) setProcessingLevel((dataset as KnowledgeDatasetWithProcessingLevel).processing_level || "indexed");
+    }).catch(() => {});
+    return () => { cancelled = true; };
+  }, [getDetail, knowledgeBaseId, loadDataset]);
 
   useEffect(() => {
     const syncDeveloperActive = () => {
@@ -1407,6 +1395,10 @@ const Detail = () => {
       <AddLearningContentModal value={learningSelection} datasetId={knowledgeBaseId} documentId={knowledgeId} segmentId={segmentDetail?.segment_id} context={learningSelection?.selection.context||segmentDetail?.content} onClose={()=>setLearningSelection(null)} onAdded={()=>{setVocabularyRefreshToken(v=>v+1);setPreviewSideCollapsed(false)}} />
     </div>
   );
+};
+
+const Detail = () => {
+  return <KnowledgeDocumentContent />;
 };
 
 export default Detail;

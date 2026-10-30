@@ -15,11 +15,13 @@ import { isLocalSessionEnabled } from "@/runtime/localSession";
 import { isVocabularyEnabled } from "@/runtime/mode";
 import UserAgreementPage from "@/pages/UserAgreementPage";
 import SettingsPage from "@/modules/settings";
+import { RAGComponentProvider } from "@/modules/modelProvider/contexts/RAGComponentContext";
 
 const McpOAuthConnect = lazy(() => import("@/modules/modelProvider/pages/McpOAuthConnect"));
 const McpOAuthCallback = lazy(() => import("@/modules/modelProvider/pages/McpOAuthCallback"));
 
 const WorkflowRunPage = lazy(() => import("@/modules/chat/pages/workflowRun"));
+const PptxPreviewPage = lazy(() => import("@/modules/chat/pages/pptxPreview"));
 const ShowcaseGalleryPage = lazy(() => import("@/modules/showcase/GalleryPage"));
 const ShowcaseDetailPage = lazy(() => import("@/modules/showcase/DetailPage"));
 const KnowledgeApp = lazy(() => import("@/modules/knowledge/KnowledgeApp"));
@@ -156,8 +158,16 @@ export default function AppRouter() {
           }
         />
         <Route path="/workflow-runs/:sessionId/embed" element={<WorkflowRunPage embedded />} />
-        <Route path="/" element={<MainLayout />}>
+        <Route
+          path="/"
+          element={(
+            <RAGComponentProvider>
+              <MainLayout />
+            </RAGComponentProvider>
+          )}
+        >
           <Route path="workflow-runs/:sessionId" element={<WorkflowRunPage />} />
+          <Route path="workflow-runs/:sessionId/pptx/:slotId" element={<PptxPreviewPage />} />
           <Route index element={<Navigate to="/agent/chat" replace />} />
           <Route path="agent/chat" element={<ChatApp />}>
             <Route index element={<Navigate to="home" replace />} />
@@ -217,8 +227,8 @@ export default function AppRouter() {
             <Route path="docs/notion-setup" element={<NotionSetupGuide />} />
             <Route path="docs/google-drive-setup" element={<GoogleDriveSetupGuide />} />
           </Route>
-          <Route path="model-providers" element={<Navigate to="/settings?section=models" replace />} />
-          <Route path="model-providers/default-services" element={<Navigate to="/settings?section=models" replace />} />
+          <Route path="model-providers" element={<Navigate to="/settings?section=model_defaults" replace />} />
+          <Route path="model-providers/default-services" element={<Navigate to="/settings?section=model_defaults" replace />} />
           <Route path="model-providers/models" element={<Navigate to="/settings?section=models&view=providers" replace />} />
           <Route path="model-providers/document-parsing" element={<Navigate to="/settings?section=knowledge&tool=document-parsing" replace />} />
           <Route path="model-providers/tools" element={<Navigate to="/settings?section=system_tools" replace />} />

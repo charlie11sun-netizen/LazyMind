@@ -12,9 +12,12 @@ import (
 	"gorm.io/gorm"
 	"lazymind/core/common"
 	"lazymind/core/common/orm"
+	"lazymind/core/log"
 	"lazymind/core/store"
+	"lazymind/core/taskcenter"
 	"lazymind/core/workflow/artifactgraph"
 	"lazymind/core/workflow/controlstore"
+	"lazymind/core/workflow/displaystate"
 	"lazymind/core/workflow/executor"
 	"lazymind/core/workflow/graphengine"
 	"lazymind/core/workflow/publication"
@@ -194,6 +197,7 @@ func loadRuntimeSnapshot(ctx context.Context, db *gorm.DB, sessionID string, gra
 }
 
 type projectionResponse struct {
+	Display        displaystate.View                `json:"display"`
 	Control        *controlstore.Snapshot           `json:"control,omitempty"`
 	Status         string                           `json:"status"`
 	CurrentStepID  string                           `json:"current_step_id"`
@@ -208,16 +212,17 @@ type projectionResponse struct {
 }
 
 type attemptHistoryDTO struct {
-	AttemptID     string  `json:"attempt_id"`
-	Attempt       int     `json:"attempt"`
-	TaskID        string  `json:"task_id"`
-	Status        string  `json:"status"`
-	Validity      string  `json:"validity"`
-	DurationSec   float64 `json:"duration_sec"`
-	ArtifactCount int64   `json:"artifact_count"`
-	StartedAt     string  `json:"started_at"`
-	UpdatedAt     string  `json:"updated_at"`
-	IntentContext string  `json:"intent_context,omitempty"`
+	AttemptID     string          `json:"attempt_id"`
+	Attempt       int             `json:"attempt"`
+	TaskID        string          `json:"task_id"`
+	Status        string          `json:"status"`
+	Validity      string          `json:"validity"`
+	DurationSec   float64         `json:"duration_sec"`
+	ArtifactCount int64           `json:"artifact_count"`
+	StartedAt     string          `json:"started_at"`
+	UpdatedAt     string          `json:"updated_at"`
+	IntentContext string          `json:"intent_context,omitempty"`
+	InputRequired json.RawMessage `json:"input_required,omitempty"`
 }
 
 func projectSession(ctx context.Context, db *gorm.DB, session *orm.WorkflowSession) (projectionResponse, error) {
@@ -258,9 +263,16 @@ func projectSession(ctx context.Context, db *gorm.DB, session *orm.WorkflowSessi
 		if duration < 0 {
 			duration = 0
 		}
+		var pending struct {
+			InputRequired json.RawMessage `json:"input_required"`
+		}
+		if attempt.TerminalCode == "WORKFLOW_INPUT_REQUIRED" {
+			_ = json.Unmarshal([]byte(attempt.ResultJSON), &pending)
+		}
 		attemptHistory[attempt.StepID] = append(attemptHistory[attempt.StepID], attemptHistoryDTO{
 			AttemptID: attempt.ID, Attempt: attempt.Attempt, TaskID: attempt.TaskID, Status: attempt.Status, Validity: validity,
 			IntentContext: intentMap[attempt.StepID],
+			InputRequired: pending.InputRequired,
 			DurationSec:   duration, ArtifactCount: artifactCount, StartedAt: attempt.CreatedAt.UTC().Format(time.RFC3339), UpdatedAt: attempt.UpdatedAt.UTC().Format(time.RFC3339Nano),
 		})
 		var bindings []orm.WorkflowAttemptInputBinding
@@ -284,7 +296,15 @@ func projectSession(ctx context.Context, db *gorm.DB, session *orm.WorkflowSessi
 			}
 		}
 	}
+	display, err := displaystate.Read(db.WithContext(ctx), *session)
+	if err != nil {
+		return projectionResponse{}, err
+	}
+	if display.Status == "waiting" {
+		projection.Completed = false
+	}
 	return projectionResponse{
+		Display: display,
 		Control: control,
 		Status:  session.Status, CurrentStepID: session.CurrentStepID,
 		SessionID: session.ID, StateVersion: session.StateVersion, GraphHash: graph.GraphHash, SchemaVersion: graph.SchemaVersion,
@@ -394,6 +414,78 @@ func freezeRouteDecision(ctx context.Context, db *gorm.DB, sessionID, from, task
 // LazyMind's managed ChatAgent after a Host-neutral Attempt reaches terminal
 // state. Host transport and product names never enter the graph algorithm.
 func FinalizeHostAttempt(ctx context.Context, db *gorm.DB, sessionID, stepID, attemptID, status string) error {
+	return common.TransactionWithSQLiteBusyRetry(ctx, db, func(tx *gorm.DB) error {
+		// Retry admission uses the same lock. Recheck the callback's identity
+		// after acquiring it so an obsolete attempt cannot end its replacement.
+		if _, err := artifactgraph.LockSession(tx, sessionID); err != nil {
+			return err
+		}
+		var current orm.WorkflowSessionStep
+		err := tx.Where("session_id = ? AND step_id = ? AND validity = ?", sessionID, stepID, "effective").
+			Order("attempt DESC").Order("created_at DESC").Order("id DESC").First(&current).Error
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		if current.ID != attemptID || current.Status != status {
+			return nil
+		}
+		if err := finalizeHostAttempt(ctx, tx, sessionID, stepID, attemptID, status); err != nil {
+			return err
+		}
+		var session orm.WorkflowSession
+		if err := tx.Where("id = ?", sessionID).First(&session).Error; err != nil {
+			return err
+		}
+		// Sessions without a conversation have no TaskCenter record.
+		if session.ConversationID == "" {
+			return nil
+		}
+		var taskStatus string
+		switch session.Status {
+		case SessionStatusCompleted:
+			taskStatus = "succeeded"
+		case SessionStatusFailed:
+			taskStatus = "failed"
+		default:
+			return nil
+		}
+		// A task and its notice are one optional projection of durable session
+		// state. The savepoint also clears PostgreSQL's aborted transaction state
+		// before returning to a caller that owns an enclosing transaction.
+		savepoint := "workflow_notice_" + common.GenerateID()
+		if err := tx.SavePoint(savepoint).Error; err != nil {
+			return err
+		}
+		completedAt, err := taskcenter.WorkflowNotificationCompletedAt(ctx, tx, session)
+		if err == nil {
+			err = taskcenter.UpdateTaskStatusBySessionAt(ctx, tx, sessionID, taskStatus, completedAt)
+		}
+		if err != nil {
+			if rollbackErr := tx.RollbackTo(savepoint).Error; rollbackErr != nil {
+				return errors.Join(err, rollbackErr)
+			}
+		}
+		if releaseErr := tx.Exec("RELEASE SAVEPOINT " + savepoint).Error; releaseErr != nil {
+			return errors.Join(err, releaseErr)
+		}
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return ctxErr
+		}
+		if common.IsSQLiteBusy(err) {
+			return err
+		}
+		if err != nil {
+			log.Logger.Warn().Err(err).Str("session_id", sessionID).
+				Msg("workflow task notification projection deferred to recovery")
+		}
+		return nil
+	})
+}
+
+func finalizeHostAttempt(ctx context.Context, db *gorm.DB, sessionID, stepID, attemptID, status string) error {
 	var session orm.WorkflowSession
 	if err := db.WithContext(ctx).Where("id = ?", sessionID).First(&session).Error; err != nil {
 		return err
@@ -437,7 +529,9 @@ func reconcileSessionProjection(ctx context.Context, db *gorm.DB, session *orm.W
 		return err
 	}
 	status := SessionStatusWaiting
-	if projected.Projection.Completed {
+	if session.Status == "pausing" {
+		status = "pausing"
+	} else if projected.Projection.Completed {
 		status = SessionStatusCompleted
 	} else {
 		for _, id := range projected.Projection.Current {
@@ -449,6 +543,13 @@ func reconcileSessionProjection(ctx context.Context, db *gorm.DB, session *orm.W
 					status = SessionStatusFailed
 				}
 			}
+		}
+		// A ready successor is part of the already admitted execution. Keep
+		// its preparation interval open until the driver advances or explicitly
+		// yields; no worker running between steps is not itself a failure.
+		if session.Status == SessionStatusActive && len(projected.Projection.Current) == 0 &&
+			len(projected.Projection.Ready) > 0 && projected.Display.Status == "running" {
+			status = SessionStatusActive
 		}
 	}
 	updates := map[string]any{

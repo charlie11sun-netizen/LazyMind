@@ -1,6 +1,51 @@
 import pytest
 
 import lazymind.parsing.service.build_document as build_document
+from lazymind.parsing.engine.readers.native_office import NativeOfficeReader
+from lazymind.parsing.engine.readers.retained import RetainedReader
+
+
+@pytest.mark.parametrize('force,previous,expected', [
+    (True, 'none', 'force'), (True, 'update', 'force'),
+    (False, 'none', 'none'), (False, 'update', 'update'),
+])
+def test_effective_registration_policy_without_reset(monkeypatch, force, previous, expected):
+    monkeypatch.setenv('LAZYLLM_ALGO_REGISTER_POLICY', previous)
+    monkeypatch.setitem(build_document._cfg._impl, 'force_algo_register', force)
+    monkeypatch.setitem(build_document.lazyllm.config._impl, 'algo_register_policy', previous)
+    monkeypatch.setattr(build_document, 'drop_lazyllm_tables', lambda: pytest.fail('must not drop data'))
+    monkeypatch.setattr(build_document, 'reset_stores', lambda: pytest.fail('must not reset vectors'))
+    assert build_document.configure_algorithm_registration() == expected
+    assert build_document.lazyllm.config['algo_register_policy'] == expected
+    assert build_document.os.environ['LAZYLLM_ALGO_REGISTER_POLICY'] == expected
+
+
+@pytest.mark.parametrize('mode,profile,native', [
+    ('local', 'cloud', True), ('cloud', 'local', True), ('cloud', 'cloud', False),
+])
+def test_office_reader_registration_by_runtime(monkeypatch, mode, profile, native):
+    class Readers:
+        def __init__(self):
+            self.readers = {}
+
+        def add_reader(self, pattern, reader):
+            self.readers[pattern] = reader
+
+    monkeypatch.setitem(build_document._cfg._impl, 'runtime_mode', mode)
+    monkeypatch.setitem(build_document._cfg._impl, 'document_parse_profile', profile)
+    pdf_reader = object()
+    monkeypatch.setattr(build_document, '_build_pdf_reader', lambda: pdf_reader)
+    docs = Readers()
+    build_document._register_document_readers(docs)
+    assert (isinstance(docs.readers['*.pdf'], RetainedReader) if mode == 'local'
+            else docs.readers['*.pdf'] is pdf_reader)
+    if native:
+        reader_type = RetainedReader if mode == 'local' else NativeOfficeReader
+        assert isinstance(docs.readers['*.docx'], reader_type)
+        assert isinstance(docs.readers['*.pptx'], reader_type)
+    else:
+        assert '*.docx' not in docs.readers
+        assert docs.readers['*.pptx'] is pdf_reader
 
 
 def test_get_algo_server_port_prefers_algo_port(monkeypatch):
@@ -73,6 +118,9 @@ def test_build_pdf_reader_uses_dynamic_reader_without_static_ocr_route(monkeypat
 
 
 def test_build_document_wires_readers_groups_and_embeddings(monkeypatch):
+    monkeypatch.setitem(build_document._cfg._impl, 'runtime_mode', 'cloud')
+    monkeypatch.setitem(build_document._cfg._impl, 'document_parse_profile', 'cloud')
+
     class FakeDocumentProcessor:
         def __init__(self, **kwargs):
             self.kwargs = kwargs
@@ -109,10 +157,10 @@ def test_build_document_wires_readers_groups_and_embeddings(monkeypatch):
     docs = build_document.build_document()
 
     assert docs.kwargs['name'] == build_document.ALGO_ID
-    assert docs.kwargs['embed'] == {
-        key: f'emb-{key}'
-        for key in build_document.EMBED_KEYS
-    }
+    from lazymind.embedding_options import EmbeddingModel
+    assert isinstance(docs.kwargs['embed']['embed_main'], EmbeddingModel)
+    assert docs.kwargs['embed']['embed_main'].model == 'emb-embed_main'
+    assert docs.kwargs['embed']['embed_image'] == 'emb-embed_image'
     assert docs.kwargs['manager'].kwargs['store_conf'] == {'index_kwargs': build_document.EMBED_INDEX_KWARGS}
     assert docs.kwargs['manager'].kwargs['url'] == 'http://processor.test'
     assert ('*.pdf', 'pdf-reader') in docs.readers

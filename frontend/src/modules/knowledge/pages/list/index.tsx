@@ -56,16 +56,20 @@ import {
 } from "@/modules/knowledge/utils/request";
 import { ALL_TAGS } from "@/modules/knowledge/constants/common";
 import {
-  Dataset,
-  DatasetAclEnum,
+  Dataset as LegacyDataset,
 } from "@/api/generated/knowledge-client";
 import type { Dataset as CoreDataset } from "@/api/generated/core-client";
+type Dataset = LegacyDataset & Pick<CoreDataset, "paper_count" | "pdf_attachment_count">;
 import KnowledgeTag from "@/modules/knowledge/components/KnowledgeTag";
 import FileUtils from "@/modules/knowledge/utils/file";
 import {
   effectiveProcessingLevel,
   type ProcessingLevel,
 } from "@/modules/knowledge/utils/processingLevel";
+import { isPaperLibrary } from "@/modules/knowledge/paper/store";
+import { downloadPaperCitations, loadPaperLibraryForExport } from "@/modules/knowledge/paper/exportLibrary";
+import { getImportErrorMessage } from "@/modules/knowledge/utils/importError";
+import KnowledgeLibraryActions from "./KnowledgeLibraryActions";
 
 import { ListPageTable } from "@/components/ui";
 import { useTranslation } from "react-i18next";
@@ -169,7 +173,7 @@ interface KnowledgePageProps {
 }
 
 const KnowledgePage: FC<KnowledgePageProps> = ({
-  modelSettingsPath = "/settings?section=models",
+  modelSettingsPath = "/settings?section=model_defaults",
 }) => {
   const navigate = useNavigate();
   const location = useLocation();
@@ -284,7 +288,7 @@ const KnowledgePage: FC<KnowledgePageProps> = ({
   const isCloudArchiveView = sourceCategory === "cloudArchive";
   const isOfficialView = sourceCategory === "official";
   const { availability: ragAvailability } = useRAGComponent();
-  const createActionDisabled = ragAvailability !== "ready";
+  const createActionDisabled = ragAvailability === "checking" || ragAvailability === "error";
   const createActionDisabledTooltip = ragAvailability === "checking"
     ? "正在检查本地知识库组件状态"
     : ragAvailability === "error"
@@ -501,6 +505,13 @@ const KnowledgePage: FC<KnowledgePageProps> = ({
       selectedSort: KnowledgeMineSort = "all",
       selectedCloudSource: KnowledgeMineCloudSource = "all",
     ) => {
+      if (ragAvailability !== "ready") {
+        mineTableRequestSeqRef.current += 1;
+        setCloudSources([]);
+        setTotal(0);
+        setLoading(false);
+        return;
+      }
       const requestSeq = mineTableRequestSeqRef.current + 1;
       mineTableRequestSeqRef.current = requestSeq;
       setLoading(true);
@@ -613,7 +624,7 @@ const KnowledgePage: FC<KnowledgePageProps> = ({
         }
       }
     },
-    [t, tableQueryKey, updateListState],
+    [ragAvailability, t, tableQueryKey, updateListState],
   );
 
   const resolveCloudArchiveDatasetId = useCallback((record: DataSourceItem) => {
@@ -634,6 +645,10 @@ const KnowledgePage: FC<KnowledgePageProps> = ({
 
   const handleCloudArchiveEdit = useCallback(
     async (record: DataSourceItem) => {
+      if (createActionDisabled) {
+        message.warning(createActionDisabledTooltip);
+        return;
+      }
       const sourceId = `${record.id || ""}`.trim();
       if (!sourceId) {
         message.warning(t("admin.dataSourceDetailNotFound"));
@@ -663,7 +678,7 @@ const KnowledgePage: FC<KnowledgePageProps> = ({
         // API errors are reported by the shared request interceptor.
       }
     },
-    [syncCreateVm, t],
+    [createActionDisabled, createActionDisabledTooltip, syncCreateVm, t],
   );
 
   const handleCloudArchiveDelete = useCallback(
@@ -874,6 +889,10 @@ const KnowledgePage: FC<KnowledgePageProps> = ({
 
   const handleOfficialInstall = useCallback(
     async (item: OfficialKnowledgeBase) => {
+      if (createActionDisabled) {
+        message.warning(createActionDisabledTooltip);
+        return;
+      }
       try {
         const task = await installKnowledgeMarketItem(item.id);
         trackMarketJob({
@@ -892,11 +911,15 @@ const KnowledgePage: FC<KnowledgePageProps> = ({
         // The shared request interceptor displays the localized error.
       }
     },
-    [loadKnowledgeMarket, t, taskNotification, trackMarketJob],
+    [createActionDisabled, createActionDisabledTooltip, loadKnowledgeMarket, t, taskNotification, trackMarketJob],
   );
 
   const handleOfficialUpdate = useCallback(
     async (item: OfficialKnowledgeBase) => {
+      if (createActionDisabled) {
+        message.warning(createActionDisabledTooltip);
+        return;
+      }
       try {
         const task = await updateKnowledgeMarketItem(item.id);
         trackMarketJob({
@@ -915,7 +938,7 @@ const KnowledgePage: FC<KnowledgePageProps> = ({
         // The shared request interceptor displays the localized error.
       }
     },
-    [loadKnowledgeMarket, t, taskNotification, trackMarketJob],
+    [createActionDisabled, createActionDisabledTooltip, loadKnowledgeMarket, t, taskNotification, trackMarketJob],
   );
 
   const handleOfficialOpen = useCallback(
@@ -1099,6 +1122,10 @@ const KnowledgePage: FC<KnowledgePageProps> = ({
   }, [mineOfficialTag, officialFilterTags, officialLoaded, sourceCategory, updateListState]);
 
   const handleUpdateAllOfficial = useCallback(async () => {
+    if (createActionDisabled) {
+      message.warning(createActionDisabledTooltip);
+      return;
+    }
     try {
       const task = await updateAllKnowledgeMarketItems();
       trackMarketJob({
@@ -1115,7 +1142,7 @@ const KnowledgePage: FC<KnowledgePageProps> = ({
     } catch {
       // The shared request interceptor displays the localized error.
     }
-  }, [availableUpdateCount, t, taskNotification, trackMarketJob]);
+  }, [availableUpdateCount, createActionDisabled, createActionDisabledTooltip, t, taskNotification, trackMarketJob]);
 
   useEffect(() => {
     const jobs = Object.values(trackedMarketJobs);
@@ -1287,7 +1314,7 @@ const KnowledgePage: FC<KnowledgePageProps> = ({
                   if (data.dataset_id) openDetail(data.dataset_id);
                 }}
               >
-                <Tooltip title={name}><span>{name}</span></Tooltip>
+                <Tooltip title={name}><span>{name}{isPaperLibrary(data.scene) ? " · 论文集" : ""}</span></Tooltip>
               </Button>
               <Tooltip title={data.desc} placement="topLeft">
                 <span className="knowledge-list-description">{data.desc || "-"}</span>
@@ -1321,10 +1348,12 @@ const KnowledgePage: FC<KnowledgePageProps> = ({
       },
     },
     {
-      title: t("knowledge.documentCountLabel"),
+      title: t("knowledge.resourceCountLabel"),
       dataIndex: "document_count",
-      width: 88,
-      render: (count: number) => t("knowledge.documentCount", { count: count || 0 }),
+      width: 180,
+      render: (count: number, dataset: Dataset) => isPaperLibrary(dataset.scene)
+        ? t('knowledge.paperCollectionCount', { paperCount: dataset.paper_count ?? 0, pdfCount: dataset.pdf_attachment_count ?? 0 })
+        : t("knowledge.documentCount", { count: count || 0 }),
     },
     {
       title: t("knowledge.updateDate"),
@@ -1335,61 +1364,34 @@ const KnowledgePage: FC<KnowledgePageProps> = ({
     {
       title: t("common.actions"),
       key: "action",
-      width: 190,
+      width: 72,
       fixed: "right",
-      render: (data: Dataset) => {
-        if (!data.acl?.includes(DatasetAclEnum.DatasetWrite)) {
-          return null;
-        }
-        return (
-          <Flex gap={10} wrap align="center">
-            <Button
-              className="link-btn"
-              type="link"
-              onClick={(event: MouseEvent<HTMLElement>) => {
-                event.stopPropagation();
-                createUpdateRef.current?.onOpen(data);
-              }}
-            >
-              {t("common.edit")}
-            </Button>
-            {!runtimeFeatures.hideUserGroupSurfaces && (
-                <Button
-                  className="link-btn"
-                  type="link"
-                  onClick={(event: MouseEvent<HTMLElement>) => {
-                    event.stopPropagation();
-                    navigate({
-                      pathname: `/lib/knowledge/auth/${data.dataset_id}`,
-                    });
-                  }}
-                >
-                {t("knowledge.authorize")}
-              </Button>
-            )}
-            <Button
-              className="link-btn"
-              type="link"
-              danger
-              onClick={(event: MouseEvent<HTMLElement>) => {
-                event.stopPropagation();
-                const knowledgeName =
-                  data.display_name || data.dataset_id || "";
-                confirmRef.current?.onOpen({
-                  id: data.dataset_id || "",
-                  title: t("knowledge.deleteTitle", { name: knowledgeName }),
-                  content: t("knowledge.deleteContent"),
-                  confirmText: t("knowledge.deleteConfirmText", {
-                    name: knowledgeName,
-                  }),
-                });
-              }}
-            >
-              {t("common.delete")}
-            </Button>
-          </Flex>
-        );
-      },
+      align: "center",
+      render: (data: Dataset) => (
+        <KnowledgeLibraryActions
+          dataset={data}
+          onEdit={() => createUpdateRef.current?.onOpen(data)}
+          onAuthorize={runtimeFeatures.hideUserGroupSurfaces ? undefined : () => navigate(`/lib/knowledge/auth/${data.dataset_id}`)}
+          onExport={isPaperLibrary(data.scene) ? async (format) => {
+            try {
+              const library = await loadPaperLibraryForExport(data.dataset_id || "");
+              if (!library.papers.length) { message.info("这个论文库还没有可导出的文献"); return; }
+              downloadPaperCitations(library, format, data.display_name || "papers");
+            } catch (error) {
+              message.error(getImportErrorMessage(error, "导出失败，请重试"));
+            }
+          } : undefined}
+          onDelete={() => {
+            const knowledgeName = data.display_name || data.dataset_id || "";
+            confirmRef.current?.onOpen({
+              id: data.dataset_id || "",
+              title: t("knowledge.deleteTitle", { name: knowledgeName }),
+              content: t("knowledge.deleteContent"),
+              confirmText: t("knowledge.deleteConfirmText", { name: knowledgeName }),
+            });
+          }}
+        />
+      ),
     },
   ];
 
@@ -1648,26 +1650,16 @@ const KnowledgePage: FC<KnowledgePageProps> = ({
     setLoading(true);
     try {
       if (data.dataset_id) {
-        const { processing_level: nextLevel, ...dataset } = data;
-        const current = dataSource.find(
-          (item) => item.dataset_id === data.dataset_id,
-        ) as (Dataset & { processing_level?: ProcessingLevel }) | undefined;
-        if (
-          nextLevel &&
-          nextLevel !== effectiveProcessingLevel(current?.processing_level)
-        ) {
-          await axiosInstance.patch(
-            `${BASE_URL}/api/core/datasets/${encodeURIComponent(data.dataset_id)}/processing-level`,
-            { processing_level: nextLevel },
-          );
-        }
+        const dataset = data;
         return KnowledgeBaseServiceApi()
           .datasetServiceUpdateDataset({
             dataset: data.dataset_id,
             dataset2: dataset,
           })
-          .then(() => {
-            message.success(t("knowledge.editSuccess"));
+          .then((response) => {
+            const errors = response.data.operation_result?.items?.flatMap(item => item.error ? [item.error.message] : []) || [];
+            if (errors.length) message.warning(`配置已保存，但后续同步失败：${errors.join("；")}`);
+            else message.success(t("knowledge.editSuccess"));
             void getLocalTags();
             getTableData();
           });
@@ -1856,6 +1848,8 @@ const KnowledgePage: FC<KnowledgePageProps> = ({
           onOpen={handleOfficialOpen}
           onQuery={handleOfficialQuery}
           onLoadDetail={handleOfficialLoadDetail}
+          actionDisabled={createActionDisabled}
+          actionDisabledReason={createActionDisabledTooltip}
         />
         </>
       ) : (
@@ -1873,6 +1867,11 @@ const KnowledgePage: FC<KnowledgePageProps> = ({
                   role="tab"
                   className={sourceCategory === value ? "is-active" : ""}
                   aria-selected={sourceCategory === value}
+                  aria-disabled={value === "cloudArchive" && createActionDisabled}
+                  disabled={value === "cloudArchive" && createActionDisabled}
+                  title={value === "cloudArchive" && createActionDisabled
+                    ? createActionDisabledTooltip
+                    : undefined}
                   onClick={() => {
                     setMineFilterOpen(false);
                     if (value === sourceCategory) return;
@@ -1911,6 +1910,7 @@ const KnowledgePage: FC<KnowledgePageProps> = ({
               <Button
                 type="primary"
                 disabled={
+                  createActionDisabled ||
                   availableUpdateCount === 0 ||
                   Object.values(trackedMarketJobs).some(
                     (job) => job.jobType === "updateAll",

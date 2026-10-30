@@ -528,26 +528,29 @@
 
   .agent-integration-stage-heading {
     display: flex;
-    align-items: center;
+    align-items: flex-start;
     justify-content: space-between;
     gap: 12px;
     margin-bottom: 9px;
 
     > div {
       display: flex;
-      align-items: baseline;
+      flex-direction: column;
+      align-items: flex-start;
       min-width: 0;
-      gap: 10px;
+      gap: 2px;
     }
 
     strong {
       color: #26344c;
       font-size: 14px;
+      line-height: 22px;
     }
 
     span {
       color: #8a96a8;
       font-size: 12px;
+      line-height: 18px;
     }
   }
 
@@ -607,12 +610,13 @@
   }
 
   .agent-integration-method {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
+    display: grid;
+    grid-template-rows: subgrid;
+    grid-row: span 3;
+    align-items: start;
     min-width: 0;
     min-height: 68px;
-    gap: 14px;
+    row-gap: 8px;
     padding: 11px 13px;
     border: 1px solid #e2e8f1;
     border-radius: 10px;
@@ -627,7 +631,7 @@
     }
 
     p {
-      margin: 3px 0 0;
+      margin: 0;
       color: #8591a5;
       font-size: 12px;
       line-height: 1.45;
@@ -643,20 +647,24 @@
   }
 
   .agent-integration-method-title {
-    display: flex;
-    align-items: center;
-    gap: 3px;
-
     strong {
       color: #2e3b52;
       font-size: 13px;
     }
 
-    > span {
-      color: #7b8799;
-      font-size: 11px;
-    }
+  }
 
+  .agent-integration-method-controls {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+
+  .agent-integration-method-status {
+    margin-right: auto;
+    color: #7b8799;
+    font-size: 11px;
+    white-space: nowrap;
   }
 
   .agent-integration-card-footer {
@@ -674,6 +682,26 @@
       gap: 6px;
     }
   }
+
+  .agent-integration-method-help {
+    display: flex;
+  }
+
+  .agent-integration-installation-help.ant-btn {
+    height: auto;
+    padding: 0;
+    color: #8591a5;
+    font-size: 12px;
+  }
+}
+
+.agent-integration-installation-guide {
+  .ant-steps { margin: 20px 0; }
+  .agent-integration-installation-content { min-height: 90px; margin: 20px 0; }
+  .agent-integration-installation-progress { width: 100%; padding: 20px 0; }
+  .agent-integration-installation-footer { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 12px; }
+  .agent-integration-installation-image { display: block; width: 100%; padding: 0; border: 0; background: transparent; cursor: zoom-in; img { display: block; width: 100%; border-radius: 8px; } }
+  .agent-integration-installation-note { margin: 10px 0 0; font-size: 12px; }
 }
 
 .external-capability-result-modal {

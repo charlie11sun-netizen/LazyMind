@@ -1,3 +1,4 @@
+import os
 import lazyllm
 from copy import deepcopy
 from typing import NamedTuple, Optional
@@ -16,8 +17,11 @@ from lazyllm.tools.rag.readers import (
 from lazyllm.tools.rag.readers.ocrReader import DynamicPDFReader
 
 from lazymind.model_config import get_dynamic_role_slot_map
+from lazymind.embedding_options import mark_embedding_query_arguments, wrap_embedding_model
 from lazymind.config import EMBED_IMAGE, EMBED_INDEX_KWARGS, EMBED_KEYS, EMBED_MAIN, config as _cfg
 from lazymind.parsing.engine.readers import ImageEmbReader, VideoReader
+from lazymind.parsing.engine.readers.native_office import NativeOfficeReader
+from lazymind.parsing.engine.readers.retained import RetainedReader
 from lazymind.parsing.engine.transform import GeneralParser, LineSplitter, NodeParser
 from lazymind.common.database.postgres import create_database_engine
 from lazymind.common.database.sqlite_proxy import install_lazyllm_sqlite_proxy
@@ -47,6 +51,7 @@ def _quiet_trace(kbs):
         if llm_config:
             from lazymind.model_config import inject_model_config
             inject_model_config(llm_config)
+        args, kwargs = mark_embedding_query_arguments(args, kwargs)
         return kbs[kb_group](*args, **kwargs)
     return call
 
@@ -174,6 +179,13 @@ def _register_document_readers(docs: Document) -> None:
     docs.add_reader('*.ppt', pdf_reader)
     docs.add_reader('*.pptm', pdf_reader)
 
+    if _runtime_mode() == 'local' or str(_cfg['document_parse_profile']).strip().lower() == 'local':
+        # Desktop has no Office-to-PDF service. Feed real DocNodes into the same
+        # block/line transforms and embedding groups as all other documents.
+        office_reader = NativeOfficeReader(presentation_reader=pdf_reader)
+        docs.add_reader('*.docx', office_reader)
+        docs.add_reader('*.pptx', office_reader)
+
     docs.add_reader('*.ipynb', IPYNBReader())
     docs.add_reader('*.epub', EpubReader())
     docs.add_reader('*.mbox', MboxReader())
@@ -182,6 +194,32 @@ def _register_document_readers(docs: Document) -> None:
     excel_reader = PandasExcelReader()
     docs.add_reader('*.xls', excel_reader)
     docs.add_reader('*.xlsx', excel_reader)
+
+    if _runtime_mode() == 'local':
+        # Wrap native/default readers without modifying the third-party registry.
+        from lazymind.chat.config import CHAT_TEXT_EXTENSIONS
+        for suffix in ('.pdf', '.docx', '.pptx', '.xls', '.xlsx', '.csv', '.ipynb', *CHAT_TEXT_EXTENSIONS):
+            if suffix in ('.docx', '.pptx'):
+                fallback = NativeOfficeReader(presentation_reader=pdf_reader)
+            elif suffix == '.pdf':
+                fallback = pdf_reader
+            elif suffix in ('.xls', '.xlsx'):
+                fallback = excel_reader
+            elif suffix == '.csv':
+                fallback = PandasCSVReader()
+            else:
+                fallback = _read_native_text
+            docs.add_reader('*' + suffix, RetainedReader(fallback))
+
+
+def _read_native_text(file, **kwargs):
+    from pathlib import Path
+    from lazyllm.tools.rag.dataReader import SimpleDirectoryReader
+    from lazyllm.tools.rag.doc_node import DocNode
+    reader = SimpleDirectoryReader.default_file_readers.get('*' + Path(file).suffix.lower())
+    if reader is not None:
+        return reader()(file, **kwargs)
+    return [DocNode(text=Path(file).read_text(encoding='utf-8'))]
 
 
 def reset_stores() -> None:
@@ -286,10 +324,22 @@ def drop_lazyllm_tables() -> None:
         LOG.error(f'[build_document] Failed to drop lazyllm tables: {e}')
 
 
+def configure_algorithm_registration() -> str:
+    if _cfg['force_algo_register']:
+        # Fresh Python workers must observe the same policy as this process.
+        os.environ['LAZYLLM_ALGO_REGISTER_POLICY'] = 'force'
+        lazyllm.config['algo_register_policy'] = 'force'
+    policy = lazyllm.config['algo_register_policy']
+    lazyllm.LOG.info(f'[build_document] effective algorithm registration policy={policy}')
+    return policy
+
+
 def build_document(algo_id: str = ALGO_ID, *, serve: bool = True) -> Document:
+    configure_algorithm_registration()
     processor_url = _cfg['document_processor_url']
     server_port = get_algo_server_port()
-    embed = {k: AutoModel(model=k) for k in EMBED_KEYS}
+    embed = {k: (wrap_embedding_model(AutoModel(model=k), role=k) if k == EMBED_MAIN else AutoModel(model=k))
+             for k in EMBED_KEYS}
 
     # Current LazyLLM expects store_conf on DocumentProcessor when using DocumentProcessor,
     # while Document receives only the remote processor manager.

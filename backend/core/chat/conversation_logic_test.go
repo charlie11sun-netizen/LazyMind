@@ -155,7 +155,7 @@ func TestBuildChatRequestBodyUsesConversationIDDerivedSessionID(t *testing.T) {
 }
 
 func TestEnsureConversationDoesNotReuseAnotherUsersID(t *testing.T) {
-	database := newPromptTestDB(t)
+	database := newChatExecutionTestDB(t)
 	db := database.DB
 	now := time.Now().UTC()
 	if err := db.Create(&orm.Conversation{
@@ -176,7 +176,7 @@ func TestEnsureConversationDoesNotReuseAnotherUsersID(t *testing.T) {
 }
 
 func TestEphemeralConversationIsHiddenUntilPromoted(t *testing.T) {
-	database := newPromptTestDB(t)
+	database := newChatExecutionTestDB(t)
 	db := database.DB
 	store.Init(db, nil, nil)
 	t.Cleanup(func() { store.Init(nil, nil, nil) })
@@ -227,7 +227,7 @@ func TestEphemeralConversationIsHiddenUntilPromoted(t *testing.T) {
 }
 
 func TestSetChatHistoryRemovesRejectedAnswerPerformance(t *testing.T) {
-	database := newPromptTestDB(t)
+	database := newChatExecutionTestDB(t)
 	db := database.DB
 	store.Init(db, nil, nil)
 	t.Cleanup(func() { store.Init(nil, nil, nil) })
@@ -283,7 +283,7 @@ func TestSetChatHistoryRemovesRejectedAnswerPerformance(t *testing.T) {
 }
 
 func TestConversationPinningOrdersHistoryWithoutChangingUpdatedAt(t *testing.T) {
-	database := newPromptTestDB(t)
+	database := newChatExecutionTestDB(t)
 	db := database.DB
 	store.Init(db, nil, nil)
 	t.Cleanup(func() { store.Init(nil, nil, nil) })
@@ -374,7 +374,7 @@ func TestConversationPinningOrdersHistoryWithoutChangingUpdatedAt(t *testing.T) 
 }
 
 func TestPersistentEphemeralConversationHasNoExpiry(t *testing.T) {
-	database := newPromptTestDB(t)
+	database := newChatExecutionTestDB(t)
 	db := database.DB
 	store.Init(db, nil, nil)
 	t.Cleanup(func() { store.Init(nil, nil, nil) })
@@ -395,7 +395,7 @@ func TestPersistentEphemeralConversationHasNoExpiry(t *testing.T) {
 }
 
 func TestConversationListSeparatesAssistantOwnershipFromExecutionEngine(t *testing.T) {
-	database := newPromptTestDB(t)
+	database := newChatExecutionTestDB(t)
 	db := database.DB
 	store.Init(db, nil, nil)
 	t.Cleanup(func() { store.Init(nil, nil, nil) })
@@ -484,7 +484,7 @@ func TestConversationListSeparatesAssistantOwnershipFromExecutionEngine(t *testi
 }
 
 func TestConversationListKeepsLazyMindManagedExternalConversationWithoutNativeSession(t *testing.T) {
-	database := newPromptTestDB(t)
+	database := newChatExecutionTestDB(t)
 	db := database.DB
 	store.Init(db, nil, nil)
 	t.Cleanup(func() { store.Init(nil, nil, nil) })
@@ -598,7 +598,7 @@ func TestPromoteAgentRuntimeFlagsPrefersExplicitRequest(t *testing.T) {
 }
 
 func TestApplyChatFeatureControlsKeepsWorkflowsIndependentFromTaskCenter(t *testing.T) {
-	db := newPromptTestDB(t)
+	db := newChatExecutionTestDB(t)
 	now := time.Now().UTC()
 	if err := db.Model(&orm.UserUIPreferences{}).Create(map[string]any{
 		"user_id": "user-1", "task_center_enabled": false, "skills_enabled": true,
@@ -632,7 +632,7 @@ func TestApplyChatFeatureControlsKeepsWorkflowsIndependentFromTaskCenter(t *test
 }
 
 func TestApplyChatFeatureControlsKeepsSubagentsIndependentFromWorkflows(t *testing.T) {
-	db := newPromptTestDB(t)
+	db := newChatExecutionTestDB(t)
 	now := time.Now().UTC()
 	if err := db.Model(&orm.UserUIPreferences{}).Create(map[string]any{
 		"user_id": "user-1", "task_center_enabled": true, "skills_enabled": true,
@@ -921,6 +921,36 @@ func TestBuildChatRequestBodyLoadsFiltersFromConversationDB(t *testing.T) {
 	}
 }
 
+func TestBuildChatRequestBodyDropsKnowledgeFiltersWhenRAGIsInactive(t *testing.T) {
+	t.Setenv("LAZYMIND_RAG_ENABLED", "0")
+	db := orm.MigrateTestDB(t, &orm.Conversation{})
+	now := time.Now()
+	if err := db.Create(&orm.Conversation{
+		ID:           "conv-with-kb",
+		DisplayName:  "test",
+		ChannelID:    "default",
+		SearchConfig: json.RawMessage(`{"dataset_list":[{"id":"ds-old"}],"creators":["u1"],"tags":["tag"]}`),
+		BaseModel: orm.BaseModel{
+			CreateUserID: "u1",
+			CreatedAt:    now,
+			UpdatedAt:    now,
+		},
+	}).Error; err != nil {
+		t.Fatalf("create conversation: %v", err)
+	}
+
+	body := buildChatRequestBody(t.Context(), db.DB, "conv-with-kb", "", "hello", nil, map[string]any{
+		"filters":          map[string]any{"kb_id": []string{"ds-request"}},
+		"document_context": map[string]any{"document_id": "doc-old"},
+	}, nil, "u1", 2)
+	if body["filters"] != nil {
+		t.Fatalf("filters = %#v, want nil without RAG", body["filters"])
+	}
+	if _, ok := body["document_context"]; ok {
+		t.Fatalf("document_context = %#v, want it omitted without RAG", body["document_context"])
+	}
+}
+
 func TestBuildChatRequestBodyKeepsExistingFilters(t *testing.T) {
 	existing := map[string]any{"kb_id": []string{"manual"}}
 	body := buildChatRequestBody(context.TODO(), nil, "conv-1", "", "hello", nil, map[string]any{
@@ -1176,6 +1206,36 @@ func TestBuildChatHistoryExtPreservesDocumentSelectionContext(t *testing.T) {
 	if payload.DocumentContext["document_id"] != "doc-1" ||
 		payload.DocumentContext["segment_id"] != "seg-2" {
 		t.Fatalf("document context was not preserved: %#v", payload.DocumentContext)
+	}
+}
+
+func TestBuildChatHistoryExtPreservesSyntheticSource(t *testing.T) {
+	for _, source := range []string{"", "driver", "auto_continue"} {
+		name := source
+		if name == "" {
+			name = "user"
+		}
+		t.Run(name, func(t *testing.T) {
+			query := "请重试本步，保留已选论文。"
+			raw := map[string]any{"query": query}
+			if source != "" {
+				raw["workflow_context"] = map[string]any{"synthetic_source": source}
+			}
+			ext := buildChatHistoryExt(raw, query)
+			var payload struct {
+				SyntheticSource string `json:"synthetic_source"`
+			}
+			if err := json.Unmarshal(ext, &payload); err != nil || payload.SyntheticSource != source {
+				t.Fatalf("history lost message source: %s %v", ext, err)
+			}
+			previous := orm.ChatHistory{Ext: ext}
+			regenerated := buildChatHistoryExtWithTrail(map[string]any{"query": query}, query, nil,
+				chatPersistTarget{IsRegeneration: true, Existing: &previous})
+			payload.SyntheticSource = ""
+			if err := json.Unmarshal(regenerated, &payload); err != nil || payload.SyntheticSource != source {
+				t.Fatalf("regeneration changed message source: %s %v", regenerated, err)
+			}
+		})
 	}
 }
 
@@ -2194,9 +2254,12 @@ func TestShouldEmitStreamFrame(t *testing.T) {
 }
 
 func TestFeedBackChatHistoryCancelsFeedback(t *testing.T) {
-	db := orm.MigrateTestDB(t, &orm.ChatHistory{})
+	db := orm.MigrateTestDB(t, &orm.Conversation{}, &orm.ChatHistory{})
 	store.Init(db.DB, nil, nil)
 	t.Cleanup(func() { store.Init(nil, nil, nil) })
+	if err := db.Create(&orm.Conversation{ID: "conv-1"}).Error; err != nil {
+		t.Fatal(err)
+	}
 
 	now := time.Now()
 	if err := db.Create(&orm.ChatHistory{
@@ -2243,11 +2306,14 @@ func TestFeedBackChatHistoryReplacesOnlyTargetFeedback(t *testing.T) {
 	if err != nil {
 		t.Fatalf("connect db: %v", err)
 	}
-	if err := db.AutoMigrate(&orm.ChatHistory{}); err != nil {
+	if err := db.AutoMigrate(&orm.Conversation{}, &orm.ChatHistory{}); err != nil {
 		t.Fatalf("auto migrate: %v", err)
 	}
 	store.Init(db.DB, nil, nil)
 	t.Cleanup(func() { store.Init(nil, nil, nil) })
+	if err := db.Create(&orm.Conversation{ID: "conv-1"}).Error; err != nil {
+		t.Fatal(err)
+	}
 
 	now := time.Now()
 	for _, history := range []orm.ChatHistory{
@@ -2362,7 +2428,7 @@ func TestUserExplicitlyRequestedWorkflowRetry(t *testing.T) {
 }
 
 func TestDirectoryFeatureControlOverridesClientAndReachesChat(t *testing.T) {
-	db := newPromptTestDB(t)
+	db := newChatExecutionTestDB(t)
 	for _, enabled := range []bool{true, false, true} {
 		if err := db.Exec("DELETE FROM user_ui_preferences WHERE user_id=?", "directory-user").Error; err != nil {
 			t.Fatal(err)

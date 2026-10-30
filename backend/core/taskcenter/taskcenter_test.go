@@ -14,7 +14,7 @@ import (
 
 func newTestTaskDB(t *testing.T) *orm.DB {
 	t.Helper()
-	return orm.MigrateTestDB(t, &orm.TaskCenterTask{}, &orm.Conversation{})
+	return orm.MigrateTestDB(t, &orm.TaskCenterTask{}, &orm.Conversation{}, &orm.UserNotificationPreferences{}, &orm.TaskNotification{}, &orm.WorkflowSession{}, &orm.WorkflowSessionStep{}, &orm.WorkflowEvent{})
 }
 
 // ──────────────────────────────────────────────
@@ -261,7 +261,10 @@ func TestResolveTaskForResponseAddsTimeoutFailureReason(t *testing.T) {
 		UpdatedAt:      createdAt,
 	}
 
-	resolved := resolveTaskForResponse(context.Background(), db.DB, task)
+	resolved, err := resolveTaskForResponse(context.Background(), db.DB, task)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if resolved.Status != "failed" {
 		t.Fatalf("expected stale task to resolve as failed, got %q", resolved.Status)
 	}

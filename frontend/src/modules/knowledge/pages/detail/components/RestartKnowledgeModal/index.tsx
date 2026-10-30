@@ -12,9 +12,10 @@ import { useTranslation } from "react-i18next";
 import "./index.scss";
 import type { ParserConfig } from "@/api/generated/knowledge-client";
 import { TaskServiceApi } from "@/modules/knowledge/utils/request";
-import { getLocalizedErrorMessage, localizeErrorCode } from "@/components/request";
+import { localizeErrorCode } from "@/components/request";
+import { useRAGComponent } from "@/modules/modelProvider/contexts/RAGComponentContext";
+import { getImportErrorMessage } from "@/modules/knowledge/utils/importError";
 import {
-  RuntimeReadinessError,
   waitForRuntimeCapability,
 } from "@/runtime/readiness";
 
@@ -26,6 +27,7 @@ interface IData {
   names?: string[];
   title: string;
   processingLevel?: "stored" | "parsed" | "chunked" | "indexed";
+  ingest?: boolean;
 }
 
 export interface IRestartKnowledgeProps {
@@ -34,7 +36,8 @@ export interface IRestartKnowledgeProps {
 
 interface IProps {
   parsers?: Array<ParserConfig>;
-  onFinish: () => void;
+  onFinish: (documentIds?: string[]) => void;
+  onError?: (error: unknown, documentIds: string[]) => void;
 }
 
 const allParseList = ["all", "document"];
@@ -58,11 +61,13 @@ const RestartKnowledgeModal = (
   props: IProps,
   ref: Ref<unknown> | undefined,
 ) => {
-  const { parsers, onFinish } = props;
+  const { parsers, onFinish, onError } = props;
   const { t } = useTranslation();
+  const { availability } = useRAGComponent();
   const [visible, setVisible] = useState(false);
   const [loading, setLoading] = useState(false);
   const [runtimeWaiting, setRuntimeWaiting] = useState(false);
+  const [submissionFailed, setSubmissionFailed] = useState(false);
   const [modalInfo, setModalInfo] = useState<IData>();
   const runtimeWaitAbortRef = useRef<AbortController | null>(null);
   const [form] = Form.useForm();
@@ -76,6 +81,7 @@ const RestartKnowledgeModal = (
   }));
 
   const onOpen = (data: IData) => {
+    setSubmissionFailed(false);
     setVisible(true);
     setModalInfo(data);
     form.setFieldsValue({
@@ -124,15 +130,18 @@ const RestartKnowledgeModal = (
 
       const controller = new AbortController();
       runtimeWaitAbortRef.current = controller;
-      await waitForRuntimeCapability("parser", {
-        signal: controller.signal,
-        onWaiting: () => setRuntimeWaiting(true),
-      });
+      if (availability === "ready") {
+        await waitForRuntimeCapability("parser", {
+          signal: controller.signal,
+          onWaiting: () => setRuntimeWaiting(true),
+        });
+      }
       setRuntimeWaiting(false);
 
       const docNames = (modalInfo.names || []).filter(Boolean);
-      const displayName =
-        docNames.length === 1
+      const displayName = modalInfo.ingest
+        ? t("knowledge.ingestRetained")
+        : docNames.length === 1
           ? t("knowledge.reparseTaskNameSingle", { name: docNames[0] })
           : docNames.length > 1
             ? t("knowledge.reparseTaskNameMulti", { name: docNames[0], count: ids.length })
@@ -144,42 +153,42 @@ const RestartKnowledgeModal = (
           {
             upload_file_id: "",
             task: {
-              task_type: "TASK_TYPE_REPARSE",
+              task_type: modalInfo.ingest ? "TASK_TYPE_PARSE_UPLOADED" : "TASK_TYPE_REPARSE",
               document_ids: ids.filter((i: string) => !!i),
               display_name: displayName,
-              reparse_groups: reparseGroups,
-              reparse_mode: scope,
+              reparse_groups: modalInfo.ingest ? undefined : reparseGroups,
+              reparse_mode: modalInfo.ingest ? undefined : scope,
             },
           },
         ],
-      });
+      }, { silentError: !!onError } as never);
 
       const tasks = createRes.data.tasks || [];
       const taskIds = tasks
         .map((task: { task_id?: string }) => task.task_id)
         .filter((taskId: string | undefined): taskId is string => !!taskId);
       if (!taskIds.length) {
-        message.error(localizeErrorCode("2000509"));
-        return;
+        throw new Error(localizeErrorCode("2000509"));
       }
 
-      const startRes = await TaskServiceApi().startTasks(dataset, { task_ids: taskIds });
+      const startRes = await TaskServiceApi().startTasks(dataset, { task_ids: taskIds }, { silentError: !!onError } as never);
       const startedCount = startRes.data.started_count ?? 0;
       if (startedCount <= 0) {
-        message.error(localizeErrorCode("2000509"));
-        return;
+        throw new Error(localizeErrorCode("2000509"));
       }
       message.success(t("knowledge.createReparseTaskSuccess"));
-      onFinish?.();
+      onFinish?.(ids);
       onCancel();
     } catch (error) {
       if ((error as Error)?.name === "AbortError") {
         return;
       }
+      if (error && typeof error === 'object' && 'errorFields' in error) return;
       console.error(error);
-      if (error instanceof RuntimeReadinessError) {
-        message.error(getLocalizedErrorMessage(error));
-      }
+      if (onError) {
+        setSubmissionFailed(true);
+        onError(error, modalInfo.ids);
+      } else message.error(getImportErrorMessage(error));
     } finally {
       runtimeWaitAbortRef.current = null;
       setRuntimeWaiting(false);
@@ -201,10 +210,11 @@ const RestartKnowledgeModal = (
       label: t("knowledge.reparseStrategyFullReparse"),
     },
   ].filter((option) =>
-    supportsVectorReparse(modalInfo?.processingLevel) ||
+    (availability === "ready" && supportsVectorReparse(modalInfo?.processingLevel)) ||
     option.value !== REPARSE_SCOPE_SLICE_AND_EMBED,
   );
-  const supportsSegments = supportsSegmentReparse(modalInfo?.processingLevel);
+  const supportsSegments = availability === "ready" && !modalInfo?.ingest &&
+    supportsSegmentReparse(modalInfo?.processingLevel);
 
   const reparseStrategyLabel = (
     <span className="reparse-strategy-label">
@@ -253,6 +263,8 @@ const RestartKnowledgeModal = (
         />
       )}
       <Form form={form} layout="vertical">
+        {submissionFailed && <p role="status">解析任务尚未提交，请重试或查看通知。</p>}
+        {modalInfo?.ingest && <Alert type="info" showIcon message={t("knowledge.ingestRetainedHint")} />}
         {supportsSegments && (
           <>
             <Form.Item

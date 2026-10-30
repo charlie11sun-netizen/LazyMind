@@ -161,8 +161,6 @@ func projectOrdinarySession(ctx context.Context, db *gorm.DB, session *orm.Workf
 				view.Status = publicNode.Branch
 			case publicNode.Readiness == "blocked":
 				view.Status = "blocked"
-			case publicNode.RequiresApproval && publicNode.Readiness == "ready":
-				view.Status = "waiting"
 			}
 		}
 		if exists {
@@ -171,6 +169,16 @@ func projectOrdinarySession(ctx context.Context, db *gorm.DB, session *orm.Workf
 			// SubAgent row. Only expose task_id when the adapter actually exists.
 			view.AttemptID, view.ExecutionID = taskdisplay.String(row.ID), row.ID
 			view.Status = ordinaryAttemptStatus(row)
+			if row.Status == "cancelled" && row.TerminalCode == "WORKFLOW_INPUT_REQUIRED" {
+				var result struct {
+					InputRequired struct {
+						Question string `json:"question"`
+					} `json:"input_required"`
+				}
+				if json.Unmarshal([]byte(row.ResultJSON), &result) == nil {
+					view.InputRequired = taskdisplay.Text(result.InputRequired.Question, 2000)
+				}
+			}
 			view.ParallelGroupID = taskdisplay.String(groups[row.TaskID])
 			applyOrdinaryAttemptEvents(&view, row, events)
 			// Slot revisions establish explicit visibility and attempt ownership for
@@ -495,11 +503,16 @@ func paginateOrdinaryProjection(out *ordinaryProjection, r *http.Request) error 
 			return err
 		}
 		view.StageArtifacts, view.Pages.StageArtifacts = view.StageArtifacts[start:end], metadata
+		start, end, metadata, err = page("knowledge_operations", len(view.KnowledgeOperations))
+		if err != nil {
+			return err
+		}
+		view.KnowledgeOperations, view.Pages.KnowledgeOperations = view.KnowledgeOperations[start:end], metadata
 	}
 	if !found {
 		return errOrdinaryCursor
 	}
-	if collection := q.Get("collection"); collection != "" && collection != "process_steps" && collection != "sources" && collection != "stage_artifacts" {
+	if collection := q.Get("collection"); collection != "" && collection != "process_steps" && collection != "sources" && collection != "stage_artifacts" && collection != "knowledge_operations" {
 		return errOrdinaryCursor
 	}
 	return nil
@@ -557,7 +570,7 @@ func getOrdinarySessionProjection(w http.ResponseWriter, r *http.Request) {
 }
 
 // ordinarySlotPresentation honors explicit declarations from the Session's
-// immutable package. Omitted exposed fields retain the existing visible default.
+// immutable package. Both exposed and user_visible control presentation only.
 func ordinarySlotPresentation(ctx context.Context, db *gorm.DB, revisionID string) (map[string]bool, map[string]string, error) {
 	var row struct{ Content []byte }
 	result := db.WithContext(ctx).Table(orm.WorkflowRevisionEntry{}.TableName()+" AS entries").
@@ -571,9 +584,10 @@ func ordinarySlotPresentation(ctx context.Context, db *gorm.DB, revisionID strin
 	}
 	var manifest struct {
 		Slots []struct {
-			ID      string `yaml:"id"`
-			Label   string `yaml:"label"`
-			Exposed *bool  `yaml:"exposed"`
+			ID          string `yaml:"id"`
+			Label       string `yaml:"label"`
+			Exposed     *bool  `yaml:"exposed"`
+			UserVisible *bool  `yaml:"user_visible"`
 		} `yaml:"slots"`
 		UI struct {
 			Slots map[string]struct {
@@ -587,7 +601,7 @@ func ordinarySlotPresentation(ctx context.Context, db *gorm.DB, revisionID strin
 	hidden := map[string]bool{}
 	names := map[string]string{}
 	for _, slot := range manifest.Slots {
-		if slot.Exposed != nil && !*slot.Exposed {
+		if (slot.Exposed != nil && !*slot.Exposed) || (slot.UserVisible != nil && !*slot.UserVisible) {
 			hidden[slot.ID] = true
 		}
 		if slot.Label != "" && manifest.UI.Slots[slot.ID].WidgetType == "text-markdown" {
@@ -596,4 +610,26 @@ func ordinarySlotPresentation(ctx context.Context, db *gorm.DB, revisionID strin
 		}
 	}
 	return hidden, names, nil
+}
+
+// ReadOrdinaryTaskSources exposes the same authorized, persisted public projection
+// used by Work. It does not execute a workflow or resolve sources externally.
+func ReadOrdinaryTaskSources(ctx context.Context, db *gorm.DB, owner, sessionID, displayKey string) ([]taskdisplay.PublicSource, error) {
+	if err := workflowstore.New(db).AuthorizeSession(ctx, sessionID, owner); err != nil {
+		return nil, gorm.ErrRecordNotFound
+	}
+	var session orm.WorkflowSession
+	if err := db.WithContext(ctx).Where("id = ? AND dismissed = false", sessionID).Take(&session).Error; err != nil {
+		return nil, err
+	}
+	projection, err := projectOrdinarySession(ctx, db, &session)
+	if err != nil {
+		return nil, err
+	}
+	for _, task := range projection.Tasks {
+		if task.DisplayKey == displayKey {
+			return task.Sources, nil
+		}
+	}
+	return nil, gorm.ErrRecordNotFound
 }

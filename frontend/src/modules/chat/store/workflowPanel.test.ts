@@ -7,6 +7,7 @@ import {
   filterWorkflowTabs,
   hydrateWorkflowUI,
   workflowTabAllowsDownload,
+  type SlotRevision,
 } from './workflowPanel';
 import type { WorkflowRuntimeProjection } from './workflowPanel';
 
@@ -15,26 +16,26 @@ describe('runtime skipped tab visibility', () => {
   const projection: WorkflowRuntimeProjection = { pruned: ['topic'], bypassed: ['analysis'] };
 
   it('is opt-in and hides only explicitly skipped steps', () => {
-    expect(filterWorkflowTabs(tabs, [], undefined, projection)).toEqual(tabs);
-    expect(filterWorkflowTabs(tabs, [], undefined, projection, true).map(t => t.id)).toEqual(['review']);
+    expect(filterWorkflowTabs(tabs, [], undefined, { projection })).toEqual(tabs);
+    expect(filterWorkflowTabs(tabs, [], undefined, { projection }, true).map(t => t.id)).toEqual(['review']);
     expect(filterWorkflowTabs(tabs, [], undefined, undefined, true)).toEqual(tabs);
   });
 
   it('restores tabs after rewind changes the authoritative projection', () => {
-    expect(filterWorkflowTabs(tabs, [], undefined, projection, true)).toHaveLength(1);
-    expect(filterWorkflowTabs(tabs, [], undefined, { pruned: [], bypassed: [] }, true)).toEqual(tabs);
+    expect(filterWorkflowTabs(tabs, [], undefined, { projection }, true)).toHaveLength(1);
+    expect(filterWorkflowTabs(tabs, [], undefined, { projection: { pruned: [], bypassed: [] } }, true)).toEqual(tabs);
   });
 
   it.each(['running', 'waiting', 'failed', 'succeeded'])('keeps effective %s work visible', execution => {
     const node = { branch: 'pruned', execution, validity: 'effective', readiness: 'not_applicable',
       reachability: 'unreachable', requires_approval: false };
-    expect(filterWorkflowTabs(tabs, [], undefined, { nodes: { topic: node } }, true)).toEqual(tabs);
+    expect(filterWorkflowTabs(tabs, [], undefined, { projection: { nodes: { topic: node } } }, true)).toEqual(tabs);
   });
 
   it('keeps future and material-blocked steps visible', () => {
     const node = { branch: 'active', execution: 'none', validity: 'effective', readiness: 'blocked',
       reachability: 'unreachable', requires_approval: false };
-    expect(filterWorkflowTabs(tabs, [], undefined, { nodes: { topic: node } }, true)).toEqual(tabs);
+    expect(filterWorkflowTabs(tabs, [], undefined, { projection: { nodes: { topic: node } } }, true)).toEqual(tabs);
   });
 
   it('shows only executed paper tabs after the workflow finishes', () => {
@@ -59,14 +60,14 @@ describe('runtime skipped tab visibility', () => {
 
   it('hides a composite only when every represented step is skipped', () => {
     const composite = [{ id: 'result', label: 'result', slots: [], status_step_ids: ['a', 'b'] }];
-    expect(filterWorkflowTabs(composite, [], undefined, { pruned: ['a'] }, true)).toEqual(composite);
-    expect(filterWorkflowTabs(composite, [], undefined, { pruned: ['a'], bypassed: ['b'] }, true)).toEqual([]);
+    expect(filterWorkflowTabs(composite, [], undefined, { projection: { pruned: ['a'] } }, true)).toEqual(composite);
+    expect(filterWorkflowTabs(composite, [], undefined, { projection: { pruned: ['a'], bypassed: ['b'] } }, true)).toEqual([]);
   });
 
   it('reads the paper opt-in without changing PPT material-based rules', () => {
     const paper = hydrateWorkflowUI(load(readFileSync(resolve(process.cwd(), '../workflows/paper-writing/workflow.yaml'), 'utf8')));
     expect(paper.hide_skipped_steps).toBe(true);
-    expect(filterWorkflowTabs(paper.tabs, [], undefined, { pruned: ['research_topic'] }, paper.hide_skipped_steps)
+    expect(filterWorkflowTabs(paper.tabs, [], undefined, { projection: { pruned: ['research_topic'] } }, paper.hide_skipped_steps)
       .some(tab => tab.id === 'research_topic')).toBe(false);
     const ppt = hydrateWorkflowUI(load(readFileSync(resolve(process.cwd(), '../workflows/ppt-workflow/workflow.yaml'), 'utf8')));
     expect(ppt.hide_skipped_steps).toBeUndefined();
@@ -75,7 +76,7 @@ describe('runtime skipped tab visibility', () => {
 
   it('hides skipped literature feedback while retaining future paper revision', () => {
     const paper = hydrateWorkflowUI(load(readFileSync(resolve(process.cwd(), '../workflows/paper-writing/workflow.yaml'), 'utf8')));
-    const hidden = ['research_topic', 'literature_review', 'experiment', 'data_analysis', 'write_document', 'reading_reflection'];
+    const hidden = ['research_topic', 'literature_review', 'experiment', 'data_analysis', 'write_outline', 'write_document', 'reading_reflection'];
     const selected: WorkflowRuntimeProjection = { pruned: hidden, past: ['peer_review'] };
     const visible = () => filterWorkflowTabs(paper.tabs, [], undefined, selected, true).map(t => t.id);
     expect(visible()).toEqual(['peer_review', 'revise_document']);
@@ -164,6 +165,22 @@ describe('hydrateWorkflowUI', () => {
 });
 
 describe('filterWorkflowTabs', () => {
+  it('shows executed collection or academic analysis in the shared materials tab', () => {
+    const tabs = [{ id: 'materials', label: 'Materials', step_id: 'collect_materials',
+      status_step_ids: ['collect_materials', 'analyze_academic_sources'], slots: [],
+      hide_when_material: 'skip_material_collection' }];
+    const slots = [{ slot: 'skip_material_collection', selected: true }] as SlotRevision[];
+    expect(filterWorkflowTabs(tabs, slots)).toEqual([]);
+    for (const step_id of tabs[0].status_step_ids) {
+      expect(filterWorkflowTabs(tabs, slots, undefined, {
+        projection: { past: [step_id] },
+      })).toEqual(tabs);
+      expect(filterWorkflowTabs(tabs, slots, undefined, {
+        projection: { past: [step_id], stale: [step_id] },
+      })).toEqual([]);
+    }
+  });
+
   it('defers conditional tabs until the declared planning material is ready', () => {
     const tabs = [
       { id: 'planning', label: 'Planning', slots: [] },
@@ -243,4 +260,20 @@ describe('workflowTabAllowsDownload', () => {
     expect(workflowTabAllowsDownload(tab, 0, 2)).toBe(false);
     expect(workflowTabAllowsDownload(tab, 1, 2)).toBe(true);
   });
+});
+
+it('preserves authoritative workflow ownership and opt-in follow configuration', () => {
+  const ui = { source_type: 'builtin', follow_mode: { default: 'following' }, tabs: [] };
+  expect(hydrateWorkflowUI({ source_type: 'user', ui }).source_type).toBe('user');
+  expect(hydrateWorkflowUI({ source_type: 'builtin', ui }).source_type).toBe('builtin');
+  expect(hydrateWorkflowUI({ source_type: 'builtin' }).source_type).toBe('builtin');
+  expect(hydrateWorkflowUI({ source_type: 'builtin', ui }).follow_mode).toEqual({ default: 'following' });
+});
+
+it('restores skipped tabs only for effective runtime activity', () => {
+  const tabs = [{ id: 'result', step_id: 'generate', label: 'Result', slots: [], hide_when_material: 'skip' }];
+  const slots = [{ slot: 'skip', selected: true }] as SlotRevision[];
+  const node = { requires_approval: false, execution: 'running', validity: 'effective', reachability: 'reachable', readiness: '', branch: 'active' };
+  expect(filterWorkflowTabs(tabs, slots, undefined, { projection: { current: ['generate'], nodes: { generate: node } } })).toEqual(tabs);
+  expect(filterWorkflowTabs(tabs, slots, undefined, { projection: { current: ['generate'], nodes: { generate: { ...node, validity: 'stale' } } } })).toEqual([]);
 });

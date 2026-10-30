@@ -2,10 +2,12 @@ package chat
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"lazymind/core/toolpolicy"
 	"net/http"
 	"regexp"
 	"sort"
@@ -28,6 +30,7 @@ import (
 	"lazymind/core/state"
 	"lazymind/core/store"
 	"lazymind/core/subagent"
+	"lazymind/core/systemdeps"
 	"lazymind/core/taskcenter"
 	"lazymind/core/tasktiming"
 	"lazymind/core/workflow"
@@ -60,7 +63,7 @@ func applyBasicChatOnlyPolicy(reqBody map[string]any) {
 	reqBody["enable_subagent"] = false
 	reqBody["workflow_context"] = map[string]any{}
 	reqBody["workflow_catalog"] = []map[string]any{}
-	reqBody["disabled_tools"] = mergeDisabledToolNames(
+	reqBody["disabled_tools"] = toolpolicy.Merge(
 		stringSliceFromAny(reqBody["disabled_tools"]),
 		[]string{"ask_user", "schedule", "task", "task_center"},
 	)
@@ -106,6 +109,9 @@ func ChatConversations(w http.ResponseWriter, r *http.Request) {
 	if len(items) > 0 {
 		uid := strings.TrimSpace(r.Header.Get("X-User-Id"))
 		for _, it := range items {
+			if it.ResourceType == acl.ResourceTypeDB && !systemdeps.PythonComponentActive("rag") {
+				continue
+			}
 			if it.NeedPerm == "" || !acl.Can(uid, it.ResourceType, it.ResourceID, it.NeedPerm) {
 				w.Header().Set("Content-Type", "application/json")
 				w.WriteHeader(http.StatusForbidden)
@@ -199,6 +205,23 @@ func ChatConversations(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	dualReply := stream && len(modelStrs) >= 2
+	var workflowControl *workflow.NativeControlCommand
+	if value, present := raw["workflow_control"]; present {
+		if !stream || dualReply || basicChatOnly || !workflow.IsWorkflowUserControlRequest(r) {
+			common.ReplyErr(w, "workflow controls require an interactive single Chat run", http.StatusBadRequest)
+			return
+		}
+		encoded, err := json.Marshal(value)
+		if err != nil {
+			common.ReplyErr(w, "invalid workflow control", http.StatusBadRequest)
+			return
+		}
+		workflowControl = &workflow.NativeControlCommand{}
+		if err := json.Unmarshal(encoded, workflowControl); err != nil || workflowControl.SessionID == "" {
+			common.ReplyErr(w, "invalid workflow control", http.StatusBadRequest)
+			return
+		}
+	}
 
 	query := ""
 	if v, ok := raw["query"].(string); ok && strings.TrimSpace(v) != "" {
@@ -256,7 +279,7 @@ func ChatConversations(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
-	if err := authorizeConversationSearchConfig(r.Context(), db, userID, convID, requestSearchConfig); err != nil {
+	if err := authorizeConversationSearchConfigWhenAvailable(r.Context(), db, userID, convID, requestSearchConfig); err != nil {
 		if errors.Is(err, errKnowledgeBaseNotReadable) {
 			common.ReplyErr(w, errKnowledgeBaseNotReadable.Error(), http.StatusForbidden)
 		} else {
@@ -513,13 +536,13 @@ func ChatConversations(w http.ResponseWriter, r *http.Request) {
 		common.ReplyErr(w, "query disabled tools failed", http.StatusInternalServerError)
 		return
 	}
-	resourceContext.DisabledTools = mergeDisabledToolNames(
+	resourceContext.DisabledTools = toolpolicy.Merge(
 		resourceContext.DisabledTools, mentionedResources.ExcludedToolNames,
 	)
 	resourceContext.DisabledTools = applyMentionedTools(resourceContext.DisabledTools, mentionedResources.ToolNames)
 	if len(dbDisabledTools) > 0 {
 		// A setting-level pause must not be bypassed by an explicit @tool mention.
-		resourceContext.DisabledTools = mergeDisabledToolNames(resourceContext.DisabledTools, dbDisabledTools)
+		resourceContext.DisabledTools = toolpolicy.Merge(resourceContext.DisabledTools, dbDisabledTools)
 	}
 	if target.IsRegeneration {
 		if err := clearModelContext(r.Context(), db, convID); err != nil {
@@ -835,6 +858,14 @@ func ChatConversations(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	baseURL := chatServiceURL()
+	if workflowControl != nil {
+		if isExternalChatProvider(conversationRecord.ChatExecutor) {
+			common.ReplyErr(w, "native workflow controls require the LazyMind Chat executor", http.StatusConflict)
+			return
+		}
+		reqBody["_workflow_control"] = workflowControl
+		reqBody["_workflow_control_owner"] = userID
+	}
 	reqCtx := r.Context()
 	stateStore := store.State()
 	if stateStore != nil && !isExternalChatProvider(conversationRecord.ChatExecutor) {
@@ -861,8 +892,7 @@ func ChatConversations(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// run_in_background: create a background_chat task record so it appears in the
-	// task center. Status is derived on read via resolveTaskStatus (chat_histories
-	// presence), so no status callback is needed after the SSE drains.
+	// task center and bind completion to the accepted server execution.
 	if runInBackground, _ := raw["run_in_background"].(bool); runInBackground {
 		taskTitle := displayQuery
 		if len([]rune(taskTitle)) > 40 {
@@ -874,11 +904,46 @@ func ChatConversations(w http.ResponseWriter, r *http.Request) {
 			TaskType:       "background_chat",
 			Title:          &taskTitle,
 			Status:         "running",
+			ProgressJSON:   taskcenter.NewBackgroundExecutionProgress(nil),
 		}
-		// Conversation type was fixed atomically at creation.
-		if err := taskcenter.CreateTask(reqCtx, db, bgTask); err != nil {
-			common.ReplyErr(w, "create task failed", http.StatusInternalServerError)
-			return
+		// A keyed external replay reuses the server-derived task identity.
+		externalRunID, _ := reqBody["_external_run_id"].(string)
+		externalReplay := externalRunID != ""
+		if externalRunID == "" {
+			if key, _ := reqBody["_external_request_key"].(string); key != "" {
+				externalRunID, _ = externalChatIdentity(key)
+			}
+		}
+		if externalRunID != "" {
+			digest := sha256.Sum256([]byte("background/" + externalRunID))
+			bgTask.ID = fmt.Sprintf("tc_%x", digest[:16])
+		}
+		if bgTask.ID != "" {
+			existing, lookupErr := taskcenter.GetTask(reqCtx, db, bgTask.ID)
+			if lookupErr == nil {
+				if existing.UserID != userID || existing.ConversationID != convID || existing.TaskType != "background_chat" {
+					common.ReplyErr(w, "failed to resolve background task", http.StatusServiceUnavailable)
+					return
+				}
+				target.BackgroundTaskID = existing.ID
+			} else if !errors.Is(lookupErr, gorm.ErrRecordNotFound) {
+				common.ReplyErr(w, "failed to resolve background task", http.StatusServiceUnavailable)
+				return
+			}
+		}
+		// Replaying a foreground execution does not admit new background work.
+		// In particular its old completion must not strand a newly-created task.
+		if target.BackgroundTaskID == "" && !externalReplay {
+			if err := taskcenter.CreateTask(reqCtx, db, bgTask); err != nil {
+				// Concurrent keyed requests can race admission. A committed
+				// matching deterministic row is the same accepted execution.
+				existing, lookupErr := taskcenter.GetTask(reqCtx, db, bgTask.ID)
+				if externalRunID == "" || lookupErr != nil || existing.UserID != userID || existing.ConversationID != convID || existing.TaskType != "background_chat" {
+					common.ReplyErr(w, "failed to create background task", http.StatusServiceUnavailable)
+					return
+				}
+			}
+			target.BackgroundTaskID = bgTask.ID
 		}
 	}
 
@@ -902,6 +967,18 @@ func ChatConversations(w http.ResponseWriter, r *http.Request) {
 	}
 
 	handleStreamChat(w, r, db, stateStore, baseURL, reqBody, convID, displayQuery, target, dualReply, historyExt)
+}
+
+func authorizeConversationSearchConfigWhenAvailable(
+	ctx context.Context,
+	db *gorm.DB,
+	userID, conversationID string,
+	requestSearchConfig any,
+) error {
+	if !systemdeps.PythonComponentActive("rag") {
+		return nil
+	}
+	return authorizeConversationSearchConfig(ctx, db, userID, conversationID, requestSearchConfig)
 }
 
 // workflowSessionAvailableForRequest decides whether a workflow session should
@@ -1027,13 +1104,25 @@ func resumeChatStream(w http.ResponseWriter, r *http.Request) {
 	resumeSingleAnswerChat(ctx, stateStore, convID, targetHistoryID, w, flusher)
 }
 
+func withHistoryAskState(payload map[string]any, ext json.RawMessage) map[string]any {
+	var fields map[string]json.RawMessage
+	if json.Unmarshal(ext, &fields) == nil {
+		for _, key := range []string{"ask_pending", "ask_answered", "ask_saved_answers"} {
+			if value, ok := fields[key]; ok {
+				payload[key] = value
+			}
+		}
+	}
+	return payload
+}
+
 func resumeFromDBOnly(ctx context.Context, db *gorm.DB, userID, convID string, flusher http.Flusher, w http.ResponseWriter) {
 	var last orm.ChatHistory
 	if err := db.Where("conversation_id = ?", convID).Order("seq DESC").First(&last).Error; err != nil || last.ID == "" {
-		writeSSEChunk(w, flusher, map[string]any{"runtime_event": failedRunEvent(newID("run_"), "history_not_found", false)})
+		writeSSEChunk(w, flusher, withHistoryAskState(map[string]any{"runtime_event": failedRunEvent(newID("run_"), "history_not_found", false)}, nil))
 		return
 	}
-	writeSSEChunk(w, flusher, map[string]any{
+	snapshot := map[string]any{
 		"conversation_id":     convID,
 		"seq":                 last.Seq,
 		"message":             stripThinkTags(stripToolTags(last.Result)),
@@ -1041,17 +1130,21 @@ func resumeFromDBOnly(ctx context.Context, db *gorm.DB, userID, convID string, f
 		"delta_mode":          ChatDeltaModeReplace,
 		"history_id":          last.ID,
 		"exports":             chatExportsFromExt(last.Ext),
+		"model_route":         chatModelRouteFromHistoryExt(last.Ext),
+		"model_switches":      modelSwitchesFromExt(last.Ext),
 		"sources":             retrievalSources(last.RetrievalResult),
 		"tool_call_turns":     last.ToolCallTurns,
 		"thinking_duration_s": last.ThinkingDurationS,
-	})
+	}
+	addModelOutputSnapshot(snapshot, last)
+	writeSSEChunk(w, flusher, withHistoryAskState(snapshot, last.Ext))
 	writeSSEChunk(w, flusher, storedTerminalChunk(ctx, db, userID, convID, last.ID, last.RunID, last.RunTerminal))
 }
 
 func resumeCompletedFromDB(ctx context.Context, db *gorm.DB, userID, convID string, flusher http.Flusher, w http.ResponseWriter) {
 	var last orm.ChatHistory
 	if err := db.Where("conversation_id = ?", convID).Order("seq DESC").First(&last).Error; err == nil && last.ID != "" {
-		writeSSEChunk(w, flusher, map[string]any{
+		snapshot := map[string]any{
 			"conversation_id":     convID,
 			"seq":                 last.Seq,
 			"message":             stripThinkTags(stripToolTags(last.Result)),
@@ -1059,21 +1152,25 @@ func resumeCompletedFromDB(ctx context.Context, db *gorm.DB, userID, convID stri
 			"delta_mode":          ChatDeltaModeReplace,
 			"history_id":          last.ID,
 			"exports":             chatExportsFromExt(last.Ext),
+			"model_route":         chatModelRouteFromHistoryExt(last.Ext),
+			"model_switches":      modelSwitchesFromExt(last.Ext),
 			"sources":             retrievalSources(last.RetrievalResult),
 			"tool_call_turns":     last.ToolCallTurns,
 			"thinking_duration_s": last.ThinkingDurationS,
-		})
+		}
+		addModelOutputSnapshot(snapshot, last)
+		writeSSEChunk(w, flusher, withHistoryAskState(snapshot, last.Ext))
 		writeSSEChunk(w, flusher, storedTerminalChunk(ctx, db, userID, convID, last.ID, last.RunID, last.RunTerminal))
 		return
 	}
 
 	var mh []orm.MultiAnswersChatHistory
 	if err := db.Where("conversation_id = ?", convID).Order("seq DESC, create_time DESC").Limit(2).Find(&mh).Error; err != nil || len(mh) == 0 {
-		writeSSEChunk(w, flusher, map[string]any{"runtime_event": failedRunEvent(newID("run_"), "history_not_found", false)})
+		writeSSEChunk(w, flusher, withHistoryAskState(map[string]any{"runtime_event": failedRunEvent(newID("run_"), "history_not_found", false)}, nil))
 		return
 	}
 	for _, h := range mh {
-		writeSSEChunk(w, flusher, map[string]any{
+		writeSSEChunk(w, flusher, withHistoryAskState(map[string]any{
 			"conversation_id":     convID,
 			"seq":                 h.Seq,
 			"message":             stripThinkTags(stripToolTags(h.Result)),
@@ -1084,7 +1181,7 @@ func resumeCompletedFromDB(ctx context.Context, db *gorm.DB, userID, convID stri
 			"sources":             retrievalSources(h.RetrievalResult),
 			"tool_call_turns":     h.ToolCallTurns,
 			"thinking_duration_s": h.ThinkingDurationS,
-		})
+		}, h.Ext))
 		writeSSEChunk(w, flusher, storedTerminalChunk(ctx, db, userID, convID, h.ID, h.RunID, h.RunTerminal))
 	}
 }
@@ -1113,14 +1210,54 @@ func mergeChunksToFirstChunk(chunks []*ChatChunkResponse) *ChatChunkResponse {
 		return nil
 	}
 	var fullDelta, fullReasoning string
+	var toolCallTurns *int
 	var intentUpdated *IntentUpdatedEvent
 	var modelRoute *chatModelRoute
 	var sources []any
+	var modelSwitches []ModelSwitchRecord
 	var exports *[]ChatExport
+	var modelOutput *ChatModelOutput
+	var checkpoint *ChatChunkResponse
 	last := chunks[len(chunks)-1]
+	outputRunID := ""
+	for _, ch := range chunks {
+		if ch != nil && ch.ModelOutput != nil && ch.ModelOutput.CallIndex == 0 && ch.ModelOutput.Phase == "commit" {
+			outputRunID = ch.ModelOutput.RunID
+		}
+	}
 	for _, ch := range chunks {
 		if ch == nil {
 			continue
+		}
+		if outputRunID != "" && (ch.ModelOutput != nil && ch.ModelOutput.RunID != outputRunID || ch.RuntimeEvent != nil && ch.RuntimeEvent.RunID != outputRunID) {
+			continue
+		}
+		if metadata := ch.ModelOutput; metadata != nil {
+			if metadata.CallIndex > 0 {
+				if metadata.Phase == "begin" {
+					if modelOutput != nil && metadata.CallIndex <= modelOutput.CallIndex {
+						continue
+					}
+					checkpoint = &ChatChunkResponse{Delta: fullDelta, ReasoningContent: fullReasoning, Sources: sources, Exports: exports}
+				} else if modelOutput != nil && (metadata.CallIndex != modelOutput.CallIndex || modelOutput.Phase != "begin") {
+					continue
+				}
+				if metadata.Phase == "commit" || metadata.Phase == "rollback" {
+					checkpoint = nil
+				}
+			}
+			if modelOutput == nil && metadata.CallIndex == 0 || modelOutput != nil && metadata.RunID != modelOutput.RunID {
+				fullDelta, fullReasoning, sources, exports, modelSwitches = "", "", nil, nil, nil
+				toolCallTurns = nil
+			}
+			if modelOutput == nil || metadata.Phase != "" {
+				copy := *metadata
+				modelOutput = &copy
+			}
+		}
+		if ch.ToolCallTurns != nil && (toolCallTurns == nil || *ch.ToolCallTurns > *toolCallTurns) {
+			count := *ch.ToolCallTurns
+			toolCallTurns = &count
 		}
 		if ch.DeltaMode == ChatDeltaModeReplace {
 			fullDelta = ch.Delta
@@ -1130,17 +1267,33 @@ func mergeChunksToFirstChunk(chunks []*ChatChunkResponse) *ChatChunkResponse {
 		if ch.Exports != nil {
 			exports = ch.Exports
 		}
-		fullReasoning += ch.ReasoningContent
+		if ch.ModelOutput != nil && ch.DeltaMode == ChatDeltaModeReplace {
+			fullReasoning, sources, exports = ch.ReasoningContent, ch.Sources, ch.Exports
+		} else {
+			fullReasoning += ch.ReasoningContent
+		}
 		if ch.IntentUpdated != nil {
 			intentUpdated = ch.IntentUpdated
 		}
 		if len(ch.Sources) > 0 {
 			sources = ch.Sources
 		}
+		if ch.ModelSwitches != nil {
+			modelSwitches = ch.ModelSwitches
+		}
 		if ch.ModelRoute != nil {
 			modelRoute = ch.ModelRoute
 		}
 		if ch.RuntimeEvent != nil {
+			if ch.RuntimeEvent.Type == RuntimeEventRunFinished && checkpoint != nil {
+				fullDelta, fullReasoning, sources, exports = checkpoint.Delta, checkpoint.ReasoningContent, checkpoint.Sources, checkpoint.Exports
+				checkpoint = nil
+				if modelOutput != nil {
+					copy := *modelOutput
+					copy.Phase = "rollback"
+					modelOutput = &copy
+				}
+			}
 			continue
 		}
 	}
@@ -1154,10 +1307,13 @@ func mergeChunksToFirstChunk(chunks []*ChatChunkResponse) *ChatChunkResponse {
 		Delta:            fullDelta,
 		DeltaMode:        ChatDeltaModeReplace,
 		ReasoningContent: fullReasoning,
+		ToolCallTurns:    toolCallTurns,
 		Sources:          sources,
 		Exports:          exports,
 		IntentUpdated:    intentUpdated,
 		ModelRoute:       modelRoute,
+		ModelSwitches:    modelSwitches,
+		ModelOutput:      modelOutput,
 	}
 }
 
@@ -1168,12 +1324,31 @@ func sendChunk(w http.ResponseWriter, flusher http.Flusher, ch *ChatChunkRespons
 	writeSSEChunk(w, flusher, ch)
 }
 
+// Status can close a stream after its producer stops without caching a terminal frame.
+func mergeResumeChunks(chunks []*ChatChunkResponse, status *ChatStatus, convID, historyID string) *ChatChunkResponse {
+	if status != nil && status.RunTerminal != nil {
+		seq := int32(0)
+		if len(chunks) > 0 && chunks[len(chunks)-1] != nil {
+			seq = chunks[len(chunks)-1].Seq
+		}
+		copy := append([]*ChatChunkResponse(nil), chunks...)
+		chunks = append(copy, &ChatChunkResponse{ConversationID: convID, HistoryID: historyID, Seq: seq, RuntimeEvent: runFinishedEvent(status.RunID, *status.RunTerminal)})
+	}
+	return mergeChunksToFirstChunk(chunks)
+}
+
 func resumeSingleAnswerChat(ctx context.Context, stateStore state.Store, convID, historyID string, w http.ResponseWriter, flusher http.Flusher) {
 	status, _ := getChatStatus(ctx, stateStore, convID, historyID)
 	chunks, _ := getChatChunks(ctx, stateStore, convID, historyID)
 	terminalSent := false
+	outputRunID := ""
 
-	first := mergeChunksToFirstChunk(chunks)
+	first := mergeResumeChunks(chunks, status, convID, historyID)
+	var currentOutput *ChatModelOutput
+	if first != nil && first.ModelOutput != nil {
+		currentOutput = first.ModelOutput
+		outputRunID = first.ModelOutput.RunID
+	}
 	if first != nil {
 		sendChunk(w, flusher, first)
 	} else {
@@ -1185,6 +1360,9 @@ func resumeSingleAnswerChat(ctx context.Context, stateStore state.Store, convID,
 	}
 	for _, chunk := range chunks {
 		if chunk == nil || chunk.RuntimeEvent == nil || chunk.RuntimeEvent.Type != RuntimeEventRunFinished || terminalSent {
+			continue
+		}
+		if outputRunID != "" && chunk.RuntimeEvent.RunID != outputRunID {
 			continue
 		}
 		if _, err := chunk.RuntimeEvent.Terminal(); err != nil {
@@ -1255,8 +1433,26 @@ func resumeSingleAnswerChat(ctx context.Context, stateStore state.Store, convID,
 	if lastIdx < 0 {
 		lastIdx = -1
 	}
+	restoreOpenOutput := func(current *ChatStatus) {
+		if currentOutput == nil || currentOutput.Phase != "begin" {
+			return
+		}
+		latest, _ := getChatChunks(ctx, stateStore, convID, historyID)
+		restored := mergeResumeChunks(latest, current, convID, historyID)
+		if restored != nil {
+			sendChunk(w, flusher, restored)
+			currentOutput = restored.ModelOutput
+		}
+	}
 	err := watchChatChunks(ctx, stateStore, convID, historyID, lastIdx, func(ch *ChatChunkResponse) error {
+		if ch != nil && outputRunID != "" && (ch.ModelOutput != nil && ch.ModelOutput.RunID != outputRunID || ch.RuntimeEvent != nil && ch.RuntimeEvent.RunID != outputRunID) {
+			return nil
+		}
+		if ch != nil && ch.ModelOutput != nil && ch.ModelOutput.Phase != "" {
+			currentOutput = ch.ModelOutput
+		}
 		if ch != nil && ch.RuntimeEvent != nil && ch.RuntimeEvent.Type == RuntimeEventRunFinished {
+			restoreOpenOutput(&ChatStatus{RunID: ch.RuntimeEvent.RunID, RunTerminal: func() *RunTerminal { value, _ := ch.RuntimeEvent.Terminal(); return value }()})
 			if terminalSent {
 				return nil
 			}
@@ -1274,6 +1470,7 @@ func resumeSingleAnswerChat(ctx context.Context, stateStore state.Store, convID,
 
 	finalStatus, _ := getChatStatus(context.Background(), stateStore, convID, historyID)
 	if finalStatus != nil && finalStatus.RunTerminal != nil {
+		restoreOpenOutput(finalStatus)
 		emitStatusTerminal(finalStatus)
 		_ = clearChatData(context.Background(), stateStore, convID, historyID)
 	}
@@ -1660,19 +1857,22 @@ func chatHistoryToResponseItem(h orm.ChatHistory) map[string]any {
 	var externalAgentActivity any
 	var modelRoute *chatModelRoute
 	var failedAttempts []failedRunAttempt
+	var modelSwitches []ModelSwitchRecord
 	if len(h.Ext) > 0 {
 		var ext struct {
-			Input                 any                `json:"input"`
-			Mentions              any                `json:"mentions"`
-			MailConfirmation      map[string]any     `json:"mail_confirmation"`
-			AskPending            any                `json:"ask_pending"`
-			AskAnswered           bool               `json:"ask_answered"`
-			AskSavedAnswers       any                `json:"ask_saved_answers"`
-			EnvInputResult        any                `json:"env_input_result"`
-			IntentUpdated         any                `json:"intent_updated"`
-			ExternalAgentActivity any                `json:"external_agent_activity"`
-			ModelRoute            *chatModelRoute    `json:"model_route"`
-			FailedAttempts        []failedRunAttempt `json:"failed_run_attempts"`
+			Input                 any                 `json:"input"`
+			Mentions              any                 `json:"mentions"`
+			KnowledgeOperations   []map[string]any    `json:"knowledge_operations"`
+			MailConfirmation      map[string]any      `json:"mail_confirmation"`
+			AskPending            any                 `json:"ask_pending"`
+			AskAnswered           bool                `json:"ask_answered"`
+			AskSavedAnswers       any                 `json:"ask_saved_answers"`
+			EnvInputResult        any                 `json:"env_input_result"`
+			IntentUpdated         any                 `json:"intent_updated"`
+			ExternalAgentActivity any                 `json:"external_agent_activity"`
+			ModelRoute            *chatModelRoute     `json:"model_route"`
+			ModelSwitches         []ModelSwitchRecord `json:"model_switches"`
+			FailedAttempts        []failedRunAttempt  `json:"failed_run_attempts"`
 		}
 		if err := json.Unmarshal(h.Ext, &ext); err == nil {
 			input = ext.Input
@@ -1685,6 +1885,7 @@ func chatHistoryToResponseItem(h orm.ChatHistory) map[string]any {
 			intentUpdated = ext.IntentUpdated
 			externalAgentActivity = ext.ExternalAgentActivity
 			modelRoute = ext.ModelRoute
+			modelSwitches = ext.ModelSwitches
 			failedAttempts = ext.FailedAttempts
 		}
 	}
@@ -1717,6 +1918,9 @@ func chatHistoryToResponseItem(h orm.ChatHistory) map[string]any {
 	if exports := chatExportsFromExt(h.Ext); len(exports) > 0 {
 		item["exports"] = exports
 	}
+	if len(modelSwitches) > 0 {
+		item["model_switches"] = modelSwitches
+	}
 	if modelRoute != nil {
 		item["model_route"] = modelRoute
 	}
@@ -1745,6 +1949,14 @@ func chatHistoryToResponseItem(h orm.ChatHistory) map[string]any {
 	}
 	if len(failedAttempts) > 0 {
 		item["failed_attempts"] = failedAttempts
+	}
+	addModelOutputSnapshot(item, h)
+	var operationExt struct {
+		KnowledgeOperations []map[string]any `json:"knowledge_operations"`
+	}
+	_ = json.Unmarshal(h.Ext, &operationExt)
+	if len(operationExt.KnowledgeOperations) > 0 {
+		item["knowledge_operations"] = operationExt.KnowledgeOperations
 	}
 	return item
 }
@@ -2335,8 +2547,7 @@ func ListConversations(w http.ResponseWriter, r *http.Request) {
 		q = q.Where("conversations.id IN (?)", sourceIDs)
 	}
 	if keyword != "" {
-		pattern := "%" + keyword + "%"
-		q = q.Where("display_name LIKE ? OR source_display_name LIKE ? OR source_document_id LIKE ?", pattern, pattern, pattern)
+		q = q.Where("conversations.id IN (?)", common.ConversationKeywordIDs(db, userID, keyword))
 	}
 	if sourceType := strings.TrimSpace(r.URL.Query().Get("source_type")); sourceType != "" {
 		q = q.Where("source_type = ?", sourceType)
@@ -2357,6 +2568,10 @@ func ListConversations(w http.ResponseWriter, r *http.Request) {
 	default:
 		// No filter param: show all conversations (both regular and task).
 		// This path is hit when the frontend selects both "普通对话" and "Task 对话".
+	}
+	if r.URL.Query().Get("selection_snapshot") == "true" {
+		listConversationSelection(w, r, q, userID)
+		return
 	}
 	var total int64
 	q.Count(&total)
@@ -2579,12 +2794,21 @@ func SetChatHistory(w http.ResponseWriter, r *http.Request) {
 			RawContent: selected.RawContent, Content: selected.Content, Result: selected.Result, RetrievalResult: selected.RetrievalResult,
 			ToolCallTurns: selected.ToolCallTurns, ThinkingDurationS: selected.ThinkingDurationS, RunID: selected.RunID,
 			RunStatus: selected.RunStatus, RunTerminal: selected.RunTerminal, FeedBack: selected.FeedBack,
-			Reason: selected.Reason, Ext: selected.Ext, Version: "2.3", TimeMixin: orm.TimeMixin{CreateTime: time.Now(), UpdateTime: time.Now()}}
+			Reason: selected.Reason, Ext: taskcenter.WithNotificationCompletionTimeForRun(selected.Ext,
+				taskcenter.NotificationHistoryCompletedAt(selected.CreateTime, selected.UpdateTime, selected.Ext), selected.RunID),
+			Version: "2.3", TimeMixin: orm.TimeMixin{CreateTime: time.Now(), UpdateTime: time.Now()}}
 		if err := validateForkPrefix([]orm.ChatHistory{target}); err != nil {
 			return err
 		}
 		if discarded.RunStatus == "generating" {
 			return forkFail("SOURCE_NOT_SETTLED")
+		}
+		// Selection removes both durable parts. Preserve their own terminal
+		// evidence before changing the selected representation.
+		for _, part := range []orm.MultiAnswersChatHistory{selected, discarded} {
+			if err := taskcenter.CaptureBackgroundExecution(r.Context(), tx, conv.ID, part.ID, part.RunID); err != nil {
+				return err
+			}
 		}
 		if err := tx.Where("conversation_id = ? AND seq = ?", conv.ID, selected.Seq).Delete(&orm.ChatHistory{}).Error; err != nil {
 			return err
@@ -2677,7 +2901,18 @@ func FeedBackChatHistory(w http.ResponseWriter, r *http.Request) {
 		updates["reason"] = body.Reason
 		updates["expected_answer"] = body.ExpectedAnswer
 	}
-	if err := db.Model(&orm.ChatHistory{}).Where("id = ?", body.HistoryID).Updates(updates).Error; err != nil {
+	if err := conversationCheckpoint(r.Context(), db, target.ConversationID, func(tx *gorm.DB) error {
+		// Read after taking the same checkpoint as regeneration. Never merge an
+		// old terminal's Ext into a newer generating run.
+		if err := tx.Where("id = ?", body.HistoryID).Take(&target).Error; err != nil {
+			return err
+		}
+		if target.RunStatus != "generating" {
+			updates["ext"] = taskcenter.WithNotificationCompletionTimeForRun(target.Ext,
+				taskcenter.NotificationHistoryCompletedAt(target.CreateTime, target.UpdateTime, target.Ext), target.RunID)
+		}
+		return tx.Model(&orm.ChatHistory{}).Where("id = ?", body.HistoryID).Updates(updates).Error
+	}); err != nil {
 		common.ReplyErr(w, fmt.Sprintf("%s: %v", "update feedback failed", err), http.StatusInternalServerError)
 		return
 	}
