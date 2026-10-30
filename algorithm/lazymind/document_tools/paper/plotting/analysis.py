@@ -1,6 +1,5 @@
 """One independent drawing request per figure, sharing all results, data and style."""
 import copy
-import json
 from concurrent.futures import as_completed
 
 from .model import call_model, call_code_model, PlotModelError
@@ -12,12 +11,13 @@ from .pipeline import draw_one, limits, FigureRenderError
 from ..analysis.results import result_rows
 from ..analysis.schema import table_map
 from ..analysis.model import facts
+from ..model_context import model_prompt
 from ..analysis import trace as diagnostics
 from ..execution.threads import ThreadPoolExecutor
 
 
 def generate_code(data, statistics, spec, reference, previous, error):
-    prompt = (REPAIR_INSTRUCTION if previous else CODE_INSTRUCTION) + '''Implement def draw(data, statistics, spec): for ONE figure and return a Matplotlib Figure.
+    prompt = '''Implement def draw(data, statistics, spec): for ONE figure and return a Matplotlib Figure.
 Use the plain function declaration without type annotations; no annotation-only imports are needed.
 Import names actually used in executable statements explicitly; an alias binds only that alias.
 Prefer 1 or 2 data panels, with at most 4 in this figure/script. Implement only this figure's planned purpose;
@@ -84,13 +84,19 @@ No file/network/process access, installation, save/show calls or extra statistic
 Use only the actual allowed imports below. The three function arguments are dictionaries. No attribute-compatibility readers,
 schema guards or validation frameworks. On repair use the specific error and preserve evidence; a simpler honest layout is allowed.
 '''
-    payload = dict(data=data, statistics=statistics, spec=spec, skill_reference=reference,
-                   execution_rules=dict(allowed_imports=sorted(ALLOWED_IMPORTS), forbidden_names=sorted(FORBIDDEN),
-                                        forbidden_attributes=sorted(FORBIDDEN_ATTRIBUTES)),
-                   previous_code=numbered_source(previous) if previous else '', error=error)
     request = call_model if previous else call_code_model
-    answer = request(prompt + '\nINPUT_JSON:\n' + json.dumps(
-        payload, ensure_ascii=False, allow_nan=False, separators=(',', ':')))
+    rows = [{key: value for key, value in row.items() if key != 'display_unit'} for row in data['analysis_results']]
+    answer = request(model_prompt(
+        prompt, facts=data['facts'], tables=data['tables'],
+        shared=dict(analysis_results=rows, statistics=statistics, shared_style=data['shared_style'],
+                    execution_rules=dict(allowed_imports=sorted(ALLOWED_IMPORTS), forbidden_names=sorted(FORBIDDEN),
+                                         forbidden_attributes=sorted(FORBIDDEN_ATTRIBUTES)),
+                    skill_reference=reference),
+        task=dict(spec={key: value for key, value in spec.items() if key != 'caption'},
+                  display_units={row['id']: row.get('display_unit') for row in data['analysis_results']},
+                  previous_code=numbered_source(previous) if previous else '', error=error,
+                  caption=spec.get('caption', '')),
+        response_instruction=REPAIR_INSTRUCTION if previous else CODE_INSTRUCTION))
     source = repair_response(answer, previous) if previous else code_response(answer)
     if isinstance(answer.get('caption'), str) and answer['caption'].strip():
         spec['caption'] = answer['caption'].strip()

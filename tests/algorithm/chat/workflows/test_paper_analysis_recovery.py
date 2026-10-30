@@ -1,10 +1,12 @@
 """Core native-response and line-repair contracts, without live model calls."""
 import json
+from types import SimpleNamespace
 
 import lazyllm
 import pytest
 
 from lazymind.document_tools.paper.analysis import trace
+from lazymind.document_tools.paper.model_context import model_prompt
 from lazymind.document_tools.paper.plotting import model
 from lazymind.document_tools.paper.plotting.code_response import (
     normalize_response, parse_code_response, repair_response,
@@ -59,6 +61,7 @@ def test_native_provider_channels_through_sdk_and_f4(monkeypatch, tmp_path, stre
 
     class Response:
         status_code = 200
+        raw = SimpleNamespace()
         text = json.dumps(dict(choices=[dict(index=0, finish_reason='stop', message=dict(
             role='assistant', content=body, reasoning_content=thinking,
             reasoning_details=[dict(text='incorrect converted detail')]))]))
@@ -84,12 +87,14 @@ def test_native_provider_channels_through_sdk_and_f4(monkeypatch, tmp_path, stre
     monkeypatch.setattr('requests.post', post)
     monkeypatch.setattr(lazyllm, 'AutoModel', lambda **_: client)
     monkeypatch.setenv('LAZYMIND_PAPER_MODEL_STREAM', 'auto' if stream else 'off')
+    prompt = model_prompt('Offline request', facts={}, tables={})
     with trace.capture(tmp_path, 'native-test', emit=lambda _: None) as recorder:
         with trace.stage(stage, attempt=1):
-            assert getattr(model, method)('Offline request') == expected
+            assert getattr(model, method)(prompt) == expected
     step = json.loads((recorder.root / 'public.json').read_text())['process_steps'][0]
     assert step['output']['text'] == body and step['reasoning']['text'] == thinking
     assert len(calls) == 1 and calls[0]['stream'] == stream and calls[0]['reasoning_split'] is True
+    assert calls[0]['messages'] == prompt['input']
     assert ('response_format' in calls[0]) == (method == 'call_model')
     assert MinimaxChat._convert_msg_format is converter
     assert '_convert_msg_format' not in unrelated.__dict__ and unrelated._model_optional_params == {}

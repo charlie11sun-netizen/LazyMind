@@ -13,7 +13,7 @@ class PlotModelError(RuntimeError):
     """No model output is a service failure, not a generated-program repair request."""
 
 
-def request_model(prompt: str, json_output=True, *, output_format=None):
+def request_model(prompt, json_output=True, *, output_format=None):
     from lazyllm import AutoModel
 
     options = {'stream_output': False}
@@ -21,9 +21,10 @@ def request_model(prompt: str, json_output=True, *, output_format=None):
         options['response_format'] = {'type': 'json_object'}
     policy = transport.configuration()
     client = AutoModel(model='llm')
-    supported = transport.configure(client, policy)
+    supported = transport.configure(client, policy, structured=isinstance(prompt, dict))
+    request_text = prompt if isinstance(prompt, str) else json.dumps(prompt, ensure_ascii=False, separators=(',', ':'))
     with diagnostics.stage('model_request', model_alias='llm', json_output=json_output,
-                           request_bytes=len(prompt.encode()), transport_controlled=supported,
+                           request_bytes=len(request_text.encode()), transport_controlled=supported,
                            connect_timeout_seconds=policy.connect if supported else None,
                            read_timeout_seconds=policy.read if supported else None,
                            max_transport_attempts=policy.attempts if supported else None):
@@ -72,15 +73,15 @@ def request_model(prompt: str, json_output=True, *, output_format=None):
     return text
 
 
-def call_code_model(prompt: str) -> dict:
+def call_code_model(prompt) -> dict:
     return parse_code_response(request_model(prompt, json_output=False))
 
 
-def call_markdown_model(prompt: str) -> str:
+def call_markdown_model(prompt) -> str:
     return request_model(prompt, json_output=False, output_format='markdown')
 
 
-def call_model(prompt: str) -> dict:
+def call_model(prompt) -> dict:
     raw = request_model(prompt)
     if isinstance(raw, dict):
         return raw
