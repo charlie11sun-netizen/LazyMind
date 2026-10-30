@@ -27,12 +27,15 @@ def configuration():
     return Policy(values['CONNECT_TIMEOUT'], values['READ_TIMEOUT'], values['MAX_ATTEMPTS'])
 
 
-def configure(client, policy):
+def configure(client, policy, *, structured=False):
     from lazyllm.module.llms.onlinemodule.chat import OnlineChatModule
     from lazyllm.module.llms.onlinemodule.base.onlineChatModuleBase import LazyLLMOnlineChatModuleBase
 
     supported = isinstance(client, (OnlineChatModule, LazyLLMOnlineChatModuleBase))
     if supported:
+        if structured:
+            from lazyllm import ChatPrompter
+            client.prompt(ChatPrompter(enable_system=False))
         # AutoModel creates this client for this request. Dynamic routers pass
         # their constructor timeout to each supplier when it is first created.
         # Passing timeout in forward kwargs would also put it in the API body.
@@ -46,6 +49,8 @@ def configure(client, policy):
             from lazyllm import globals
             with globals.stack_enter(client.identities):
                 supplier = client._get_supplier()
+        if structured:
+            supplier.prompt(client._prompt)
         if supplier.PROVIDER_NAME == 'minimax':
             supplier._model_optional_params['reasoning_split'] = True
             # This F4 request reads native fields; bypass the SDK's lossy details
