@@ -141,13 +141,17 @@ def import_files(files, request):
 def bind_attachment(bound: dict, workspace: str, request: str) -> dict:
     """Initialize F5 uploads; confirmed pools and explicit business inputs stay pinned.
 
-    JSON attachment references are not a writing input. The JSON saved here is
-    an internal adapter for the existing material-pool initialization.
+    Explicit structured JSON uses the shared source-file resolver. Markdown and
+    images are imported into the existing material-pool initialization.
     """
     if any(key.endswith('_pool') for key in bound) or any(
-        key in bound for key in ('paper_input', 'manuscript_file', 'manuscript_text')
+        key in bound for key in ('manuscript_file', 'manuscript_text')
     ):
         return bound
+    if 'paper_input' in bound:
+        # Share the existing exact-file resolver and business-envelope validation.
+        from ..analysis.attachments import bind_attachment as bind_json_attachment
+        return bind_json_attachment(bound, workspace, request)
     import tempfile
     import lazyllm
     from ..workflow import pool_from_business

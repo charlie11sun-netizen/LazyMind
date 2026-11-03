@@ -42,6 +42,15 @@ def export_experiment(output: dict, workspace: str, data: dict | None = None,
     }
     result_path = root / '实验结果.json'
     result_path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2, allow_nan=False), encoding='utf-8')
+    if output['result_meta']['data_origin'] == 'user_supplied':
+        archive_path = root / '已提供实验材料.zip'
+        with ZipFile(archive_path, 'w', compression=ZIP_DEFLATED) as archive:
+            archive.writestr('实验日志.md', output['experiment']['report'])
+            archive.writestr('实验结果.json', result_path.read_text(encoding='utf-8'))
+            tables = table['tables'] if 'tables' in table else [{'id': 'results', 'table': table}]
+            for item in tables:
+                archive.writestr(item['id'] + '.csv', csv_text(item['table']))
+        return {'experiment_code': str(archive_path), 'experiment_results': str(result_path)}
     archive_path = root / '实验代码.zip'
     with ZipFile(archive_path, 'w', compression=ZIP_DEFLATED) as archive:
         for item in output['code_files']:

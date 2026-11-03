@@ -1,5 +1,6 @@
 """F3 planning, bounded execution and explicitly labelled preview fallback."""
 import json
+import copy
 import logging
 import time
 
@@ -60,6 +61,15 @@ def build_output(draft: ExperimentDraft, inputs: dict, execution=None) -> dict:
 def run(inputs: dict, *, on_event=None, allow_execution=False) -> dict:
     """Generate once, then use the Runtime's execution choice within the bounded executor."""
     inputs = validate_input('experiment', inputs)
+    if inputs.get('result_meta') is not None:
+        if inputs['result_meta']['data_origin'] != 'user_supplied' or inputs.get('experiment') is None:
+            raise ValueError('导入实验需要完整的外部结果及来源说明')
+        if on_event:
+            on_event({'tag': 'phase', 'phase': '正在导入已有实验日志和结果，未运行新实验'})
+        return validate_output('experiment', {
+            'experiment': copy.deepcopy(inputs['experiment']), 'code_files': [],
+            'result_meta': copy.deepcopy(inputs['result_meta']), 'is_demo': False,
+        })
     prompt = EXPERIMENT_PROMPT + '\n\nInput JSON:\n' + json.dumps(inputs, ensure_ascii=False)
     if estimate_tokens(prompt) > 16000:
         raise ValueError('实验输入超过当前预算，请缩小研究材料或数据范围；未截断输入。')

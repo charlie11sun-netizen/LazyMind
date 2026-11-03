@@ -410,6 +410,13 @@ def execute_step(step: str, pool: dict, request: str = '', fail: bool = False, *
             if on_event is not None else run_algorithm(step, business_input(step, pool, request))
     is_demo = output['is_demo'] or any(material(pool, k)['mock'] for k in relevant if material(pool, k))
     generated = {key: copy.deepcopy(output[key]) for key in contracts.OUTPUTS[module]}
+    if module == 'experiment' and generated['result_meta']['data_origin'] == 'user_supplied':
+        from .experiment.handoff import source_notice
+        report = generated['experiment']['report']
+        existing = (material(pool, 'writing_materials') or {}).get('content', '')
+        if report not in existing:
+            generated['writing_materials'] = '\n\n'.join(filter(None, [
+                existing, source_notice(generated['result_meta']), report]))
     main = {'F1': 'question', 'F2': 'evidence', 'F3': 'experiment', 'F4': 'analysis',
             'F5': 'manuscript', 'F6': 'review', 'F7': 'reflection'}[node]
     if step == 'write_outline':
@@ -759,6 +766,11 @@ def _run_paper_step(context, stream=None) -> dict:
     else:
         if step not in STEP_NODE:
             raise ValueError(f'未知 Workflow 步骤: {step}')
+        if 'paper_input' in bound and step not in {
+            'data_analysis', 'write_outline', 'write_document', 'revise_document'
+        }:
+            from .analysis.attachments import bind_attachment
+            bound = bind_attachment(bound, context.workspace_path, request)
         if step in {'data_analysis', 'write_outline', 'write_document', 'revise_document'}:
             if step == 'data_analysis':
                 from .analysis.attachments import bind_attachment

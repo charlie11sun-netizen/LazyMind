@@ -20,7 +20,7 @@ class ExperimentStream:
         self.last_think = time.monotonic()
         self.last_phase = ''
         self.progress = 0
-        self.phase('正在设计实验并生成方案', 5)
+        self.phase('正在读取实验材料', 5)
 
     def phase(self, text, progress):
         if progress >= self.progress and text != self.last_phase:
@@ -101,11 +101,14 @@ class ExperimentStream:
         table = output['experiment']['results']
         if table is not None:
             from .handoff import source_notice
-            preview = {**table, 'rows': table['rows'][:20]}
+            tables = [item['table'] for item in table['tables']] if 'tables' in table else [table]
+            preview = {'tables': [{**item, 'rows': item['rows'][:20]} for item in tables]}
+            count = sum(len(item['rows']) for item in tables)
             self.publish('experiment_results', '# 实验结果\n\n' + source_notice(output['result_meta']) + '\n\n```json\n'
                          + json.dumps(preview, ensure_ascii=False, indent=2) + '\n```\n'
-                         + f'共 {len(table["rows"])} 行，以上展示前 20 行；完整数据见结果文件。\n')
-        self.phase('校验通过，正在保存实验方案、代码包和结果', 95)
+                         + f'共 {len(tables)} 张表、{count} 行，每表展示前 20 行；完整数据见结果文件。\n')
+        self.phase('正在保存已提供的实验材料和结果' if output['result_meta']['data_origin'] == 'user_supplied'
+                   else '校验通过，正在保存实验方案、代码包和结果', 95)
 
     def close(self, error=None):
         self.flush_think()

@@ -29,7 +29,7 @@ def capture_execution():
         _trace_sink.reset(token)
 
 
-def build_analysis(inputs, plan, results):
+def build_analysis(inputs, plan, results, *, executed=True):
     output = accept_results(results, plan, inputs)
     findings = []
     for row in output['results']:
@@ -43,14 +43,17 @@ def build_analysis(inputs, plan, results):
     for question in questions(plan):
         refs = {(ref['table_id'], ref['column']): ref for row in findings
                 if row['target_id'] == question['id'] for ref in row['columns']}
-        targets.append(dict(**question, estimand=question['question'], scope='实际执行的分析结果及其记录范围',
+        targets.append(dict(**question, estimand=question['question'],
+                            scope='实际执行的分析结果及其记录范围' if executed else '外部提供的汇总结果，未复现实验',
                             columns=list(refs.values())))
     return validate_analysis(dict(
         **binding(inputs), summary='；'.join(row['statement'] for row in findings), targets=targets,
         methods=list(dict.fromkeys(row['method'] for row in output['results'])), findings=findings,
         models=output['models'], limitations=output['limitations'],
-        diagnostics=[dict(id='execution', model_id=None, name='实际代码执行', outcome='passed', value=None,
-                          threshold=None, details='使用实际输入执行分析；未进行后台独立数值复算。')]), inputs)
+        diagnostics=[dict(id='execution', model_id=None, name='实际代码执行',
+                          outcome='passed' if executed else 'not_applicable', value=None,
+                          threshold=None, details='使用实际输入执行分析；未进行后台独立数值复算。' if executed
+                          else '只读取已有结果并撰写解读，未生成或执行统计代码。')]), inputs)
 
 
 def execute_analysis(inputs, plan, attempts):
@@ -79,6 +82,9 @@ def execute_analysis(inputs, plan, attempts):
 
 def run(inputs):
     """Execute inputs already normalized by the public F4 entry point."""
+    if inputs.get('analysis_mode') == 'interpret_provided':
+        from .provided import run as interpret_provided
+        return interpret_provided(inputs)
     diagnostics.save('input-summary.json', dict(
         **binding(inputs), tables=[dict(id=key, rows=len(table['rows']), columns=len(table['columns']))
                                  for key, table in table_map(inputs).items()]))

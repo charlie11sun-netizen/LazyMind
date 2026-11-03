@@ -233,6 +233,8 @@ class ResultMeta(StrictModel):
             raise ValueError('模拟假设不能为空白')
         if self.reason is not None and not self.reason.strip():
             raise ValueError('结果原因不能为空白')
+        if self.data_origin == 'user_supplied' and self.execution_status != 'not_run':
+            raise ValueError('外部提供的结果必须标记为未在本平台执行')
         return self
 
 
@@ -249,6 +251,12 @@ def validate_result_meta(value, experiment, data=None):
     if table is None:
         if meta.metrics:
             raise ValueError('无结果时不能声明结果指标')
+        return meta
+    if 'tables' in table:
+        from ..analysis.schema import DataBundle
+        DataBundle.model_validate(table)
+        if meta.data_origin != 'user_supplied' or meta.metrics or meta.column_types is not None:
+            raise ValueError('多表导入使用各表自身的列类型和单位，不接受执行或跨表指标声明')
         return meta
     validate_table(table, meta.column_types)
     if not meta.metrics or any(metric.column not in table['columns'] for metric in meta.metrics):

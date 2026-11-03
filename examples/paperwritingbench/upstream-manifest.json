@@ -1,0 +1,62 @@
+{
+  "repository": "https://github.com/google-research/paper-orchestra",
+  "commit": "ca1b3fa01c2970fc7cda32d16245db38d57b3f56",
+  "license": "Apache-2.0",
+  "files": [
+    {
+      "path": "autoraters/lit_review_quality.py",
+      "git_blob_sha": "f95dac46e4722f637aa955e147802766228d9646",
+      "sha256": "cc040cea7f5c429cfaa20b18017c5582a47ac9727eb9a82c573fd50343fe66ab",
+      "bytes": 11360
+    },
+    {
+      "path": "autoraters/prompts/lit_review_quality_prompts.py",
+      "git_blob_sha": "05d5a68e577f981278f9397d21a2b247750116f2",
+      "sha256": "99a2b8a65ae7cabb79f550d87f91843b5d0cc69925bf2b4a9efe9331f5fb9368",
+      "bytes": 7688
+    },
+    {
+      "path": "autoraters/agent_review.py",
+      "git_blob_sha": "52aeaecaab98a2f71989d37154d309670d419003",
+      "sha256": "7d1cf9326d68a5fe5a2744d1c284f3333e9781db99600ed3606cf01c7e00062b",
+      "bytes": 10093
+    },
+    {
+      "path": "autoraters/prompts/sxs_quality_prompts.py",
+      "git_blob_sha": "1a660c969d10d266d5cdc4b4a2e8cd0822bf3835",
+      "sha256": "726317eadbf6008b2c3bb1119108d466015762837ca63579dd5027c29cb5c9ac",
+      "bytes": 4552
+    },
+    {
+      "path": "utils/openai_utils.py",
+      "git_blob_sha": "97cad820c37c1c7a154e4dbd8df5939d8955ec13",
+      "sha256": "aec08b2c46adb96650007f6db62e4d448b3e1ccbfa6467bacae4587361872052",
+      "bytes": 6449
+    },
+    {
+      "path": "LICENSE",
+      "git_blob_sha": "7a4a3ea2424c09fbe48d455aed1eaa94d9124835",
+      "sha256": "58d1e17ffe5109a7ae296caafcadfdbe6a7d176f0bc4ab01e12a689b0499d8bd",
+      "bytes": 11357
+    },
+    {
+      "path": "autoraters/citation_f1.py",
+      "git_blob_sha": "8d7b3fd0af79e6e5fccae0576aff48af0192511e",
+      "sha256": "099af7c3ade2c7488e2794e193390df2115b411cfc2e6868341e91e1c070f766",
+      "bytes": 31494
+    },
+    {
+      "path": "utils/content_parsing_utils.py",
+      "git_blob_sha": "5ecb81930a7ae03513c34d8618c9ac07c11fde35",
+      "sha256": "a0ea73c1d1ec35179271badee185e97b75c6ba1870e7a57ea604e241d35cd37a",
+      "bytes": 1756
+    },
+    {
+      "path": "utils/pdf_utils.py",
+      "git_blob_sha": "f55f4c9a4489e4e380a73b6db994c3a65a384229",
+      "sha256": "30d4a6947ef249b39f357e941467271a85767b4e0a716df27e91451e803aa0e7",
+      "bytes": 9854
+    }
+  ],
+  "adaptation": "Original upstream files and rubrics are byte-for-byte preserved. Literature/review remap the model-call import. Citations compile only the upstream pure metric method; extraction reuses upstream prompts with batched title parsing through LazyMind, followed by exact normalized title identity caching and the upstream Semantic Scholar first-result lookup rule. Network retries are bounded; dataset P0/P1 labels are reused."
+}

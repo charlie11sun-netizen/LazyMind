@@ -198,6 +198,20 @@ def bind_attachment(bound: dict, workspace: str, request: str) -> dict:
     # own projected inputs after the ordinary material-pool initialization.
     from ..workflow import pool_from_business
     pool_from_business(value)
+    # A portable structured input may accompany ordinary uploaded image files.
+    # Register that batch through the same media importer used by F5 uploads.
+    if not value.get('media_assets'):
+        from ..writing.attachments import import_files, select_files
+        history = config.get('history_files_per_turn') or {}
+        batches = [history[key] for key in sorted(
+            (key for key in history if str(key).isdigit()), key=int, reverse=True)]
+        batches.append(config.get('files') or [])
+        batch = next((paths for paths in batches if source in (paths or [])), [])
+        images = [path for path in select_files({'files': batch})
+                  if Path(urlsplit(path).path).suffix.lower() in {'.png', '.jpg', '.jpeg', '.svg'}]
+        if images:
+            value['media_assets'] = import_files(images, request)['media_assets']
+            pool_from_business(value)
     directory = Path(tempfile.mkdtemp(prefix='paper-input-', dir=workspace))
     target = directory / 'paper_input.json'
     target.write_text(json.dumps(value, ensure_ascii=False, allow_nan=False), encoding='utf-8')
