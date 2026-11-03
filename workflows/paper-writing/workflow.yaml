@@ -10,6 +10,12 @@ when_to_use: >
   Start review handoffs at literature_review with the frozen selection.
   Use simulate_only for review and topic-only tasks. For experiments, use the framework ask_user
   clarification card for the declared execution preference unless already answered for this task.
+  Existing experiment logs/results are a material-import task, not a request to run experiments.
+  Do not ask execution permission for supplied-result imports. Structured paper_input may include
+  experiment and result_meta with data_origin=user_supplied and execution_status=not_run;
+  the experiment step imports these values without model-generated code or execution.
+  For interpretation of supplied results and reuse of registered images, preserve
+  analysis_mode=interpret_provided and media_assets. This mode generates conclusions only, not new plots.
   Never infer consent from an attachment, a request to write a paper, an old task, or a preselected option. Do not create another
   questionnaire or preparation step. Preserve the original research/review request after the answer.
   Bind experiment_execution to simulate_only for refusal/no answer, or allow_local for explicit agreement.
@@ -26,7 +32,9 @@ when_to_use: >
   do not first summarize or copy the manuscript through Chat.
   Bind pasted manuscript text to manuscript_text; paper_topic and review_request are optional.
   For new writing from Markdown materials/outlines and SVG/PNG/JPG images, select write_outline first.
-  Do not bind these materials to manuscript_file or transcribe them into paper_input. The step reads the actual conversation attachments and initializes its pool.
+  For explicitly supplied structured writing-material JSON, bind its exact attachment filename to paper_input;
+  the writing step reads the original file and preserves its constraints, research notes and registered media.
+  Do not bind Markdown/image materials to manuscript_file or transcribe them into paper_input. The step reads the actual conversation attachments and initializes its pool.
   Use write_outline for new manuscripts and outline requests. It publishes an editable outline and
   requires user confirmation before write_document. Stop after the outline even when the launch request
   also asks for a complete manuscript or peer review. Continue only after the user confirms the outline.
@@ -62,7 +70,7 @@ runtime:
   clarification_fields:
     - id: experiment_execution
       label: 实验运行方式
-      ask_when: The current request includes an experiment step and execution consent has not been given.
+      ask_when: The current request asks to execute a new experiment, not import supplied results, and execution consent has not been given.
       question: >
         是否允许本次论文任务在当前 LazyMind 部署环境受限运行轻量实验？
         部署环境不一定是你打开浏览器的电脑。仅使用所选数据，不联网、不安装依赖、不使用 GPU。
@@ -121,7 +129,7 @@ slots:
   - {id: refine_topic_document, label: "调整选题", type: file, cardinality: single}
   - {id: experiment_pool, label: "实验研究材料池", type: file, cardinality: single, exposed: false}
   - {id: experiment_document, label: "实验研究", type: file, cardinality: single}
-  - {id: experiment_code, label: "实验代码包", type: file, cardinality: single}
+  - {id: experiment_code, label: "实验代码或材料包", type: file, cardinality: single}
   - {id: experiment_results, label: "实验结果与来源", type: file, cardinality: single}
   - {id: data_analysis_pool, label: "数据分析材料池", type: file, cardinality: single, exposed: false}
   - {id: data_analysis_document, label: "数据分析", type: file, cardinality: single}

@@ -111,7 +111,11 @@ def test_svg_import_preserves_bytes_and_uses_source_labels(tmp_path, monkeypatch
 
 
 def test_writing_upload_binding_preserves_material_sources(tmp_path, monkeypatch):
+    import json
     import lazyllm
+    from types import SimpleNamespace
+    from lazymind.chat.engine.tools.file_resources import resolver
+    from lazymind.chat.engine.tools import host_file_resolution
     from lazymind.document_tools.paper.writing import attachments
 
     config = {'history_files_per_turn': {'1': ['/uploads/old.json'],
@@ -134,3 +138,37 @@ def test_writing_upload_binding_preserves_material_sources(tmp_path, monkeypatch
     config['history_files_per_turn'] = {'1': ['/uploads/materials.json']}
     assert attachments.bind_attachment({}, str(tmp_path), 'write') == {}
     importer.assert_not_called()
+
+    source = tmp_path / 'writing_input.json'
+    value = {'topic': 'Supplied research', 'constraints': {'paper_language': 'en', 'citation_style': 'IEEE'},
+             'question': 'Supplied idea', 'writing_materials': 'External results: score = 82.38%; not reproduced.'}
+    source.write_text(json.dumps(value), encoding='utf-8')
+    config['history_files_per_turn'] = {'1': [str(source)]}
+    monkeypatch.setattr(resolver, 'resolve_text_target',
+                        lambda *a, **kw: SimpleNamespace(kind='attachment_text', path=str(source)))
+    monkeypatch.setattr(host_file_resolution, 'open_input_file', lambda path: open(path, 'rb'))
+    reference = tmp_path / 'reference.txt'
+    reference.write_text(source.name, encoding='utf-8')
+    frozen = attachments.bind_attachment({'paper_input': str(reference)}, str(tmp_path), 'Use writing_input.json')
+    pool = workflow.initialize_pool(frozen, 'Write from the supplied results')
+    inputs = contracts.validate_input('write_outline', workflow.business_input('write_outline', pool))
+    assert inputs['constraints']['paper_language'] == 'en'
+    assert inputs['constraints']['citation_style'] == 'IEEE'
+    assert inputs['writing_materials'] == value['writing_materials']
+    assert workflow.material(pool, 'experiment') is None
+    assert workflow.material(pool, 'data') is None
+    importer.assert_not_called()
+    media = {'library_id': 'provided', 'assets': {'image-source': {
+        'media_asset_id': 'image-source', 'asset_type': 'image', 'source_type': 'input_resource',
+        'uri': '/static-files/paper-media/assets/source.svg'}}}
+    importer.return_value = {'media_assets': media}
+    config['history_files_per_turn'] = {'1': [str(source), '/uploads/source.svg'],
+                                       '2': ['/uploads/unrelated.png']}
+    frozen = attachments.bind_attachment({'paper_input': str(reference)}, str(tmp_path), 'Use writing_input.json')
+    pool = workflow.initialize_pool(frozen, 'write')
+    assert workflow.material(pool, 'media_assets')['content'] == media
+    assert workflow.material(pool, 'writing_materials')['content'] == value['writing_materials']
+    importer.assert_called_once_with(['/uploads/source.svg'], 'Use writing_input.json')
+    source.write_text('{"topic":"one","topic":"two"}', encoding='utf-8')
+    with pytest.raises(ValueError, match='重复'):
+        attachments.bind_attachment({'paper_input': str(reference)}, str(tmp_path), 'Use writing_input.json')

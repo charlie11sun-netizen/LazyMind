@@ -14,11 +14,12 @@ from .experiment.results import validate_table
 FIELDS = {
     'research_topic': ('papers', 'question', 'evidence'),
     'literature_review': ('papers', 'question', 'evidence'),
-    'experiment': ('question', 'evidence', 'data'),
-    'data_analysis': ('data', 'experiment', 'data_context', 'study_design', 'result_meta'),
+    'experiment': ('question', 'evidence', 'data', 'experiment', 'result_meta'),
+    'data_analysis': ('data', 'experiment', 'data_context', 'study_design', 'result_meta',
+                      'analysis_mode', 'media_assets'),
     'write_document': ('papers', 'question', 'evidence', 'analysis', 'charts', 'outline', 'manuscript',
                        'review', 'review_data', 'selected_issue_ids', 'writing_materials', 'media_assets'),
-    'peer_review': ('manuscript', 'evidence', 'analysis'),
+    'peer_review': ('manuscript', 'evidence', 'analysis', 'writing_materials', 'media_assets'),
     'reading_reflection': ('papers', 'evidence'),
 }
 FIELDS['write_outline'] = FIELDS['write_document']
@@ -123,7 +124,12 @@ def validate_value(kind, value):
     if kind == 'code_files':
         if not isinstance(value, list):
             raise ValueError('code_files 必须是列表')
-        validate_code_files(value)
+        if value:
+            validate_code_files(value)
+        return
+    elif kind == 'analysis_mode':
+        if value not in ('generate', 'interpret_provided'):
+            raise ValueError('analysis_mode 必须为 generate 或 interpret_provided')
         return
     elif kind == 'result_meta':
         ResultMeta.model_validate(value)
@@ -222,7 +228,8 @@ def validate_value(kind, value):
         text(value['report'], 'report')
         if value['results'] is not None:
             validate_value('data', value['results'])
-            validate_table(value['results'])
+            if 'tables' not in value['results']:
+                validate_table(value['results'])
         if value['executed'] and value['results'] is None:
             raise ValueError('已执行实验必须提供结果')
     else:
@@ -326,6 +333,12 @@ def validate_output(module, value, inputs=None):
             text(paper.get('citation'), 'paper.citation')
     if module == 'experiment':
         meta = validate_result_meta(value['result_meta'], value['experiment'])
+        if meta.data_origin == 'user_supplied':
+            if value['code_files'] or value['is_demo']:
+                raise ValueError('导入结果不应生成实验代码或标为模拟数据')
+            return value
+        if not value['code_files']:
+            raise ValueError('生成实验必须包含完整代码包')
         if meta.data_origin == 'observed' and meta.execution_status != 'succeeded':
             raise ValueError('未成功执行的实验不能声明实测结果')
         if meta.data_origin in ('synthetic', 'none') and not value['is_demo']:

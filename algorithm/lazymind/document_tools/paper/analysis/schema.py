@@ -162,6 +162,8 @@ class AnalysisInput(Object):
     experiment: Experiment | None = None
     data_context: DataContext | None = None
     study_design: StudyDesign | None = None
+    analysis_mode: Literal['generate', 'interpret_provided'] = 'generate'
+    media_assets: dict | None = None
 
 
 class DataSource(Object):
@@ -379,6 +381,9 @@ def refs_exist(refs, tables, field):
 def normalize_input(value):
     value = copy.deepcopy(value)
     result = parse(AnalysisInput, value)
+    if result['media_assets'] is not None:
+        from ..contracts import validate_value
+        validate_value('media_assets', result['media_assets'])
     result['topic'] = result['topic'].strip()
     if not result['topic']:
         raise ContractError('MISSING_MATERIAL', 'input.topic', '缺少研究主题')
@@ -413,6 +418,11 @@ def normalize_input(value):
     for key in ('time_column', 'weight_column'):
         if design.get(key):
             refs_exist([design[key]], tables, 'input.study_design.' + key)
+    # Keep existing canonical inputs and trace hashes stable outside this opt-in mode.
+    if result['analysis_mode'] == 'generate':
+        result.pop('analysis_mode')
+    if result['media_assets'] is None:
+        result.pop('media_assets')
     return result
 
 

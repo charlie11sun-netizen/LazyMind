@@ -24,7 +24,12 @@ F3 is an explicit exception for labeled synthetic previews, not for research evi
 experiment from the supplied question/evidence, generates downloadable code, and runs simple CPU
 experiments within the existing bounded executor when authorized. Complex or failed experiments
 return labelled synthetic previews. If real results only are requested, do not substitute a preview.
-Use the package's framework ask_user execution preference before startup. No separate preparation
+When structured input already supplies experiment/results and result_meta.data_origin=user_supplied,
+F3 imports the original logs and result tables, marks execution_status=not_run, and creates no experiment code.
+No execution permission is needed for that import. For analysis_mode=interpret_provided, F4 interprets
+the supplied values and registered images without executing analysis code or generating new figures.
+Preserve the original experiment log, image library and source notice for writing, review and revision.
+For new experiment execution, use the package's framework ask_user preference before startup. No separate preparation
 node or permission UI is needed. Only explicit consent may bind allow_local. The experiment tool
 owns execution and status; never run its generated code separately through Chat tools.
 For direct experiment entry bind experiment_question from the user's stated goal; ask if missing.

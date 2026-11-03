@@ -28,8 +28,9 @@ def to_analysis(value):
     if table is None:
         from ..contracts import MissingMaterials
         raise MissingMaterials('缺少数据或实验结果，请提供数据后再进行分析')
+    bundle = 'tables' in table
     types = meta.get('column_types')
-    if not types:
+    if not bundle and not types:
         types = {}
         for index, column in enumerate(table['columns']):
             kinds = {type(row[index]) for row in table['rows']}
@@ -40,13 +41,17 @@ def to_analysis(value):
             else:
                 raise ValueError('旧实验结果列类型不一致，无法交给数据分析：' + column)
     units = {m['column']: m['unit'] for m in meta['metrics']}
-    result = {k: copy.deepcopy(value[k]) for k in ('topic', 'request', 'constraints', 'study_design') if k in value}
-    result['data'] = {**copy.deepcopy(table), 'column_types': [types[c] for c in table['columns']],
-                      'units': [units.get(c) for c in table['columns']]}
+    result = {k: copy.deepcopy(value[k]) for k in (
+        'topic', 'request', 'constraints', 'study_design', 'analysis_mode', 'media_assets') if k in value}
+    result['data'] = copy.deepcopy(table) if bundle else {
+        **copy.deepcopy(table), 'column_types': [types[c] for c in table['columns']],
+        'units': [units.get(c) for c in table['columns']]}
     context = copy.deepcopy(value.get('data_context') or {})
     context['description'] = '\n\n'.join(filter(None, [
         context.get('description'), source_notice(meta),
-        experiment.get('plan') if experiment else '', '实验假设：' + '；'.join(meta['assumptions']),
+        experiment.get('plan') if experiment else '',
+        experiment.get('report') if experiment and meta['data_origin'] == 'user_supplied' else '',
+        '实验假设：' + '；'.join(meta['assumptions']),
     ]))
     context['column_descriptions'] = context.get('column_descriptions', []) + [
         {'table_id': 'data', 'column': m['column'], 'meaning': m['description']} for m in meta['metrics']]

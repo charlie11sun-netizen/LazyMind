@@ -20,6 +20,71 @@ def example():
     return json.loads((ROOT / 'tests/fixtures/paper-writing/experiment.json').read_text())
 
 
+def test_supplied_results_flow_through_import_analysis_and_writing(tmp_path, monkeypatch):
+    import lazyllm
+    from unittest.mock import Mock
+    from zipfile import ZipFile
+    from lazymind.document_tools.paper import contracts, workflow
+    from lazymind.document_tools.paper.analysis import generated_executor, model
+    from lazymind.document_tools.paper.experiment.artifacts import export_experiment
+
+    tables = {'tables': [dict(id=key, description=key, table=dict(
+        columns=['method', metric], column_types=['string', 'number'], units=[None, unit],
+        rows=[['baseline', baseline], ['candidate', candidate]]))
+        for key, metric, unit, baseline, candidate in [('scores', 'score', '%', 80., 82.),
+                                                       ('costs', 'latency', 'ms', 10., 8.)]]}
+    log = '# External experiment log\n\nReported scores: 80%, 82%; latency: 10 ms, 8 ms.'
+    media = {'library_id': 'supplied', 'assets': {'image-original': {
+        'media_asset_id': 'image-original', 'asset_type': 'image', 'source_type': 'input_resource',
+        'uri': '/static-files/paper-media/assets/original.svg', 'caption': 'Original method diagram'}}}
+    value = dict(topic='Supplied research', question='Compare the supplied scores and costs',
+                 constraints={'paper_language': 'en'}, analysis_mode='interpret_provided', media_assets=media,
+                 experiment=dict(executed=False, plan='Imported existing results', results=tables, report=log),
+                 result_meta=dict(execution_status='not_run', data_origin='user_supplied', method='empirical',
+                                  reason='Provided by the author; not reproduced',
+                                  assumptions=[], metrics=[], seed=None))
+    monkeypatch.setattr(lazyllm, 'AutoModel', Mock(side_effect=AssertionError('No experiment generation')))
+    monkeypatch.setattr(generated_executor, 'configuration', Mock(side_effect=AssertionError('No worker')))
+    monkeypatch.setattr(model, 'make_plan', Mock(side_effect=AssertionError('No analysis program')))
+    monkeypatch.setattr(model, 'plan_figures', Mock(side_effect=AssertionError('No new figures')))
+    narrative = Mock(return_value='The reported candidate scores higher with lower latency; sample support is unknown.')
+    monkeypatch.setattr(model, 'call_markdown_model', narrative)
+
+    imported = workflow.execute_step('experiment', workflow.pool_from_business(value), allow_execution=True)
+    output = {key: workflow.material(imported['pool'], key)['content'] for key in contracts.OUTPUTS['experiment']}
+    output['is_demo'] = False
+    assert output['experiment']['results'] == tables
+    assert output['experiment']['report'] == log
+    assert output['code_files'] == []
+    assert output['result_meta']['execution_status'] == 'not_run'
+    files = export_experiment(output, str(tmp_path))
+    with ZipFile(files['experiment_code']) as archive:
+        assert archive.read('实验日志.md').decode() == log
+        assert not any(name.endswith('.py') or 'preview' in name for name in archive.namelist())
+        assert {'scores.csv', 'costs.csv'} <= set(archive.namelist())
+
+    analyzed = workflow.execute_step('data_analysis', imported['pool'])
+    analysis = workflow.material(analyzed['pool'], 'analysis')['content']
+    assert [item['value'] for item in analysis['findings']] == [80., 82., 10., 8.]
+    assert all(item['sample_size']['n'] is None and item['test'] is None for item in analysis['findings'])
+    assert analysis['diagnostics'][0]['outcome'] == 'not_applicable'
+    assert workflow.material(analyzed['pool'], 'charts')['content'] == []
+    assert analyzed['pool']['history'][-1]['analysis_execution'][0]['reused_asset_ids'] == ['image-original']
+    writing = contracts.validate_input('write_outline', workflow.business_input('write_outline', analyzed['pool']))
+    assert log in writing['writing_materials']
+    assert writing['media_assets'] == media
+    assert writing['constraints']['paper_language'] == 'en'
+    review = contracts.validate_input('peer_review', dict(
+        topic=value['topic'], manuscript='# Paper\n\nReported findings.', analysis=analysis,
+        writing_materials=writing['writing_materials'], media_assets=media))
+    assert log in review['writing_materials'] and review['media_assets'] == media
+    narrative.assert_called_once()
+
+    output['experiment']['executed'] = True
+    with pytest.raises(ValueError, match='不一致'):
+        contracts.validate_output('experiment', output)
+
+
 @pytest.mark.parametrize('requirements', [
     {'device': 'gpu'}, {'requires_network': True}, {'estimated_seconds': 3600},
     {'requires_external_data': True},
