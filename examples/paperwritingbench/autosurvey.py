@@ -113,22 +113,27 @@ def abstracts(path):
 
 
 class Calls:
-    def __init__(self, out, model, client_factory, offline=False, jobs=4):
+    def __init__(self, out, model, client_factory, offline=False, jobs=4, system=None, content_validator=None):
         self.out, self.model, self.client_factory, self.offline = out, model, client_factory, offline
+        self.system, self.content_validator = system, content_validator
         self.client = None
         self.gate = threading.BoundedSemaphore(jobs)
         self.lock, self.key_locks, self.errors = threading.Lock(), {}, []
 
-    def chat(self, prompt, temperature, phase, idx):
-        digest = hashlib.sha256(prompt.encode()).hexdigest()
+    def chat(self, prompt, temperature, phase, idx, validator=None):
+        messages = ([{'role': 'system', 'content': self.system}] if self.system else [])
+        messages.append({'role': 'user', 'content': prompt})
+        digest = fingerprint(messages) if self.system else hashlib.sha256(prompt.encode()).hexdigest()
         folder = self.out / 'calls' / f'{phase}-{idx}-{digest[:20]}'
         with self.lock:
             key_lock = self.key_locks.setdefault(folder.name, threading.Lock())
         with key_lock:
             folder.mkdir(parents=True, exist_ok=True)
             prompt_path, result_path = folder / 'upstream-prompt.json', folder / 'completion.json'
-            if prompt_path.exists() and read(prompt_path)['prompt'] != prompt:
-                raise ValueError('Cached prompt differs from requested prompt')
+            if prompt_path.exists():
+                cached = read(prompt_path)
+                if cached['prompt'] != prompt or cached.get('system') != self.system:
+                    raise ValueError('Cached messages differ from requested messages')
             if result_path.exists():
                 if not prompt_path.exists():
                     raise ValueError('Cached completion has no original prompt')
@@ -136,7 +141,7 @@ class Calls:
             else:
                 if self.offline:
                     raise ValueError('Offline replay is missing a completion: ' + folder.name)
-                save(prompt_path, {'prompt': prompt, 'sha256': digest,
+                save(prompt_path, {'prompt': prompt, 'system': self.system, 'sha256': digest,
                                    'upstream_temperature_argument': temperature,
                                    'generation_policy': 'provider_defaults'})
                 with self.lock:
@@ -149,8 +154,8 @@ class Calls:
                 try:
                     with self.gate:
                         result = self.client.call_tool('model.chat', {
-                            'model_id': self.model['id'], 'messages': [{'role': 'user', 'content': prompt}]}, record)
-                    self.validate(result)
+                            'model_id': self.model['id'], 'messages': messages}, record)
+                    self.validate(result, validator)
                     save(result_path, result)
                     event = {'status': 'succeeded', 'usage': result.get('usage')}
                 except Exception as error:
@@ -159,15 +164,18 @@ class Calls:
                 finally:
                     save(folder / f'attempt-{attempt:02}-status.json',
                          {**event, 'seconds': round(time.time() - started, 3)})
-            self.validate(result)
+            self.validate(result, validator)
             return result['content']
 
-    @staticmethod
-    def validate(result):
+    def validate(self, result, validator=None):
         if result.get('finish_reason') != 'stop' or not isinstance(result.get('content'), str):
             raise ValueError('Judge completion did not finish normally')
         if not result['content'].strip():
             raise ValueError('Judge returned an empty completion')
+        if self.content_validator:
+            self.content_validator(result['content'])
+        if validator:
+            validator(result['content'])
 
     def check(self):
         if self.errors:
