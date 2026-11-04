@@ -13,6 +13,10 @@ __pycache__
 *__pycache__*
 *.pyc
 
+# Downloaded evaluation sources and private model-call records.
+/examples/paperwritingbench/upstream/
+/examples/paperwritingbench/runs/
+
 # temp files
 /.coverage
 /tests/frontend/coverage/

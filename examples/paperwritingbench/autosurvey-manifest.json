@@ -1,0 +1,23 @@
+{
+  "repository": "https://github.com/AutoSurveys/AutoSurvey",
+  "commit": "5e8f389f3d51b29bad16dc6ae75db3e8a45a3b65",
+  "files": [
+    {
+      "path": "src/agents/judge.py",
+      "sha256": "9e4304673e3a7816a927141c77c2e18455ffd78356d70eb04618aaae9703b2b9"
+    },
+    {
+      "path": "src/prompt.py",
+      "sha256": "056637485ae0839df0c5116201946566420e1ef397a9b3673ca49e4ab01b9929"
+    },
+    {
+      "path": "evaluation.py",
+      "sha256": "9a9a85556f71f92af45687f2d84b0a55ef9a9f39539482373b1d49657b1bdec0"
+    },
+    {
+      "path": "src/model.py",
+      "sha256": "335a37de2588e23e14504904f6407dfaae9e9077b28f07edc645aa7d9583d60b"
+    }
+  ],
+  "adaptation": "AST-load the original CRITERIA, Judge class and two prompt strings without editing them. Replace only API transport, abstract lookup, token bookkeeping and exception-aware thread plumbing. Preserve the original score parsing, citation extraction and arithmetic."
+}

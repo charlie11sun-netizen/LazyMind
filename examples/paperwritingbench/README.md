@@ -78,3 +78,53 @@ python -m examples.paperwritingbench.score citations /path/manuscript.pdf \
 每次使用新输出目录。保留 `status.json`、`score.json`、`trace.jsonl`、模型列表、各次请求/原始返回，以及引用提取、匹配与外部查询记录。输出目录应放在仓库外；记录含完整稿件及返回内容，应按私有材料保存。
 
 给原论文做连接自检时显式使用 `--input-role reference_control`，不要与生成稿成绩混用。评分针对 PDF 提取文本，不包含图片/版式或双稿视觉比较。若 F6 或修订失败，评分时必须披露稿件实际阶段，不能标为完整流程完成。
+
+## 4. AutoSurvey 作者原规则
+
+该入口独立于上一节的整篇审稿与引用 F1，使用 [AutoSurvey 作者代码](https://github.com/AutoSurveys/AutoSurvey/tree/5e8f389f3d51b29bad16dc6ae75db3e8a45a3b65)。固定完整五档标准、原提示词、数字解析和引用计算函数，通过 AST 加载原类和常量；只替换模型传输、摘要查找、记账和线程异常报告。源码下载到本机，不随本仓库重新分发。
+
+```sh
+python -m examples.paperwritingbench.fetch_upstream --suite autosurvey
+
+python -m examples.paperwritingbench.autosurvey prepare /path/manuscript.md \
+  --topic '实际研究主题' --start '## Introduction' --end '## Problem Formulation' \
+  --out /tmp/autosurvey-input.json
+
+python -m examples.paperwritingbench.autosurvey run /tmp/autosurvey-input.json \
+  --abstracts /path/literature_review_pool.json \
+  --model gpt-6-luna --auth-file /private/owner-session.json --out /tmp/autosurvey-run
+```
+
+起止标题由调用者按实际稿件选择；终止标题不进入输入。省略起止参数表示使用整个文件。准备工具机械转换 LazyMind Markdown 的原生引用和图片文字图注，逐个检查相邻引用标记是否保留，记录原文件 SHA-256。LaTeX 支持正文 `\cite{key}` 和内嵌 `\bibitem{key}`，需要本机可执行的 Pandoc；引用编号沿用完整文末书目顺序。其他引用宏或外部 BibTeX 请先转换为明确的数字引用格式。图片仅保留文字图注，不做视觉评测。
+
+也可以直接提供 JSON：`topic` 为主题，`survey` 为选定的综述文本，`reference` 将数字标签映射到论文 ID，例如 `{"1":"SRC-001"}`；正文使用 `[1][2]` 或 `[1;2]`。准备时可以用 `--references mapping.json` 显式覆盖 ID 映射，用于 LaTeX 书目键与摘要库 ID 不同的情况。
+
+`--abstracts` 接受原生材料池的当前 papers 版本，或 `{"papers":{"SRC-001":{"title":"论文标题","abs":"真实摘要","url":"来源链接"}}}` 格式。必须提供每个所引工作的真实摘要及对应身份；本入口不在线搜索、猜测或编造缺失摘要。材料池中的 `text` 必须确实是摘要。原论文与 GT 参考集合不应作为证据输入。可用 `--phase content` 只跑三项内容评分，或 `--phase citations` 只核查引用。
+
+输出保留准确的 `input.json`、`survey.md`、所用摘要、上游版本、逐次原始提示词/请求/响应、调用状态、抽取的引用句及 `score.json`。评分模型与生成参数不同于作者论文时，结果属于原规则在当前样本上的评测，不是官方原设置复现或排行榜分数。作者原内容提示词只要求数字，因此不会额外生成 strengths/weaknesses 解释。
+
+| 指标 | 原代码实际计算内容 |
+|---|---|
+| Coverage / Structure / Relevance | 覆盖、组织结构、主题相关性，各 1–5；完整使用作者五档描述 |
+| Citation Recall（带引用句支持率） | 被模型判定能由整组被引摘要支持的句子数 / 正则抽出的带引用句数 |
+| Citation Precision（引用有效率） | 有用引用数 / 全部引用关联数；整组不支持时该句所有引用计零 |
+
+某个引用单独支持句子，或者移除它后其他引用不能再共同支持句子，原函数将它记为有用。Recall **不统计无引用的句子**，不是全文事实正确率、漏引检测或与原论文书目的匹配率。摘要中没有足够证据不代表引用造假；本入口保留作者二值判断，不增加 unknown 类别或调整分母。三项均值仅为算术汇总，不与引用指标合成总分。
+
+作者 Judge 传入 `temperature=0`，但固定版本的 API 层把它放在消息对象中，而非顶层生成参数。本入口使用供应商默认参数，并记录该原参数；没有额外系统提示词。占位 tokenCounter 只影响作者内部记账，真实 token 使用保存在供应商响应中。并发量由 `--jobs` 指定，默认 4；不设置额外的模型调用次数上限。
+
+中断后可恢复相同输入、摘要、阶段、模型和上游版本；成功响应按完整提示词缓存，不重抽分数。原作者线程中的异常会转成明确失败，不将未完成判断的默认零当成有效分数：
+
+```sh
+# 补齐缺失调用；保留已有成功判断。
+python -m examples.paperwritingbench.autosurvey run /tmp/autosurvey-input.json \
+  --abstracts /path/literature_review_pool.json --model gpt-6-luna \
+  --auth-file /private/owner-session.json --out /tmp/autosurvey-run --resume
+
+# 全部调用已留存时，离线重新执行作者计算，不访问登录或模型接口。
+python -m examples.paperwritingbench.autosurvey run /tmp/autosurvey-input.json \
+  --abstracts /path/literature_review_pool.json --model gpt-6-luna \
+  --out /tmp/autosurvey-run --resume --offline
+```
+
+AutoSurvey 的所有并发调用共用一个客户端，登录过期只刷新一次。显式提供 `--auth-file` 时，将轮换后的会话原子写回**该文件**，供后续恢复；供应商密钥留在服务端，登录请求头和刷新令牌不写入评测记录。只使用当前指定的会话来源。输出包含完整稿件和响应，应放在仓库外并保留为私有材料。
