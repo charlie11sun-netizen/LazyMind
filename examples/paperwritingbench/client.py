@@ -2,15 +2,19 @@
 import json
 import os
 from pathlib import Path
+import threading
 import urllib.error
 import urllib.request
 import uuid
 
 
 class Client:
-    def __init__(self, base_url=None, auth_file=None):
+    def __init__(self, base_url=None, auth_file=None, persist_session=False):
         self.base_url = (base_url or os.environ.get('LAZYMIND_BASE_URL', 'http://127.0.0.1:8091')).rstrip('/')
         self.credentials = {}
+        self.auth_file = Path(auth_file).resolve() if auth_file else None
+        self.persist_session = persist_session
+        self.refresh_lock = threading.Lock()
         if auth_file:
             value = json.loads(Path(auth_file).read_text())
             self.credentials.update(value.get('data', value))
@@ -20,10 +24,10 @@ class Client:
         if not self.credentials.get('access_token'):
             raise ValueError('Set LAZYMIND_ACCESS_TOKEN or supply --auth-file with an owner session')
 
-    def _send(self, payload):
+    def _send(self, payload, access_token):
         request = urllib.request.Request(
             self.base_url + '/api/core/mcp/capabilities/v1', data=json.dumps(payload).encode(),
-            headers={'Authorization': 'Bearer ' + self.credentials['access_token'],
+            headers={'Authorization': 'Bearer ' + access_token,
                      'Content-Type': 'application/json', 'Accept': 'application/json, text/event-stream',
                      'MCP-Protocol-Version': '2025-06-18', 'X-LazyMind-Agent-Provider': 'codex'})
         return urllib.request.urlopen(request, timeout=300)
@@ -33,19 +37,31 @@ class Client:
         payload = {'jsonrpc': '2.0', 'id': str(uuid.uuid4()), 'method': 'tools/call',
                    'params': {'name': name, 'arguments': arguments}}
         record.with_name(record.name + '-request.json').write_text(json.dumps(payload, ensure_ascii=False, indent=2))
+        access_token = self.credentials['access_token']
         try:
-            response = self._send(payload)
+            response = self._send(payload, access_token)
         except urllib.error.HTTPError as error:
             if error.code != 401 or not self.credentials.get('refresh_token'):
                 raise
-            request = urllib.request.Request(
-                self.base_url + '/api/authservice/auth/refresh',
-                data=json.dumps({'refresh_token': self.credentials['refresh_token']}).encode(),
-                headers={'Content-Type': 'application/json'})
-            with urllib.request.urlopen(request, timeout=30) as refreshed:
-                value = json.load(refreshed)
-            self.credentials.update(value.get('data', value))
-            response = self._send(payload)
+            with self.refresh_lock:
+                if self.credentials['access_token'] == access_token:
+                    request = urllib.request.Request(
+                        self.base_url + '/api/authservice/auth/refresh',
+                        data=json.dumps({'refresh_token': self.credentials['refresh_token']}).encode(),
+                        headers={'Content-Type': 'application/json'})
+                    with urllib.request.urlopen(request, timeout=30) as refreshed:
+                        value = json.load(refreshed)
+                    self.credentials.update(value.get('data', value))
+                    if self.persist_session and self.auth_file:
+                        temporary = self.auth_file.with_name(self.auth_file.name + '.' + uuid.uuid4().hex + '.tmp')
+                        try:
+                            with open(temporary, 'x', encoding='utf-8',
+                                      opener=lambda path, flags: os.open(path, flags, 0o600)) as stream:
+                                json.dump({'data': self.credentials}, stream)
+                            os.replace(temporary, self.auth_file)
+                        finally:
+                            temporary.unlink(missing_ok=True)
+            response = self._send(payload, self.credentials['access_token'])
         with response:
             raw = response.read()
         record.with_name(record.name + '-response.private.json').write_bytes(raw)
