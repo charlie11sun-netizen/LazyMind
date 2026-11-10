@@ -60,9 +60,9 @@ This loop is built from three connected systems:
 
 ### 1. Deliver outcomes, not chat messages
 
-Choose knowledge and a Skill; LazyMind continues from source organization through planning, generation, review, and delivery. Workflows define steps, tools, inputs, outputs, and transitions as state machines, while artifacts preserve editable results and revision history.
+Choose knowledge and a Skill once, and LazyMind continues through a complete source organization → planning → generation → review → delivery chain rather than returning only a one-time chat answer. Workflows define steps, tools, inputs, outputs, and state transitions as state machines, giving the execution a clear structure that can be inspected and continued. The final result is delivered as an editable Artifact, preserving the work product and its revision history for further refinement and delivery.
 
-For long-running work, each step remains visible. Users can approve checkpoints, edit an artifact, or rerun from the failed step instead of restarting the whole task.
+For long-running work, every step remains visible throughout execution. Users can inspect intermediate results, approve checkpoints, edit an Artifact directly, or rerun from a failed step without restarting the entire task. This observability and recoverability preserve human control over the workflow while keeping its execution connected to a deliverable outcome, so results can continue to be refined and delivered as the work progresses.
 
 <table>
   <tr>
