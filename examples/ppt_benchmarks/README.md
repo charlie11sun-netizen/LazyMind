@@ -110,3 +110,7 @@ With the two upstream checkouts, environments and containers installed as above,
 Switch `--dataset` and pick a fresh output directory to run the other task with either method. If DeepPresenter's Python Docker client uses a non-default Docker context, set `DOCKER_HOST` to that context's endpoint before running it.
 
 A loopback adapter translates the methods' existing model requests into Codex App Server turns. The Python workflows still execute their own tools and export the slides. Each run records the selected backend and model in `result.json`; App Server diagnostics are saved under the sibling `<output>-codex` directory.
+
+## 4. Score the generated decks
+
+See [PPT benchmark scoring with Codex](scoring/README.md) to apply both paper rubrics and the matching dataset rubric to a PPTX. It uses the same ChatGPT login as `--backend codex` and records cache usage for each judge call.

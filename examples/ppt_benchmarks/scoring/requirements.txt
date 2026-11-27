@@ -1,0 +1,6 @@
+numpy
+Pillow
+PyMuPDF
+pdf2image
+pypdf
+PyYAML
