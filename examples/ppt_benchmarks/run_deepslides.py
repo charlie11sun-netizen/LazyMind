@@ -14,7 +14,7 @@ from types import SimpleNamespace
 
 
 from .cases import DATASET_CASES, case_files
-from .generation import EFFORT, MODEL, connection
+from .generation import BACKENDS, EFFORT, MODEL, connection, model_session
 
 
 PRESENTATION_SETTINGS = {
@@ -23,11 +23,11 @@ PRESENTATION_SETTINGS = {
 }
 
 
-async def run(case_root, output, sandbox_image, dataset='slidesgen'):
+async def run(case_root, output, sandbox_image, dataset='slidesgen', *, target=None, backend='api'):
     case = DATASET_CASES[dataset]
     source_prompt, material = case_files(case, case_root)
     topic, minutes, brief = PRESENTATION_SETTINGS[case]
-    base, token = connection()
+    model_name, base, token = target if target is not None else (MODEL, *connection())
     output.mkdir(parents=True)
     tmp = output / 'tmp'
     tmp.mkdir()
@@ -46,7 +46,7 @@ async def run(case_root, output, sandbox_image, dataset='slidesgen'):
     for var in ('OPENAI_API_KEY', 'OPENAI_API_KEY2'):
         os.environ[var] = token
     for role in ('PLANNER', 'WRITER', 'DESIGNER', 'CODER'):
-        os.environ[f'{role}_MODEL'] = MODEL
+        os.environ[f'{role}_MODEL'] = model_name
         os.environ[f'{role}_PROVIDER'] = 'openai'
     os.environ['SOFFICE_PATH'] = '/usr/bin/true'
     os.environ['SAVES_ROOT'] = str(output / 'output')
@@ -65,10 +65,10 @@ async def run(case_root, output, sandbox_image, dataset='slidesgen'):
             return super().with_structured_output(schema, **kwargs)
 
     def pinned_model(**kwargs):
-        if kwargs.get('model') != MODEL:
+        if kwargs.get('model') != model_name:
             raise ValueError('Unexpected model requested by DeepSlides')
-        return FixedModel(model=MODEL, base_url=base, api_key=token, timeout=250, max_retries=0,
-                          reasoning_effort=EFFORT)
+        return FixedModel(model=model_name, base_url=base, api_key=token, timeout=250, max_retries=0,
+                          reasoning_effort=EFFORT, use_responses_api=False if backend == 'codex' else None)
 
     upstream.init_chat_model = pinned_model
     upstream.subprocess = SimpleNamespace(run=sandbox_run, TimeoutExpired=subprocess.TimeoutExpired)
@@ -118,7 +118,8 @@ async def run(case_root, output, sandbox_image, dataset='slidesgen'):
     target = output / 'slides.pptx'
     shutil.copyfile(final, target)
     (output / 'result.json').write_text(json.dumps({'dataset': dataset, 'output': str(target), 'started_at': started,
-      'finished_at': datetime.now().astimezone().isoformat(), 'model': MODEL, 'effort': EFFORT}))
+      'finished_at': datetime.now().astimezone().isoformat(), 'model': model_name, 'effort': EFFORT,
+      'backend': backend}))
 
 
 def main():
@@ -127,9 +128,13 @@ def main():
     parser.add_argument('output', type=Path)
     parser.add_argument('--sandbox-image', default='ppt-benchmarks-deepslides')
     parser.add_argument('--dataset', choices=DATASET_CASES, default='slidesgen')
+    parser.add_argument('--backend', choices=BACKENDS, default='api')
     args = parser.parse_args()
     os.umask(0o077)
-    asyncio.run(run(args.cases, args.output.resolve(), args.sandbox_image, args.dataset))
+    output = args.output.resolve()
+    with model_session(args.backend, output) as target:
+        asyncio.run(run(args.cases, output, args.sandbox_image, args.dataset,
+                        target=target, backend=args.backend))
 
 
 if __name__ == '__main__':
