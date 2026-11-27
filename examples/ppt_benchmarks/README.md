@@ -56,7 +56,7 @@ The export writes `slides.pptx` and its metadata under each run directory. For n
 
 ## 3. Generate with the paper methods
 
-Set `PPT_GENERATION_BASE_URL` to your OpenAI-compatible Chat Completions base URL, including `/v1` if the provider uses that path. Supply the credential in `PPT_GENERATION_API_KEY`. The endpoint must expose `deepseek/deepseek-v4.1-flash` with tool calling, image input, and `reasoning_effort=low`.
+For the default `--backend api`, set `PPT_GENERATION_BASE_URL` to your OpenAI-compatible Chat Completions base URL, including `/v1` if the provider uses that path. Supply the credential in `PPT_GENERATION_API_KEY`. The endpoint must expose `deepseek/deepseek-v4.1-flash` with tool calling, image input, and `reasoning_effort=low`. The same installation steps below apply to `--backend codex`.
 
 ```bash
 DEEP_PRESENTER="$WORK/DeepPresenter"
@@ -93,3 +93,20 @@ done
 ```
 
 `--dataset presentbench` selects Alphabet 2024 Q1. `--dataset slidesgen` selects 50 Million Steps. DeepPresenter receives the original prompt and PDF attachment. DeepSlides receives page-numbered PDF text and queries the supplied source in its presentation graph. The DeepSlides planner uses durations of 22 minutes for Alphabet and 11 minutes for 50 Million Steps. The two methods use offline containers for generated code. Their output directories contain `slides.pptx`.
+
+### Use the signed-in Codex backend
+
+Install Codex CLI and sign in with ChatGPT using `codex login`. Check the session with `codex login status`. Add `--backend codex` to either runner. This path uses the signed-in session and `gpt-6.2-sol` at `low` reasoning effort. It requires no model API key and uses the account's Codex allowance. It requires a Codex CLI version with App Server dynamic tools. [Codex authentication](https://learn.chatgpt.com/docs/auth) · [Codex App Server](https://learn.chatgpt.com/docs/app-server)
+
+With the two upstream checkouts, environments and containers installed as above, run any of the four combinations. For example:
+
+```bash
+"$PRESENTER_PY" -m examples.ppt_benchmarks.run_deeppresenter "$WORK/cases" "$WORK/deeppresenter-codex-presentbench" \
+  --checkout "$DEEP_PRESENTER" --dataset presentbench --backend codex
+"$SLIDES_PY" -m examples.ppt_benchmarks.run_deepslides "$WORK/cases" "$WORK/deepslides-codex-slidesgen" \
+  --dataset slidesgen --backend codex
+```
+
+Switch `--dataset` and pick a fresh output directory to run the other task with either method. If DeepPresenter's Python Docker client uses a non-default Docker context, set `DOCKER_HOST` to that context's endpoint before running it.
+
+A loopback adapter translates the methods' existing model requests into Codex App Server turns. The Python workflows still execute their own tools and export the slides. Each run records the selected backend and model in `result.json`; App Server diagnostics are saved under the sibling `<output>-codex` directory.

@@ -11,12 +11,12 @@ from tempfile import TemporaryDirectory
 from uuid import uuid4
 
 from .cases import DATASET_CASES, case_files
-from .generation import EFFORT, MODEL, connection
+from .generation import BACKENDS, EFFORT, MODEL, connection, model_session
 
 
-async def run(case_root, output, checkout, dataset='presentbench'):
+async def run(case_root, output, checkout, dataset='presentbench', *, target=None, backend='api'):
     prompt, attachment = case_files(DATASET_CASES[dataset], case_root)
-    base, key = connection()
+    model_name, base, key = target if target is not None else (MODEL, *connection())
     output.mkdir(parents=True)
     os.environ['DEEPPRESENTER_WORKSPACE_BASE'] = str(output)
 
@@ -35,7 +35,7 @@ async def run(case_root, output, checkout, dataset='presentbench'):
             spec['env'] = {'PLAYWRIGHT_BROWSERS_PATH': os.environ['PLAYWRIGHT_BROWSERS_PATH']}
         if spec['name'] == 'sandbox':
             spec['args'][1:1] = ['--network', 'none']
-    model = dict(model=MODEL, base_url=base, api_key=key, is_multimodal=True,
+    model = dict(model=model_name, base_url=base, api_key=key, is_multimodal=True,
                  sampling_parameters={'reasoning_effort': EFFORT},
                  client_kwargs={'max_retries': 0, 'timeout': 250})
     request = InputRequest(instruction=prompt.read_text(encoding='utf-8'), attachments=[str(attachment)],
@@ -49,6 +49,9 @@ async def run(case_root, output, checkout, dataset='presentbench'):
         mcp_path.write_text(json.dumps([s for s in specs if s['name'] not in {'search', 'pptagent'}]))
         config = dict(file_path=str(config_path), mcp_config_file=str(mcp_path), offline_mode=True,
                       research_agent=model, design_agent=model, long_context_model=model, vision_model=model)
+        if backend == 'codex':
+            # Leave room for Codex's instructions and registered tools in the reported context.
+            config['context_window'] = 120_000
         config_path.write_text(json.dumps(config))
         loop = AgentLoop(DeepPresenterConfig(**config), workspace=work)
         try:
@@ -63,6 +66,8 @@ async def run(case_root, output, checkout, dataset='presentbench'):
     shutil.copyfile(final, output / 'slides.pptx')
     if final.with_suffix('.pdf').is_file():
         shutil.copyfile(final.with_suffix('.pdf'), output / 'slides.pdf')
+    (output / 'result.json').write_text(json.dumps({'dataset': dataset, 'backend': backend,
+        'model': model_name, 'effort': EFFORT, 'output': str(output / 'slides.pptx')}, indent=2) + '\n')
     print(output / 'slides.pptx')
 
 
@@ -72,9 +77,13 @@ def main():
     parser.add_argument('output', type=Path)
     parser.add_argument('--checkout', type=Path, required=True)
     parser.add_argument('--dataset', choices=DATASET_CASES, default='presentbench')
+    parser.add_argument('--backend', choices=BACKENDS, default='api')
     args = parser.parse_args()
     os.umask(0o077)
-    asyncio.run(run(args.cases, args.output.resolve(), args.checkout.resolve(), args.dataset))
+    output = args.output.resolve()
+    with model_session(args.backend, output) as target:
+        asyncio.run(run(args.cases, output, args.checkout.resolve(), args.dataset,
+                        target=target, backend=args.backend))
 
 
 if __name__ == '__main__':
