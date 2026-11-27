@@ -4,10 +4,10 @@ import tempfile
 import unittest
 from zipfile import ZipFile
 
-from examples.presentbench.run import current_native_deck, prepare, presentation_summary, selected_pages
+from examples.ppt_benchmarks.run_lazymind import current_native_deck, prepare, presentation_summary, selected_pages
 
 
-class PresentBenchTest(unittest.TestCase):
+class LazyMindRunnerTest(unittest.TestCase):
     def test_prepare_only_uses_generation_inputs(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)

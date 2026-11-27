@@ -32,19 +32,21 @@ npm ci --prefix "$EXPORTER"
 for CASE in alphabet steps; do
   RUN="$WORK/lazymind-$CASE"
   python3.12 -m examples.ppt_benchmarks.cases prepare "$CASE" "$WORK/cases" "$RUN"
-  python3.12 -m examples.presentbench.run submit "$RUN" \
+  python3.12 -m examples.ppt_benchmarks.run_lazymind submit "$RUN" \
     --base-url "$LAZYMIND_URL" --auth-file "$LAZYMIND_AUTH_FILE" \
     --model-id "$LAZYMIND_MODEL_ID" --thinking-depth low
-  python3.12 -m examples.presentbench.run status "$RUN" \
+  python3.12 -m examples.ppt_benchmarks.run_lazymind status "$RUN" \
     --base-url "$LAZYMIND_URL" --auth-file "$LAZYMIND_AUTH_FILE"
 done
 ```
 
-If startup questions are returned, read `$RUN/*.private.questions.json` and run `python3.12 -m examples.presentbench.run clarify "$RUN" --answer 'question_id=value' --base-url "$LAZYMIND_URL" --auth-file "$LAZYMIND_AUTH_FILE"`, repeating `--answer` for each question. Use the task requirements when answering. If the workflow pauses for review, review and continue the same conversation in LazyMind. Poll `status` until `generate_ppt` has succeeded and the deck is published. Then export each run.
+For a local case in PresentBench's directory format, use `python3.12 -m examples.ppt_benchmarks.run_lazymind prepare "$CASE_DIR" "$RUN"`. It reads `generation_task/instructions.md` and `material*`. Both preparation commands accept `--delivery` to append a delivery requirement to the original prompt.
+
+If startup questions are returned, read `$RUN/*.private.questions.json` and run `python3.12 -m examples.ppt_benchmarks.run_lazymind clarify "$RUN" --answer 'question_id=value' --base-url "$LAZYMIND_URL" --auth-file "$LAZYMIND_AUTH_FILE"`, repeating `--answer` for each question. Use the task requirements when answering. If the workflow pauses for review, review and continue the same conversation in LazyMind. Poll `status` until `generate_ppt` has succeeded and the deck is published. Then export each run.
 
 ```bash
 for CASE in alphabet steps; do
-  python3.12 -m examples.presentbench.run export "$WORK/lazymind-$CASE" \
+  python3.12 -m examples.ppt_benchmarks.run_lazymind export "$WORK/lazymind-$CASE" \
     --base-url "$LAZYMIND_URL" --auth-file "$LAZYMIND_AUTH_FILE" \
     --local-exporter "$EXPORTER/html_to_pptx.mjs"
 done

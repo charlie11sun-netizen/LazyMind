@@ -6,7 +6,7 @@ import os
 from pathlib import Path
 from urllib.request import urlopen
 
-from examples.presentbench.run import prepare_files
+from .run_lazymind import prepare_files
 
 
 DATASET_CASES = {'presentbench': 'alphabet', 'slidesgen': 'steps'}

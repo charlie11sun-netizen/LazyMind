@@ -1,4 +1,4 @@
-"""Submit one public PresentBench case to LazyMind's native PPT workflow."""
+"""Submit benchmark cases to LazyMind's native PPT workflow and export the decks."""
 
 import argparse
 from base64 import b64decode, b64encode
@@ -353,8 +353,8 @@ def export(client, output, exporter):
                 staged = Path(folder).resolve()
                 staged_pages = staged / 'pages'
                 staged_pages.mkdir()
-                save(staged / 'task_pack.json', {'deck_id': 'presentbench', 'deck_dir': str(staged)})
-                (staged / 'review.md').write_text('# PresentBench export\n', encoding='utf-8')
+                save(staged / 'task_pack.json', {'deck_id': 'lazymind', 'deck_dir': str(staged)})
+                (staged / 'review.md').write_text('# LazyMind PPT export\n', encoding='utf-8')
                 for number, page in enumerate(pages, 1):
                     (staged_pages / f'page_{number:03}.html').write_text(page['html'], encoding='utf-8')
                     (staged_pages / f'page_{number:03}.notes.txt').write_text(page['notes'], encoding='utf-8')
@@ -388,7 +388,7 @@ def export(client, output, exporter):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     commands = parser.add_subparsers(dest='command', required=True)
-    prepare_cmd = commands.add_parser('prepare')
+    prepare_cmd = commands.add_parser('prepare', help='Prepare a local case with a PresentBench directory layout')
     prepare_cmd.add_argument('case', type=Path)
     prepare_cmd.add_argument('output', type=Path)
     prepare_cmd.add_argument('--delivery', default='Deliver the final deck as an editable PowerPoint (.pptx).')
