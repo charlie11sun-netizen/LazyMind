@@ -1,4 +1,4 @@
-"""Connect the public benchmark packet to DeepSlides' presentation graph."""
+"""Connect either benchmark packet to DeepSlides' presentation graph."""
 
 import argparse
 import asyncio
@@ -13,15 +13,20 @@ import tempfile
 from types import SimpleNamespace
 
 
-from .cases import case_files
+from .cases import DATASET_CASES, case_files
 from .generation import EFFORT, MODEL, connection
 
 
-TOPIC = '50 Million Steps Campaign Toolkit'
+PRESENTATION_SETTINGS = {
+    'alphabet': ('Alphabet Inc. First Quarter 2024 Results', 22, 'press release'),
+    'steps': ('50 Million Steps Campaign Toolkit', 11, 'campaign'),
+}
 
 
-async def run(case_root, output, sandbox_image):
-    source_prompt, material = case_files('steps', case_root)
+async def run(case_root, output, sandbox_image, dataset='slidesgen'):
+    case = DATASET_CASES[dataset]
+    source_prompt, material = case_files(case, case_root)
+    topic, minutes, brief = PRESENTATION_SETTINGS[case]
     base, token = connection()
     output.mkdir(parents=True)
     tmp = output / 'tmp'
@@ -81,10 +86,10 @@ async def run(case_root, output, sandbox_image):
         return '\n\n'.join(pages[i] for i in ranked)
 
     upstream.select_and_execute_search = source_search
-    (output / 'output' / TOPIC).mkdir(parents=True, exist_ok=True)
+    (output / 'output' / topic).mkdir(parents=True, exist_ok=True)
     initial = {
-        'topic': TOPIC, 'final_report': report, 'presentation_minutes': 11,
-        'style': 'Follow the campaign brief and use only the supplied source material. ' + prompt.strip(),
+        'topic': topic, 'final_report': report, 'presentation_minutes': minutes,
+        'style': f'Follow the {brief} brief and use only the supplied source material. ' + prompt.strip(),
     }
     graph = StateGraph(ReportState)
     pipeline = ('generate_ppt_outline', 'generate_ppt_styles', 'generate_cover_slide',
@@ -102,7 +107,7 @@ async def run(case_root, output, sandbox_image):
     final = None
     async with AsyncSqliteSaver.from_conn_string(str(output / 'checkpoint.sqlite')) as checkpoint:
         runnable = graph.compile(checkpointer=checkpoint)
-        config = {'configurable': {'thread_id': 'slidesgen-50-million-steps'},
+        config = {'configurable': {'thread_id': dataset},
                   'recursion_limit': 100, 'max_concurrency': 2}
         async for update in runnable.astream(initial, config=config, stream_mode='updates'):
             print(datetime.now().isoformat(timespec='seconds'), 'finished stages', *update, flush=True)
@@ -112,7 +117,7 @@ async def run(case_root, output, sandbox_image):
         raise RuntimeError('DeepSlides finished without a final PPTX')
     target = output / 'slides.pptx'
     shutil.copyfile(final, target)
-    (output / 'result.json').write_text(json.dumps({'output': str(target), 'started_at': started,
+    (output / 'result.json').write_text(json.dumps({'dataset': dataset, 'output': str(target), 'started_at': started,
       'finished_at': datetime.now().astimezone().isoformat(), 'model': MODEL, 'effort': EFFORT}))
 
 
@@ -121,9 +126,10 @@ def main():
     parser.add_argument('cases', type=Path)
     parser.add_argument('output', type=Path)
     parser.add_argument('--sandbox-image', default='ppt-benchmarks-deepslides')
+    parser.add_argument('--dataset', choices=DATASET_CASES, default='slidesgen')
     args = parser.parse_args()
     os.umask(0o077)
-    asyncio.run(run(args.cases, args.output.resolve(), args.sandbox_image))
+    asyncio.run(run(args.cases, args.output.resolve(), args.sandbox_image, args.dataset))
 
 
 if __name__ == '__main__':

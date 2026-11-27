@@ -1,4 +1,4 @@
-"""Run the pinned DeepPresenter workflow on the PresentBench Alphabet task."""
+"""Run the pinned DeepPresenter workflow on either benchmark task."""
 
 import argparse
 import asyncio
@@ -10,12 +10,12 @@ import sys
 from tempfile import TemporaryDirectory
 from uuid import uuid4
 
-from .cases import case_files
+from .cases import DATASET_CASES, case_files
 from .generation import EFFORT, MODEL, connection
 
 
-async def run(case_root, output, checkout):
-    prompt, attachment = case_files('alphabet', case_root)
+async def run(case_root, output, checkout, dataset='presentbench'):
+    prompt, attachment = case_files(DATASET_CASES[dataset], case_root)
     base, key = connection()
     output.mkdir(parents=True)
     os.environ['DEEPPRESENTER_WORKSPACE_BASE'] = str(output)
@@ -71,9 +71,10 @@ def main():
     parser.add_argument('cases', type=Path)
     parser.add_argument('output', type=Path)
     parser.add_argument('--checkout', type=Path, required=True)
+    parser.add_argument('--dataset', choices=DATASET_CASES, default='presentbench')
     args = parser.parse_args()
     os.umask(0o077)
-    asyncio.run(run(args.cases, args.output.resolve(), args.checkout.resolve()))
+    asyncio.run(run(args.cases, args.output.resolve(), args.checkout.resolve(), args.dataset))
 
 
 if __name__ == '__main__':

@@ -9,6 +9,7 @@ from urllib.request import urlopen
 from examples.presentbench.run import prepare_files
 
 
+DATASET_CASES = {'presentbench': 'alphabet', 'slidesgen': 'steps'}
 PRESENTBENCH = ('https://huggingface.co/datasets/PresentBench/PresentBench/resolve/'
                 '3c6e01f563165d3a364a459f9777cd7286f42cd8/'
                 'economics/Alphabet_Investor_Relations/2024q1/')
