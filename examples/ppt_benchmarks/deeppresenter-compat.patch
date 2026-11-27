@@ -1,0 +1,93 @@
+diff --git a/deeppresenter/agents/env.py b/deeppresenter/agents/env.py
+index e8f616d..3f24325 100644
+--- a/deeppresenter/agents/env.py
++++ b/deeppresenter/agents/env.py
+@@ -174,47 +174,32 @@ class AgentEnv:
+         else:
+             self.timing_dict[tool_call.function.name].success_count += 1
+
+-        if len(result.content) != 1 or any(
+-            c.type not in ["image", "text"] for c in result.content
+-        ):
+-            raise ValueError(
+-                f"Only one text/image block is supported currently. While getting {result.content} from {tool_call.function.name}"
+-            )
++        if not result.content or any(c.type not in {"image", "text"} for c in result.content):
++            raise ValueError(f"Unsupported response blocks from {tool_call.function.name}")
+         content = []
+-        block = result.content[0]
+-        if block.type == "text":
+-            if len(block.text) > self.cutoff_len:
+-                truncated = block.text[: self.cutoff_len]
+-                truncated = truncated[: truncated.rfind("\n")]
+-
+-                # checking if we are reading from local file
+-                if tool_call.function.name == "read_file":
+-                    local_file = arguments["path"]
+-                else:
+-                    hash_id = uuid.uuid4().hex[:4]
+-                    local_file = (
+-                        self.workspace / f"{tool_call.function.name}_{hash_id}.txt"
++        for block in result.content:
++            if block.type == "text":
++                if len(block.text) > self.cutoff_len:
++                    truncated = block.text[: self.cutoff_len]
++                    truncated = truncated[: truncated.rfind("\n")]
++                    if tool_call.function.name == "read_file":
++                        local_file = arguments["path"]
++                    else:
++                        hash_id = uuid.uuid4().hex[:4]
++                        local_file = self.workspace / f"{tool_call.function.name}_{hash_id}.txt"
++                        local_file.write_text(block.text)
++                    truncated += CUTOFF_WARNING.format(
++                        line=truncated.count("\n"), resource_id=str(local_file)
+                     )
+-                    local_file.write_text(block.text)
+-
+-                truncated += CUTOFF_WARNING.format(
+-                    line=truncated.count("\n"), resource_id=str(local_file)
++                    block.text = truncated
++                content.append({"type": "text", "text": block.text})
++            else:
++                data_url = block.data
++                if not data_url.startswith("data:"):
++                    data_url = f"data:{block.mimeType};base64,{data_url}"
++                content.append(
++                    {"type": "image_url", "image_url": {"url": data_url}}
+                 )
+-                block.text = truncated
+-
+-            content.append(
+-                {
+-                    "type": "text",
+-                    "text": block.text,
+-                }
+-            )
+-        elif block.type == "image":
+-            content.append(
+-                {
+-                    "type": "image_url",
+-                    "image_url": {"url": block.data},
+-                }
+-            )
+         msg = ChatMessage(
+             role=Role.TOOL,
+             content=content,
+diff --git a/deeppresenter/tools/tool_agents.py b/deeppresenter/tools/tool_agents.py
+index 816076d..3be77f4 100644
+--- a/deeppresenter/tools/tool_agents.py
++++ b/deeppresenter/tools/tool_agents.py
+@@ -84,11 +84,12 @@ if LLM_CONFIG.vision_model is not None:
+         """
+         assert Path(image_path).is_file(), f"Image path {image_path} does not exist"
+         with Image.open(image_path) as img:
++            mime_type = Image.MIME[img.format]
+             img.verify()
+             size = img.size
+         with open(image_path, "rb") as f:
+             image_b64 = (
+-                f"data:image/jpeg;base64,{base64.b64encode(f.read()).decode('utf-8')}"
++                f"data:{mime_type};base64,{base64.b64encode(f.read()).decode('utf-8')}"
+             )
+         response = await LLM_CONFIG.vision_model.run(
+             messages=[
